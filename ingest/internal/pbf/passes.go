@@ -1,0 +1,240 @@
+package pbf
+
+import (
+	"context"
+	"math"
+
+	"github.com/paulmach/osm"
+)
+
+// scanWays is pass 1. It decodes only ways, selects the ones we want, and
+// records the node IDs needed to give each of them a point.
+func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int64, error) {
+	f, s, err := e.openScanner(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	defer s.Close()
+	s.SkipNodes = true
+	s.SkipRelations = true
+
+	var (
+		ways   []wantedWay
+		needed []int64
+	)
+	for s.Scan() {
+		w, ok := s.Object().(*osm.Way)
+		if !ok {
+			continue
+		}
+		st.WaysScanned++
+
+		tags := tagsOf(w.Tags)
+		addressed := isAddressed(tags)
+		place := isPlace(tags)
+		street := isNamedStreet(tags)
+		if !addressed && !place && !street {
+			continue
+		}
+		if len(w.Nodes) == 0 {
+			st.WaysUnresolved++
+			continue
+		}
+
+		// A building or place polygon needs every vertex for its centroid; a
+		// street needs only a point that lies on the line. See package doc.
+		wantAll := addressed || place
+		ways = append(ways, wantedWay{id: int64(w.ID), tags: tags, isBuild: wantAll})
+
+		if wantAll {
+			for _, n := range w.Nodes {
+				needed = append(needed, int64(n.ID))
+			}
+		} else {
+			mid := w.Nodes[len(w.Nodes)/2]
+			needed = append(needed, int64(mid.ID))
+		}
+
+		switch {
+		case addressed:
+			st.AddrWays++
+		case place:
+			st.PlaceWays++
+		default:
+			st.StreetWays++
+		}
+		if st.WaysScanned%2_000_000 == 0 {
+			e.log("  pass 1: %dM ways scanned, %d selected", st.WaysScanned/1e6, len(ways))
+		}
+	}
+	return ways, needed, s.Err()
+}
+
+// scanNodes is pass 2. It emits standalone address and place nodes directly and
+// fills locs for the node IDs pass 1 asked for.
+func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, locs []coord) (int, error) {
+	f, s, err := e.openScanner(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	defer s.Close()
+	s.SkipWays = true
+	s.SkipRelations = true
+
+	found := 0
+	for s.Scan() {
+		n, ok := s.Object().(*osm.Node)
+		if !ok {
+			continue
+		}
+		st.NodesScanned++
+
+		// Retain the location if a way needs it.
+		if i := search(needed, int64(n.ID)); i >= 0 {
+			locs[i] = coord{lat: packLat(n.Lat), lon: packLat(n.Lon)}
+			found++
+		}
+
+		// Emit the node in its own right if it is a feature.
+		if len(n.Tags) == 0 {
+			continue
+		}
+		tags := tagsOf(n.Tags)
+		addressed := isAddressed(tags)
+		place := isPlace(tags)
+		if !addressed && !place {
+			continue
+		}
+		if addressed {
+			st.AddrNodes++
+		} else {
+			st.PlaceNodes++
+		}
+		if err := e.Emit(RawFeature{
+			OSMType: 'n', OSMID: int64(n.ID), Tags: tags, Lat: n.Lat, Lon: n.Lon,
+		}); err != nil {
+			return found, err
+		}
+		if st.NodesScanned%20_000_000 == 0 {
+			e.log("  pass 2: %dM nodes scanned, %d locations resolved",
+				st.NodesScanned/1e6, found)
+		}
+	}
+	return found, s.Err()
+}
+
+// emitWays is pass 3. It re-reads ways, rebuilds geometry from the retained
+// locations, and emits a point per selected way.
+func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, needed []int64, locs []coord) error {
+	// Index the selection so the second way scan can find each entry in O(1).
+	byID := make(map[int64]*wantedWay, len(ways))
+	for i := range ways {
+		byID[ways[i].id] = &ways[i]
+	}
+
+	f, s, err := e.openScanner(ctx)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	defer s.Close()
+	s.SkipNodes = true
+	s.SkipRelations = true
+
+	emitted := 0
+	for s.Scan() {
+		w, ok := s.Object().(*osm.Way)
+		if !ok {
+			continue
+		}
+		ww := byID[int64(w.ID)]
+		if ww == nil {
+			continue
+		}
+
+		pts := make([][2]float64, 0, len(w.Nodes))
+		if ww.isBuild {
+			for _, n := range w.Nodes {
+				if i := search(needed, int64(n.ID)); i >= 0 {
+					c := locs[i]
+					if c.lat != 0 || c.lon != 0 {
+						pts = append(pts, [2]float64{unpackLat(c.lat), unpackLat(c.lon)})
+					}
+				}
+			}
+		} else {
+			mid := w.Nodes[len(w.Nodes)/2]
+			if i := search(needed, int64(mid.ID)); i >= 0 {
+				c := locs[i]
+				if c.lat != 0 || c.lon != 0 {
+					pts = append(pts, [2]float64{unpackLat(c.lat), unpackLat(c.lon)})
+				}
+			}
+		}
+		if len(pts) == 0 {
+			st.WaysUnresolved++
+			continue
+		}
+
+		lat, lon := representativePoint(pts, ww.isBuild)
+		if err := e.Emit(RawFeature{
+			OSMType: 'w', OSMID: ww.id, Tags: ww.tags, Lat: lat, Lon: lon,
+		}); err != nil {
+			return err
+		}
+		emitted++
+		if emitted%1_000_000 == 0 {
+			e.log("  pass 3: %dM ways emitted", emitted/1e6)
+		}
+	}
+	return s.Err()
+}
+
+// representativePoint reduces a way's vertices to the single point the
+// geocoder will return.
+//
+// For a closed building outline this is the polygon area centroid (the shoelace
+// formula), not the mean of the vertices: OSM buildings often have many nodes
+// bunched along one detailed facade and few along a plain wall, which drags a
+// vertex mean off-centre. For a street it is simply the supplied midpoint,
+// which lies on the carriageway; an area centroid of a curved road can land in
+// a neighbouring field.
+func representativePoint(pts [][2]float64, polygon bool) (lat, lon float64) {
+	if len(pts) == 1 || !polygon {
+		return pts[0][0], pts[0][1]
+	}
+
+	// Work in a local planar frame so the shoelace terms are metric-ish and do
+	// not skew with longitude convergence.
+	latScale := math.Cos(pts[0][0] * math.Pi / 180)
+
+	var area, cx, cy float64
+	n := len(pts)
+	for i := 0; i < n; i++ {
+		j := (i + 1) % n
+		x0, y0 := pts[i][1]*latScale, pts[i][0]
+		x1, y1 := pts[j][1]*latScale, pts[j][0]
+		cross := x0*y1 - x1*y0
+		area += cross
+		cx += (x0 + x1) * cross
+		cy += (y0 + y1) * cross
+	}
+	area /= 2
+
+	// Degenerate ring (unclosed, collinear, or zero area): fall back to the
+	// vertex mean, which is always defined.
+	if math.Abs(area) < 1e-12 {
+		var sx, sy float64
+		for _, p := range pts {
+			sy += p[0]
+			sx += p[1]
+		}
+		return sy / float64(n), sx / float64(n)
+	}
+
+	cx /= 6 * area
+	cy /= 6 * area
+	return cy, cx / latScale
+}

@@ -1,0 +1,7 @@
+data/
+build/
+node_modules/
+*.osm.pbf
+*.ndjson
+*.ndjson.gz
+.DS_Store
