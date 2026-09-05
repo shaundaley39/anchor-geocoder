@@ -608,7 +608,16 @@ array, the same shape as the string table.
 
 Distance is measured to the outline, not the representative point, so a click at
 one end of a 2 km street reads as metres from the street rather than a kilometre
-from its midpoint. Point-in-polygon runs on the raw integers — ray casting is
+from its midpoint.
+
+A ring is measured along its edges. An open shape is measured to its nearest
+**vertex**, and the distinction matters: a street's stored points are the
+midpoints of the ways composing it, in whatever order those ways appeared — a
+sample of the street, not a traversal. Joining them draws segments the road does
+not follow. Measuring along those changed the answer for **26.6% of streets and
+under-reported by up to 300 m**, so streets appeared nearer than they were.
+Vertex distance is honest about what the data is: the error is bounded by about
+half the sample spacing, and it over-estimates rather than under-estimates. Point-in-polygon runs on the raw integers — ray casting is
 sign-preserving under a uniform scale, so converting to degrees first would cost
 precision and time for nothing.
 

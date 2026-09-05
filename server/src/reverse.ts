@@ -225,15 +225,19 @@ export function reverse(
   // Smallest first: the more specific region is the better answer.
   containing.sort((x, y) => x.area - y.area);
   const head = containing.slice(0, MAX_CONTAINING);
-  for (const c of head) seenAnchor.add(c.anchorID);
 
   // ---- tier 2: everything else, by distance -------------------------------
-  const near: Candidate[] = [];
+  // Containing regions past the cap are not discarded — they join the
+  // proximity tier at distance zero, so they sit at its head rather than
+  // disappearing from the results altogether.
+  const near: Candidate[] = containing.slice(MAX_CONTAINING)
+    .map((c) => ({ ...c, containing: false }));
   const scale = Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
   let radius = 150;
 
+  const overflow = near.length;
   while (radius <= maxRadius) {
-    near.length = 0;
+    near.length = overflow;
     const dLat = radius / M_PER_DEG_LAT;
     const dLon = dLat / scale;
     const hits = idx.tree.range(

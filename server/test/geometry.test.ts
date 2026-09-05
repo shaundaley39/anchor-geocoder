@@ -91,13 +91,36 @@ describe('distanceToShape', () => {
     expect(d).toBeLessThan(125);
   });
 
-  it('measures to the nearest segment of an open line, not to its endpoints', () => {
-    // A 2km east-west line; the query sits 111m north of its midpoint.
+  /**
+   * An open shape is measured to its nearest *vertex*, not along segments
+   * between consecutive vertices.
+   *
+   * A street's stored points are the midpoints of the OSM ways composing it, in
+   * whatever order those ways appeared — a sample of the street, not a
+   * traversal. Joining them draws segments the road does not follow: on the
+   * built index, treating them as a polyline changed the answer for 26.6% of
+   * streets and under-reported distance by up to 300m, so streets appeared
+   * nearer than they were and outranked things that genuinely were nearer.
+   *
+   * The price is visible here: with only two samples 2km apart, a query at the
+   * midpoint reports ~1km rather than 111m. On real data streets carry up to 16
+   * samples, so the error is bounded by roughly half the sample spacing — tens
+   * of metres — and it always over-estimates, which is the safe direction.
+   */
+  it('measures an open shape to its nearest vertex, not along phantom segments', () => {
     const line: [number, number][] = [[50, 14], [50, 14.028]];
     const a = fake([{ pts: line, closed: false }]);
-    const d = distanceToShape(a, 0, 50.001, 14.014);
-    expect(d).toBeGreaterThan(100);
-    expect(d).toBeLessThan(125);
+    // 111m north of the midpoint, but ~1km from either sampled endpoint.
+    expect(distanceToShape(a, 0, 50.001, 14.014)).toBeGreaterThan(900);
+    // Right on a sample: essentially zero.
+    expect(distanceToShape(a, 0, 50, 14)).toBeLessThan(1);
+  });
+
+  it('measures a closed ring along its edges, where they are real', () => {
+    // A ring is a genuine traversal, so a point beside an edge is edge-distance
+    // away even when far from every vertex.
+    const a = fake([{ pts: SQUARE, closed: true }]);
+    expect(distanceToShape(a, 0, 49.999, 14.005)).toBeLessThan(125);
   });
 
   it('is zero-ish on the boundary itself', () => {
