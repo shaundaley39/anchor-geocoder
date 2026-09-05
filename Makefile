@@ -16,8 +16,15 @@ GEOFABRIK := https://download.geofabrik.de/europe
 
 all: fetch records index
 
-## fetch: download and checksum the OSM extracts
-fetch: $(CZ_PBF) $(PL_PBF)
+comma := ,
+
+# Map the COUNTRIES list onto extract filenames so `make fetch COUNTRIES=cz`
+# downloads only what that build will actually read.
+cc-file = $(RAW)/$(strip $(if $(filter cz,$1),czech-republic,\
+                          $(if $(filter pl,$1),poland,\
+                          $(if $(filter ba,$1),bosnia-herzegovina,$1))))-latest.osm.pbf
+## fetch: download and checksum the extracts named by COUNTRIES (default cz,pl)
+fetch: $(foreach c,$(subst $(comma), ,$(COUNTRIES)),$(call cc-file,$c))
 
 $(RAW)/%-latest.osm.pbf:
 	@mkdir -p $(RAW)
@@ -71,3 +78,7 @@ verify:
 
 clean:
 	rm -rf $(BUILD)
+
+## show-fetch: print which extracts COUNTRIES resolves to (debugging the Makefile)
+show-fetch:
+	@echo $(foreach c,$(subst $(comma), ,$(COUNTRIES)),$(call cc-file,$c))

@@ -9,19 +9,121 @@ Herzegovina optional), built as two stages:
 | **Index** | Go | Turns the record stream into a binary artifact of flat typed arrays |
 | **Serve** | TypeScript | Loads the artifact at boot, serves one `/v1/geocode` endpoint for both directions |
 
-## Quick start
+## Setup
+
+### Prerequisites
+
+| | version | notes |
+|---|---|---|
+| Go | 1.24+ | `brew install go` |
+| Node | 22+ | `brew install node` |
+| pnpm | 10+ | `corepack enable && corepack prepare pnpm@latest --activate` |
+
+No cgo, no C++ toolchain, no database, no Docker. `CGO_ENABLED=0` throughout, so
+the ingest binaries are fully static. You need **~4 GB of free disk** (3 GB of
+extracts, 570 MB record stream, 254 MB artifact) and about **8 GB of RAM** for
+the Poland build.
+
+### Full build
 
 ```bash
-make fetch     # ~3 GB of OSM extracts from Geofabrik, checksum-verified
-make records   # ~5 min  -> build/records.ndjson.gz   (12.2M records)
-make index     # ~78 s   -> build/index/              (254 MB artifact)
-make install   # server dependencies
-make serve     # boots in 1.4 s, listens on :3000
-make test      # Go + TypeScript suites
+make fetch       # ~3 GB from Geofabrik, md5-verified   (a few min on fast wifi)
+make records     # 4m51s -> build/records.ndjson.gz     (12.2M records, 570 MB)
+make index       # 1m18s -> build/index/                (254 MB artifact)
+make install     # server dependencies
+make serve       # boots in 1.4 s, listens on 127.0.0.1:3000
 ```
 
-Go 1.24+, Node 22+, pnpm. No cgo, no C++ toolchain — `CGO_ENABLED=0`
-throughout, so the ingest binaries are fully static.
+Or `make all` for the first three. `make serve` runs in the foreground, so open
+a second terminal to query it.
+
+### Faster first run
+
+Czechia alone is a third of the data and gives a fully working API in **~90
+seconds** of build time — enough to try every feature except Polish addresses:
+
+```bash
+make fetch COUNTRIES=cz          # 901 MB instead of 3 GB
+make records COUNTRIES=cz        # 64 s
+make index                       # 22 s
+make install && make serve
+```
+
+`COUNTRIES` takes any comma-separated subset of `cz,pl,ba` and defaults to
+`cz,pl`. (Bosnia needs `make fetch-ba` first, and is only ~10% address-covered —
+see Future improvements.)
+
+### Verify it works
+
+Startup prints what it loaded:
+
+```
+loading index from ../build/index ...
+  677,786 anchors, 11,632,595 addresses, 127,039 terms (42ms)
+building reverse k-d tree ...
+  done (1275ms)
+ready on http://127.0.0.1:3000 — boot 1372ms, rss 513MB
+```
+
+Then, from another terminal:
+
+```bash
+curl -s 'localhost:3000/health' | jq
+```
+```json
+{
+  "status": "ok",
+  "version": 1,
+  "built_at": "2026-09-05T09:26:01Z",
+  "countries": ["cz", "pl"],
+  "anchors": 677786,
+  "addresses": 11632595
+}
+```
+
+A one-line smoke test that exercises the whole stack — folding, the inverted
+index, ranking and house-number resolution:
+
+```bash
+curl -s 'localhost:3000/v1/geocode?q=Prazska+248/39' | jq -r '.features[0].place_name'
+# Pražská 248/39, Olomouc, CZ
+```
+
+### Configuration
+
+All optional, read from the environment:
+
+| variable | default | meaning |
+|---|---|---|
+| `INDEX_DIR` | `../build/index` | directory holding the artifact |
+| `PORT` | `3000` | listen port |
+| `HOST` | `127.0.0.1` | bind address (set `0.0.0.0` in a container) |
+
+```bash
+cd server && INDEX_DIR=/srv/geo-index PORT=8080 HOST=0.0.0.0 pnpm exec tsx src/index.ts
+```
+
+### Other targets
+
+```bash
+make test           # Go + TypeScript suites (44 TS tests, needs a built index)
+make bench          # query latency percentiles
+make verify         # report real OSM tag distributions in an extract
+make fold-vectors   # regenerate the Go->TS normalization fixtures
+make clean          # remove build/ (keeps the downloaded extracts)
+```
+
+### Troubleshooting
+
+- **`pnpm install` fails against a private registry.** `server/.npmrc` pins
+  `registry.npmjs.org`; if a global `~/.npmrc` still wins, run
+  `pnpm install --registry=https://registry.npmjs.org/`.
+- **`index artifact version N is not supported`.** The artifact predates the
+  server. Rerun `make index`.
+- **`missing extract for cz`.** Run `make fetch` first, or pass the `COUNTRIES`
+  you actually downloaded.
+- **Tests skip with "against the built index".** They need `build/index/`;
+  run `make index`. The folding contract tests run regardless.
 
 ## The endpoint
 
@@ -58,17 +160,17 @@ dialect.
   "query": { "type": "forward", "q": "Prazska 248/39" },
   "features": [{
     "type": "Feature",
-    "id": "addr:3106418",
+    "id": "addr:857595",
     "place_type": ["address"],
     "text": "Pražská 248/39",
     "place_name": "Pražská 248/39, Olomouc, CZ",
-    "center": [17.2232, 49.6015],
-    "geometry": { "type": "Point", "coordinates": [17.2232, 49.6015] },
+    "center": [17.2232302, 49.6014881],
+    "geometry": { "type": "Point", "coordinates": [17.2232302, 49.6014881] },
     "properties": {
       "layer": "address", "name": "Pražská", "country": "cz",
       "locality": "Olomouc", "house_number": "248/39"
     },
-    "relevance": 74.0161
+    "relevance": 222.0482
   }],
   "attribution": "© OpenStreetMap contributors (ODbL)"
 }
@@ -88,12 +190,12 @@ Query latency, 16-core M-series laptop, measured by `make bench`:
 
 | query | p50 | p95 | p99 |
 |---|---|---|---|
-| exact city name | 0.155 ms | 0.256 ms | 0.333 ms |
-| 3-char autocomplete prefix | 0.404 ms | 0.593 ms | 0.672 ms |
-| street + house number | 0.014 ms | 0.021 ms | 0.026 ms |
-| two-token street + number | 0.368 ms | 0.470 ms | 0.519 ms |
-| reverse, dense area, k=5 | 0.006 ms | 0.016 ms | 0.028 ms |
-| reverse, sparse (~5 km) | 0.008 ms | 0.133 ms | 0.349 ms |
+| exact city name | 0.156 ms | 0.260 ms | 0.363 ms |
+| 3-char autocomplete prefix | 0.423 ms | 0.616 ms | 0.738 ms |
+| street + house number | 0.014 ms | 0.023 ms | 0.028 ms |
+| two-token street + number | 0.376 ms | 0.482 ms | 0.566 ms |
+| reverse, dense area, k=5 | 0.005 ms | 0.015 ms | 0.028 ms |
+| reverse, sparse (~5 km) | 0.008 ms | 0.135 ms | 0.308 ms |
 
 One case is much slower and is called out under Future improvements: a reverse
 query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
@@ -284,15 +386,27 @@ The rerank adds two things the coarse pass cannot afford:
   `Nová Pražská` and `Pražská brána`, and the street the user meant is lost among
   its longer namesakes. Coverage is `min(queryTokens, nameTokens) / nameTokens`,
   squared.
-- **House-number resolution.** An anchor that actually has number 248 is boosted
-  6x over one that merely shares the street name. This has to happen before
-  truncating to `limit`, because the right street can sit well down the coarse
-  ranking — that was the bug that made `Pražská 248/39` return streets instead of
-  the address.
+- **House-number resolution.** An anchor that actually has the requested number
+  is boosted 6x over one that merely shares the street name, and 18x when the
+  written number matches exactly rather than just numerically. Czech addresses
+  carry two numbers, so `248/39` matches dozens of streets numerically but
+  usually only one exactly — and that one should come first. Resolution has to
+  happen before truncating to `limit`, because the right street can sit well
+  down the coarse ranking; that was the bug that made `Pražská 248/39` return
+  streets instead of the address.
 
-An exact term match on the final token also beats a mere prefix hit (1.6x), so
-`Praha` outranks `Prahatice` — which is a real OSM name variant, not a typo of
-mine.
+**Completeness on the final token** is the other load-bearing piece. IDF alone
+makes a rare term beat a common one by ~3x, which swamps any flat exact-match
+bonus: `prahatice` (1 posting, a real OSM name variant) scored above `praha`
+(3,665 postings) and the top hit for "Praha" was Prachatice. Prefix expansion is
+a fallback for autocomplete, not an equal-weight alternative to matching what
+was typed, so evidence is discounted by `(typed length / term length)²` and an
+exact term match takes a further 1.6x.
+
+This one is worth dwelling on: the bug was invisible on the cz+pl index and only
+appeared on a cz-only build, because the IDF numbers happened to fall the other
+way. There is a regression test asserting the invariant — an exact name beats a
+longer prefix sibling — rather than one index's happened-to-work ordering.
 
 ### Reverse geocoding
 

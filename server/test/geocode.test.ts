@@ -130,6 +130,24 @@ maybe('against the built index', () => {
       expect(top('Gdansk')?.name).toBe('Gdańsk');
     });
 
+    /**
+     * Regression: an exact name match must beat a longer term that merely
+     * shares its prefix.
+     *
+     * IDF alone ranks a rare term far above a common one, so "praha" (3,665
+     * postings) lost to "prahatice" (1 posting, a real OSM name variant) and
+     * the top hit for "Praha" was Prachatice. The bug was invisible on the
+     * cz+pl index and only appeared on a cz-only build, so this asserts the
+     * invariant rather than one index's happened-to-work ordering.
+     */
+    it('ranks an exact name above a longer prefix sibling', () => {
+      for (const city of ['Praha', 'Plzen', 'Brno', 'Ostrava', 'Liberec', 'Olomouc']) {
+        const got = top(city)?.name ?? '';
+        const asciiFolded = got.normalize('NFD').replace(/\p{Mn}/gu, '').toLowerCase();
+        expect(asciiFolded, `query "${city}" returned "${got}"`).toBe(city.toLowerCase());
+      }
+    });
+
     it('supports prefix autocomplete on the final token', () => {
       expect(top('Warsz')?.name).toBe('Warszawa');
       expect(top('Krak')?.name).toBe('Kraków');
@@ -201,8 +219,9 @@ maybe('against the built index', () => {
         const num = a.strings.get(a.addrNum[i]!);
         const found = findHouseNumber(a, anchorID, num);
         expect(found).not.toBeNull();
+        expect(found!.exact).toBe(true);
         // The match must carry the same leading integer.
-        expect(a.addrSortKey[found!]).toBe(a.addrSortKey[i]);
+        expect(a.addrSortKey[found!.index]).toBe(a.addrSortKey[i]);
       }
     });
 

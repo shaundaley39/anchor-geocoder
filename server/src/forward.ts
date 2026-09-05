@@ -115,13 +115,26 @@ function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): M
   const prefixHits = new Map<number, number>();
   let scanned = 0;
   for (let t = lo; t < hi; t++) {
+    const term = a.terms.get(t);
     const p = postings(a, t);
-    const w = Math.log(1 + nAnchors / (1 + p.length));
-    // An exact hit on the final token is worth more than a mere prefix hit,
-    // so "Praha" outranks "Prahaville" when the user typed "Praha".
-    const exact = a.terms.get(t) === last ? 1.6 : 1;
+    const idf = Math.log(1 + nAnchors / (1 + p.length));
+
+    // Completeness: how much of the matched term the user actually typed.
+    //
+    // This is load-bearing, not a tweak. IDF alone makes a rare term beat a
+    // common one by ~3x, which swamps any flat exact-match bonus: typing
+    // "Praha" scored `prahatice` (1 posting, IDF 11.3) above `praha` (3,665
+    // postings, IDF 3.8) and returned Prachatice as the top hit for Praha.
+    // Prefix expansion is a fallback for autocomplete, not an equal-weight
+    // alternative to matching what was typed, so evidence is discounted by how
+    // much of the term is the user's own input. Squared, so a term twice as
+    // long as the query keeps a quarter of its weight.
+    const completeness = last.length / term.length;
+    const exact = term === last ? 1.6 : 1;
+    const w = idf * completeness * completeness * exact;
+
     for (const anchor of p) {
-      prefixHits.set(anchor, Math.max(prefixHits.get(anchor) ?? 0, w * exact));
+      prefixHits.set(anchor, Math.max(prefixHits.get(anchor) ?? 0, w));
     }
     scanned += p.length;
     // A one-letter prefix can span a large slice of the index. Cap the work;
@@ -162,6 +175,13 @@ export function haversineMetres(lat1: number, lon1: number, lat2: number, lon2: 
   return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(s));
 }
 
+/** Where a house number was found, and how good the match was. */
+export interface HouseNumberMatch {
+  index: number;
+  /** True when the stored number folds identically to what the user typed. */
+  exact: boolean;
+}
+
 /**
  * Finds a house number inside an anchor's address run.
  *
@@ -170,10 +190,14 @@ export function haversineMetres(lat1: number, lon1: number, lat2: number, lon2: 
  * exact string match wins; failing that the numeric match is accepted, so
  * "Pražská 248" finds the address written "248/39" — Czech addresses carry two
  * numbers and users type either.
+ *
+ * The caller needs to know which kind of match it got. Typing the full Czech
+ * "248/39" should surface the one street that actually has that composed
+ * number, not the dozens that merely have a 248.
  */
 export function findHouseNumber(
   a: Artifact, anchorID: number, wanted: string,
-): number | null {
+): HouseNumberMatch | null {
   const start = a.anchorAddrStart[anchorID]!;
   const count = a.anchorAddrCount[anchorID]!;
   if (count === 0) return null;
@@ -194,10 +218,10 @@ export function findHouseNumber(
   let numericMatch: number | null = null;
   for (let i = lo; i < start + count && a.addrSortKey[i] === numeric; i++) {
     const s = a.strings.get(a.addrNum[i]!);
-    if (foldTokens(s).join(' ') === wantedFold) return i; // exact
+    if (foldTokens(s).join(' ') === wantedFold) return { index: i, exact: true };
     if (numericMatch === null) numericMatch = i;
   }
-  return numericMatch;
+  return numericMatch === null ? null : { index: numericMatch, exact: false };
 }
 
 function anchorResult(a: Artifact, id: number, score: number): GeocodeResult {
@@ -306,9 +330,17 @@ export function forward(
     // merely shares a name, and it may sit well down the coarse ranking.
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {
-      addrIdx = findHouseNumber(a, id, parsed.houseNumber);
-      if (addrIdx !== null) score *= 6;
-      else score *= 0.4; // the street exists, the number does not
+      const hit = findHouseNumber(a, id, parsed.houseNumber);
+      if (hit === null) {
+        score *= 0.4; // the street exists, the number does not
+      } else {
+        addrIdx = hit.index;
+        // An exact match on the written number is a much stronger signal than
+        // a numeric one. Czech addresses carry two numbers, so "248/39" matches
+        // dozens of streets numerically but usually only one exactly; the one
+        // the user actually described should come first.
+        score *= hit.exact ? 18 : 6;
+      }
     }
 
     if (opts.proximity) {
