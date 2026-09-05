@@ -88,6 +88,19 @@ type Record struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
 
+	// Shape is the feature's outline, flattened as [lat,lon,lat,lon,...].
+	//
+	// Present for area features large enough for their shape to matter, and for
+	// long streets, where it is a set of sampled points along the way rather
+	// than a ring. Reverse geocoding needs it because a click inside a park is
+	// inside it however far away the park's centroid is, and because a
+	// bounding box is a poor stand-in for a diagonal or crescent-shaped
+	// feature — the box filters, the shape decides.
+	Shape []float64 `json:"shape,omitempty"`
+	// Closed distinguishes a ring, which can contain a point, from a set of
+	// sampled points along a line, which cannot.
+	Closed bool `json:"closed,omitempty"`
+
 	// --- ranking inputs -----------------------------------------------------
 
 	PlaceType  string `json:"place_type,omitempty"` // city|town|village|hamlet|suburb...

@@ -5,6 +5,19 @@ import (
 	"math"
 
 	"github.com/paulmach/osm"
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
+)
+
+const (
+	// Below this size a feature's centroid is already within the accuracy of a
+	// map click, so its outline cannot change a ranking.
+	minRingDiagonalM = 60
+	// Ten metres is far finer than anyone clicks, and takes a typical OSM park
+	// from hundreds of vertices to a few dozen.
+	ringToleranceM = 10
+	// A hard ceiling so one coastline or national forest cannot dominate the
+	// geometry blob.
+	maxRingPoints = 48
 )
 
 // scanWays is pass 1. It decodes only ways, selects the ones we want, and
@@ -189,9 +202,25 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, n
 
 		lat, lon := representativePoint(pts, ww.isBuild)
 		poiCat, _ := isPOI(ww.tags)
+
+		// Keep the outline only where it can change an answer. A building is a
+		// few metres across, so its centroid is already inside clicking
+		// tolerance and a ring would cost 32M rings for nothing; a park or a
+		// lake is not.
+		var ring []geom.Point
+		if ww.isBuild && !isAddressed(ww.tags) && len(pts) >= 4 {
+			gp := make([]geom.Point, len(pts))
+			for i, p := range pts {
+				gp[i] = geom.Point{Lat: p[0], Lon: p[1]}
+			}
+			if geom.Bounds(gp).DiagonalMetres() >= minRingDiagonalM {
+				ring = geom.Simplify(gp, ringToleranceM, maxRingPoints)
+			}
+		}
+
 		if err := e.Emit(RawFeature{
 			OSMType: 'w', OSMID: ww.id, Tags: ww.tags,
-			Lat: lat, Lon: lon, Category: poiCat,
+			Lat: lat, Lon: lon, Category: poiCat, Ring: ring,
 		}); err != nil {
 			return err
 		}

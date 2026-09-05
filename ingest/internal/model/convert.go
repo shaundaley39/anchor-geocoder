@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
+
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
 )
 
@@ -102,7 +104,15 @@ func collectAltNames(t map[string]string, isPOI bool) []string {
 // address layer — and with it from reverse geocoding, which only searches
 // addresses.
 func FromTags(osmType byte, osmID int64, category string, t map[string]string,
-	lat, lon float64, country string) []*Record {
+	lat, lon float64, country string, ring []geom.Point) []*Record {
+
+	var shape []float64
+	if len(ring) >= 4 {
+		shape = make([]float64, 0, 2*len(ring))
+		for _, p := range ring {
+			shape = append(shape, p.Lat, p.Lon)
+		}
+	}
 
 	base := "osm:" + string(osmType) + strconv.FormatInt(osmID, 10)
 	plainAlts := collectAltNames(t, false)
@@ -112,6 +122,7 @@ func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 		return &Record{
 			ID: base + idSuffix, Lat: lat, Lon: lon,
 			Country: country, AltNames: alts,
+			Shape: shape, Closed: len(shape) > 0,
 		}
 	}
 

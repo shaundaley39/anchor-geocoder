@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/pbf"
@@ -144,7 +145,30 @@ func (s *streetAgg) finalize() {
 		}
 	}
 	s.rec.Lat, s.rec.Lon = best[0], best[1]
+
+	// A street is linear, so one representative point misdescribes it: a click
+	// at one end of a 2km road measures to its middle. Keep the sampled segment
+	// midpoints as an open shape — an unordered point set is enough, since only
+	// the minimum distance to any of them is ever needed.
+	if len(s.samples) > 1 {
+		pts := make([]geom.Point, len(s.samples))
+		for i, p := range s.samples {
+			pts[i] = geom.Point{Lat: p[0], Lon: p[1]}
+		}
+		if geom.Bounds(pts).DiagonalMetres() >= minStreetShapeM {
+			s.rec.Shape = make([]float64, 0, 2*len(pts))
+			for _, p := range pts {
+				s.rec.Shape = append(s.rec.Shape, p.Lat, p.Lon)
+			}
+			s.rec.Closed = false
+		}
+	}
 }
+
+// minStreetShapeM is the length below which a street's single representative
+// point is already within clicking tolerance. Most residential streets fall
+// under it, which keeps the geometry blob to the roads where it matters.
+const minStreetShapeM = 150
 
 type manifest struct {
 	BuiltAt   time.Time         `json:"built_at"`
@@ -213,7 +237,7 @@ func run(sources []source, outDir string) error {
 			seenOSM[key] = struct{}{}
 
 			for _, r := range model.FromTags(rf.OSMType, rf.OSMID, rf.Category,
-				rf.Tags, rf.Lat, rf.Lon, src.country) {
+				rf.Tags, rf.Lat, rf.Lon, src.country, rf.Ring) {
 				if err := route(r, src.country); err != nil {
 					return err
 				}

@@ -76,6 +76,16 @@ type Anchor struct {
 	// from a placeholder synthesised because an address referenced a name that
 	// was never mapped in its own right.
 	Real bool
+
+	// BBox in fixed point. Degenerate to the representative point when the
+	// feature has no extent, so every anchor can live in one spatial index.
+	MinLat, MinLon, MaxLat, MaxLon int32
+	// Shape is the simplified outline as fixed-point lat/lon pairs, empty when
+	// the feature is small enough that its representative point suffices.
+	Shape []int32
+	// Closed marks a ring, which can contain a click, as against a street's
+	// sampled points, which can only be measured to.
+	Closed bool
 }
 
 // Address is one address point, stored in a run belonging to a single anchor.
@@ -264,6 +274,13 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	lon := make([]int32, n)
 	flags := make([]byte, n)
 	country := make([]byte, n)
+	minLat := make([]int32, n)
+	minLon := make([]int32, n)
+	maxLat := make([]int32, n)
+	maxLon := make([]int32, n)
+	geomOff := make([]uint32, n+1)
+	closed := make([]byte, n)
+	var geomFlat []int32
 	score := make([]float32, n)
 	cat := make([]uint32, n)
 	alt := make([]uint32, n)
@@ -278,6 +295,22 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		score[i] = a.Score
 		cat[i] = a.CatID
 		alt[i] = a.AltID
+
+		// An anchor with no shape still gets a box: a degenerate one at its own
+		// point. That lets the reverse path put every anchor in one index and
+		// treat "inside the box" uniformly, rather than branching per feature.
+		if a.MinLat == 0 && a.MaxLat == 0 {
+			a.MinLat, a.MaxLat = a.Lat, a.Lat
+			a.MinLon, a.MaxLon = a.Lon, a.Lon
+		}
+		minLat[i], minLon[i] = a.MinLat, a.MinLon
+		maxLat[i], maxLon[i] = a.MaxLat, a.MaxLon
+
+		geomOff[i] = uint32(len(geomFlat) / 2)
+		geomFlat = append(geomFlat, a.Shape...)
+		if a.Closed {
+			closed[i] = 1
+		}
 		start[i], count[i] = a.AddrStart, a.AddrCount
 	}
 	w := map[string]any{
@@ -285,9 +318,19 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		"anchor_lat": lat, "anchor_lon": lon,
 		"anchor_flags": flags, "anchor_country": country,
 		"anchor_score": score, "anchor_cat": cat,
-		"anchor_alt":        alt,
+		"anchor_alt":    alt,
+		"anchor_minlat": minLat, "anchor_minlon": minLon,
+		"anchor_maxlat": maxLat, "anchor_maxlon": maxLon,
 		"anchor_addr_start": start, "anchor_addr_count": count,
+		"geom": geomFlat, "geom_off": geomOff, "geom_closed": closed,
 	}
+	man.NumShapes = 0
+	for i := 0; i < n; i++ {
+		if geomOff[i+1] > geomOff[i] {
+			man.NumShapes++
+		}
+	}
+	man.NumVertices = len(geomFlat) / 2
 	return writeAll(dir, w, man)
 }
 
@@ -463,7 +506,7 @@ func (t *StringTable) Get(id uint32) string {
 // NewSynthetic appends an anchor that has no corresponding OSM street or place
 // record, for a name referenced only by address points.
 func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
-	st *StringTable, tokens []string) uint32 {
+	st *StringTable, tokens []string, lat, lon int32) uint32 {
 	id := uint32(len(b.Anchors))
 	b.Anchors = append(b.Anchors, Anchor{
 		NameID:  st.Intern(name),
@@ -472,6 +515,7 @@ func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 		Layer:   layer,
 		Score:   1,
 		Tokens:  tokens,
+		MinLat:  lat, MaxLat: lat, MinLon: lon, MaxLon: lon,
 	})
 	return id
 }

@@ -40,6 +40,7 @@ import (
 
 	"github.com/paulmach/osm"
 	"github.com/paulmach/osm/osmpbf"
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 )
 
 // coord is a packed node location. Fixed-point at 1e7 keeps the retained set to
@@ -80,6 +81,11 @@ type RawFeature struct {
 	// see poi.go. Computed during extraction so the converter does not repeat
 	// the classification.
 	Category string
+	// Ring is the simplified outline, present only for area features big
+	// enough for their shape to matter. Nil for nodes, for buildings, and for
+	// anything under the size threshold, where the representative point is
+	// already within clicking tolerance.
+	Ring []geom.Point
 }
 
 func (e *Extractor) log(format string, args ...any) {

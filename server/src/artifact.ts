@@ -19,7 +19,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 4;
+export const SUPPORTED_VERSION = 5;
 
 export interface Manifest {
   version: number;
@@ -30,6 +30,8 @@ export interface Manifest {
   num_addresses: number;
   num_terms: number;
   num_pois: number;
+  num_shapes: number;
+  num_vertices: number;
   num_postings: number;
   country_ids: Record<string, number>;
   counts: Record<string, number>;
@@ -128,6 +130,26 @@ export interface Artifact {
   anchorCat: Uint32Array;
   /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
   anchorAlt: Uint32Array;
+
+  /**
+   * Bounding box per anchor, degenerate to the representative point when the
+   * feature has no extent. Every anchor has one, so the reverse path can put
+   * them all in a single index.
+   */
+  anchorMinLat: Int32Array;
+  anchorMinLon: Int32Array;
+  anchorMaxLat: Int32Array;
+  anchorMaxLon: Int32Array;
+
+  /**
+   * Simplified outlines: `geom` holds fixed-point lat/lon pairs for every
+   * shape concatenated, `geomOff` slices it per anchor (vertex indices, not
+   * bytes), `geomClosed` marks a ring that can contain a point as against a
+   * street's sampled points, which can only be measured to.
+   */
+  geom: Int32Array;
+  geomOff: Uint32Array;
+  geomClosed: Uint8Array;
   anchorAddrStart: Uint32Array;
   anchorAddrCount: Uint32Array;
 
@@ -182,7 +204,9 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   const [
     stringsBin, stringsIdx, termsBin, termsIdx,
     postOff, post,
-    aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt, aStart, aCount,
+    aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt,
+    aMinLat, aMinLon, aMaxLat, aMaxLon, gGeom, gOff, gClosed,
+    aStart, aCount,
     dNum, dLat, dLon, dSort,
   ] = await Promise.all([
     view(dir, 'strings.bin'), view(dir, 'strings.idx'),
@@ -193,6 +217,9 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     view(dir, 'anchor_flags.bin'), view(dir, 'anchor_country.bin'),
     view(dir, 'anchor_score.bin'),
     view(dir, 'anchor_cat.bin'), view(dir, 'anchor_alt.bin'),
+    view(dir, 'anchor_minlat.bin'), view(dir, 'anchor_minlon.bin'),
+    view(dir, 'anchor_maxlat.bin'), view(dir, 'anchor_maxlon.bin'),
+    view(dir, 'geom.bin'), view(dir, 'geom_off.bin'), view(dir, 'geom_closed.bin'),
     view(dir, 'anchor_addr_start.bin'), view(dir, 'anchor_addr_count.bin'),
     view(dir, 'addr_num.bin'), view(dir, 'addr_lat.bin'), view(dir, 'addr_lon.bin'),
     view(dir, 'addr_sortkey.bin'),
@@ -216,6 +243,13 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     anchorScore: asF32(aScore),
     anchorCat: asU32(aCat),
     anchorAlt: asU32(aAlt),
+    anchorMinLat: asI32(aMinLat),
+    anchorMinLon: asI32(aMinLon),
+    anchorMaxLat: asI32(aMaxLat),
+    anchorMaxLon: asI32(aMaxLon),
+    geom: asI32(gGeom),
+    geomOff: asU32(gOff),
+    geomClosed: new Uint8Array(gClosed.buffer, gClosed.byteOffset, gClosed.byteLength),
     anchorAddrStart: asU32(aStart),
     anchorAddrCount: asU32(aCount),
     addrNum: asU32(dNum),

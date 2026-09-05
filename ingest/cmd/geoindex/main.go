@@ -200,6 +200,7 @@ func addAnchor(b *index.Builder, r *model.Record) {
 		}
 	}
 	a.Real = true
+	setGeometry(a, r)
 	a.NameID = b.Strings.Intern(name)
 	a.LocalID = b.Strings.Intern(r.City)
 	a.Lat, a.Lon = coord(r.Lat), coord(r.Lon)
@@ -272,6 +273,29 @@ func poiScore(r *model.Record) float32 {
 // ordinary street is 1. Population dominates when it is tagged; the settlement
 // class is the fallback, and both are compressed logarithmically so Warsaw does
 // not outscore every street in the country by six orders of magnitude.
+// setGeometry copies a record's outline and bounding box onto its anchor,
+// converting to the fixed point the artifact stores.
+func setGeometry(a *index.Anchor, r *model.Record) {
+	a.Closed = r.Closed
+	if len(r.Shape) < 4 {
+		a.Shape = nil
+		a.MinLat, a.MaxLat = coord(r.Lat), coord(r.Lat)
+		a.MinLon, a.MaxLon = coord(r.Lon), coord(r.Lon)
+		return
+	}
+	a.Shape = make([]int32, len(r.Shape))
+	minLat, minLon := math.Inf(1), math.Inf(1)
+	maxLat, maxLon := math.Inf(-1), math.Inf(-1)
+	for i := 0; i < len(r.Shape); i += 2 {
+		lat, lon := r.Shape[i], r.Shape[i+1]
+		a.Shape[i], a.Shape[i+1] = coord(lat), coord(lon)
+		minLat, maxLat = math.Min(minLat, lat), math.Max(maxLat, lat)
+		minLon, maxLon = math.Min(minLon, lon), math.Max(maxLon, lon)
+	}
+	a.MinLat, a.MinLon = coord(minLat), coord(minLon)
+	a.MaxLat, a.MaxLon = coord(maxLat), coord(maxLon)
+}
+
 func placeScore(r *model.Record) float32 {
 	if r.Layer != model.LayerPlace {
 		return 1
@@ -322,7 +346,8 @@ func addAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			b.Counts["address_bound_to_place"]++
 		} else {
 			id = b.NewSynthetic(anchorName, r.City, cc, index.LayerPlace,
-				b.Strings, append(norm.Tokens(anchorName), norm.Tokens(r.City)...))
+				b.Strings, append(norm.Tokens(anchorName), norm.Tokens(r.City)...),
+				coord(r.Lat), coord(r.Lon))
 			b.Counts["anchor_synthetic_place"]++
 		}
 	} else {

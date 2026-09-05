@@ -205,6 +205,10 @@ curl 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=3'
 | `proximity` | forward | `lat,lon` to bias ranking |
 | `radius` | reverse | metres, default 5000, capped at 50000 |
 
+Reverse results carry `distance_m`, and a feature containing the query point
+also carries `containing: true` and `area_m2`. Features with real extent carry a
+GeoJSON `bbox` so a UI can zoom to them rather than to a pinpoint.
+
 Results span four layers, returned mixed and ranked: `address`, `poi`,
 `street`, `place`. POI results carry a `category` property with the OSM
 classification (`railway=station`, `amenity=restaurant`, `historic=castle`).
@@ -246,8 +250,8 @@ Built from the 2026-08-31 Geofabrik extracts.
 |---|---|---|
 | fetch | — | 14 GB of extracts, md5-verified |
 | extract | 24m09s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
-| index | 7m26s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms — **1.6 GB**. Peak 12 GB RSS |
-| boot | **7.1 s** | 84 ms to load the artifact, 7.0 s to build the k-d tree over 61M points — **2.6 GB RSS** |
+| index | 7m41s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms, 1,466,886 shapes — **1.8 GB**. Peak 13 GB RSS |
+| boot | **9.6 s** | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — **3.1 GB RSS** |
 
 Per country, as indexed:
 
@@ -271,11 +275,13 @@ Query latency, 16-core M-series laptop, measured by `make bench`:
 | 3-char autocomplete prefix | 1.276 ms | 1.747 ms | 1.912 ms |
 | street + house number | 0.095 ms | 0.118 ms | 0.213 ms |
 | two-token street + number | 0.933 ms | 1.229 ms | 1.387 ms |
-| reverse, dense area, k=5 | 0.010 ms | 0.047 ms | 0.104 ms |
-| reverse, sparse (~5 km) | 0.013 ms | 0.312 ms | 0.907 ms |
+| reverse, dense area, k=5 | 0.020 ms | 0.078 ms | 0.178 ms |
+| reverse, sparse (~5 km) | 0.021 ms | 0.380 ms | 1.219 ms |
 
 Latency is essentially flat against a 5x larger corpus: candidate lists grew,
 but the per-layer cut bounds the reranking work regardless of index size.
+Reverse doubled from 10 to 20 microseconds when containment and exact geometry
+were added, which is the entire cost of the refine step.
 
 One case is much slower and is called out under Future improvements: a reverse
 query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
@@ -538,21 +544,80 @@ appeared on a cz-only build, because the IDF numbers happened to fall the other
 way. There is a regression test asserting the invariant — an exact name beats a
 longer prefix sibling — rather than one index's happened-to-work ordering.
 
-### Reverse geocoding
+### Reverse geocoding is two tiers, and keeps real geometry
 
-A static k-d tree (`kdbush`) over all 11.6M address points, built at boot in
-1.3 s. It indexes flat `Int32Array` coordinates — the raw fixed-point values, so
-no conversion happens during the build and precision is exact — and stores its
-own index the same way, which is why 11.6M points cost ~140 MB and produce no GC
-pressure.
+A click asks "what is here", and the honest answer is a short ranked list rather
+than one feature: the building the user meant may not be mapped, or may be the
+second-nearest thing. So results come back in two tiers.
 
-The search grows its radius (150 m, then x4 each round) rather than using one
-fixed box: most queries land in a populated area and are satisfied immediately,
-while a query in a forest widens until it finds something. Because the tree is
-built in raw degrees, where a degree of longitude is ~0.64x a degree of latitude
-at Polish latitudes, the box is widened in longitude to guarantee it encloses
-the true circle, and corners falling outside it are discarded so the radius
-means what it says. Results are ranked by real great-circle distance.
+1. **Features whose outline contains the click, smallest area first.** If you
+   are standing inside something, that is where you are; and of two nested
+   regions the smaller is the more specific answer.
+2. **Everything else, by distance.**
+
+Containment beats proximity outright — a restaurant 25 m away is somewhere the
+user is *not* — but sits directly above it, ahead of anything further off. The
+containing tier is capped at four so a stack of nested regions cannot crowd the
+nearby points off a short list.
+
+```
+tap inside the Englischer Garten, München
+  IN Englischer Garten                [leisure=park]          0m   347.1ha
+     Regenüberlaufbecken Gyßlingstr.  [man_made=reservoir]  133.6m
+     Gyßlingstraße, München           [street]              142.6m
+     Gyßlingstraße 23, München        [address]             192.8m
+
+tap the Siegessäule inside the Tiergarten, Berlin
+  IN Siegessäule                      [tourism=attraction]     0m     0.2ha
+     Viktoria                         [tourism=artwork]       1.1m
+     Großer Stern 1, Berlin           [address]               1.2m
+```
+
+**Filter and refine.** The two tiers ask different questions, so there are two
+indexes.
+
+A k-d tree over every point — 61M addresses *plus* all 10.2M anchors — answers
+"what is near". Anchors have to be in it: the first version indexed only
+addresses, so a click could never return a park, a station or a street, only the
+nearest doorway. That is why all three of the first test taps came back as house
+numbers.
+
+But a proximity search cannot answer "what am I inside". The Englischer Garten
+is 3.7 km long, so a click at its north end sits ~2 km from the stored centroid
+and no sane radius would reach it. Containment therefore gets its own index: a
+uniform grid over anchor bounding boxes, each feature registered in every cell
+its box touches. A click looks up one cell to get candidates — **the filter** —
+and each is then tested against its actual simplified outline — **the refine**.
+
+The box alone will not do. A diagonal or crescent feature fills a fraction of
+it, so "inside the box" is not "inside the park"; there is a test asserting that
+the notch of an L-shaped ring reads as outside even though its bbox accepts it.
+
+**Geometry is affordable because most features opt out.** Only shapes that can
+change an answer are stored:
+
+| | count | shape? |
+|---|---|---|
+| address ways (building footprints) | 32,430,081 | no — metres across, the centroid is inside clicking tolerance |
+| POI and place ways over 60 m | 926,901 + 8,472 | **ring**, Douglas–Peucker at 10 m, capped at 48 vertices |
+| streets over 150 m | — | **sampled points** along the way; a ring makes no sense for a line |
+
+That comes to **1,466,886 shapes and 9,621,818 vertices — a 73 MB `geom.bin`.**
+Rings are stored as fixed-point pairs in one blob with a per-anchor offset
+array, the same shape as the string table.
+
+Distance is measured to the outline, not the representative point, so a click at
+one end of a 2 km street reads as metres from the street rather than a kilometre
+from its midpoint. Point-in-polygon runs on the raw integers — ray casting is
+sign-preserving under a uniform scale, so converting to degrees first would cost
+precision and time for nothing.
+
+The proximity search grows its radius (150 m, then ×4) rather than using one
+fixed box: most clicks land somewhere populated and are satisfied immediately,
+while one in a forest widens until it finds something. Because the tree is built
+in raw degrees, where a degree of longitude is ~0.64× a degree of latitude at
+these latitudes, the box is widened in longitude to enclose the true circle and
+the corners falling outside it are discarded, so the radius means what it says.
 
 ### A place has more than one name
 
@@ -750,9 +815,14 @@ expected bounding box (0).
   true k-nearest walk (`geokdbush`'s `around()`), which descends the tree in
   distance order and stops at k instead of scanning a box; the default 5 km cap
   keeps this off the common path for now.
-- **Streets reduce to a single representative point**, so reverse geocoding
-  cannot say "the even-numbered side of the street", and a long street's centre
-  is only approximately where you would point at it.
+- **Settlements have no extent.** OSM maps a city as a `place=city` *node* and
+  its boundary as a relation, so Berlin returns a point and no `bbox`. The API
+  omits the field rather than faking one from a radius. Relation support would
+  fix it.
+- **Buildings have no outline.** 32.4M footprints would cost more than they are
+  worth when a centroid is already within clicking tolerance, so a click inside
+  a building resolves to its address point a few metres away rather than to the
+  building as a containing region.
 - **A few Prague streets take a quarter name** ("Modřany") rather than "Praha",
   where the quarter's catchment wins locally.
 - **8,344 place records still share an anchor key** with a same-named settlement
@@ -767,7 +837,11 @@ expected bounding box (0).
   (`Plzen` → `Plzeň`) is *not* fuzzy matching — both sides pass through the same
   deterministic normalizer, so it is an exact match on a folded form. Tolerating
   a genuine misspelling needs edit distance; see Future improvements.
-- **OSM relations are skipped**, so multipolygon-mapped features are missing.
+- **OSM relations are skipped**, which now costs more than it did: large parks,
+  lakes, forests and city boundaries are disproportionately multipolygons, and
+  those are exactly the features the containment tier is for. The Bodensee has
+  no ring for this reason, so a click on open water falls through to the
+  proximity tier. Multipolygon-mapped features are missing entirely.
   Measured on Czechia and Poland: 36,703 named POI-tagged relations against
   663,724 indexed POIs, so 5.2% by count — but they skew large. Prague's
   Letiště Václava Havla is a multipolygon and is absent, while Warsaw Chopin and

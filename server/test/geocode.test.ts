@@ -396,17 +396,77 @@ maybe('against the built index', () => {
       expect(rs[0]!.distance).toBeLessThan(1);
     });
 
-    it('orders results by increasing distance', () => {
-      const rs = reverse(a, rev, 50.0813, 14.4262, { limit: 10 });
+    it('orders the proximity tier by increasing distance', () => {
+      const rs = reverse(a, rev, 50.0813, 14.4262, { limit: 10 })
+        .filter((r) => !r.containing);
       expect(rs.length).toBeGreaterThan(1);
       for (let i = 1; i < rs.length; i++) {
         expect(rs[i]!.distance!).toBeGreaterThanOrEqual(rs[i - 1]!.distance!);
       }
     });
 
-    it('agrees with brute force on the nearest point', () => {
-      // Brute-forcing 11.6M points is slow but this is the only way to know the
-      // k-d tree and the box-widening logic are actually correct.
+    /**
+     * The two-tier contract: a feature whose outline contains the click ranks
+     * above everything nearby, because a restaurant 25m away is somewhere the
+     * user is *not*. Before shapes existed, a click in the middle of the
+     * Englischer Garten returned a street address 193m away and the park —
+     * which is 3.7km long, so its centroid is far from most of it — could not
+     * be returned at all.
+     */
+    it('puts a containing region above nearby points', () => {
+      const rs = reverse(a, rev, 48.1642, 11.6050, { limit: 5 });
+      expect(rs[0]!.containing).toBe(true);
+      expect(rs[0]!.name).toBe('Englischer Garten');
+      expect(rs[0]!.distance).toBe(0);
+      // ...and the nearby things still follow, rather than being crowded out.
+      expect(rs.slice(1).some((r) => r.layer === 'address')).toBe(true);
+    });
+
+    it('orders nested containing regions smallest first', () => {
+      // Tapping the Siegessäule inside the Tiergarten: the monument is the more
+      // specific answer, the park the broader context.
+      const rs = reverse(a, rev, 52.5145, 13.3501, { limit: 6 });
+      const inside = rs.filter((r) => r.containing);
+      expect(inside.length).toBeGreaterThan(0);
+      for (let i = 1; i < inside.length; i++) {
+        expect(inside[i]!.areaM2!).toBeGreaterThanOrEqual(inside[i - 1]!.areaM2!);
+      }
+      // Every containing region must precede every non-containing one.
+      const firstOutside = rs.findIndex((r) => !r.containing);
+      if (firstOutside >= 0) {
+        expect(rs.slice(firstOutside).every((r) => !r.containing)).toBe(true);
+      }
+    });
+
+    it('caps the containing tier so nearby points are never crowded out', () => {
+      const rs = reverse(a, rev, 48.2082, 16.3738, { limit: 8 });
+      expect(rs.filter((r) => r.containing).length).toBeLessThanOrEqual(4);
+    });
+
+    it('returns anchors, not just addresses', () => {
+      // The first version indexed only address points for reverse, so a click
+      // could never resolve to a park, a station or a street.
+      const layers = new Set(
+        reverse(a, rev, 48.2082, 16.3738, { limit: 12 }).map((r) => r.layer),
+      );
+      expect(layers.size).toBeGreaterThan(1);
+    });
+
+    it('measures a long street to the street, not to its midpoint', () => {
+      // Unter den Linden is ~1.5km; a click at its east end should read as
+      // metres from the street, not ~750m from its representative point.
+      const rs = reverse(a, rev, 52.5170, 13.3990, { limit: 20 });
+      const street = rs.find((r) => r.layer === 'street' && r.name === 'Unter den Linden');
+      if (street) expect(street.distance!).toBeLessThan(150);
+    });
+
+    /**
+     * Brute-forcing 61M points is slow, but it is the only way to know the k-d
+     * tree and the box widening are correct. Compared against the nearest
+     * *address* in the result rather than the first result overall, because a
+     * containing region legitimately outranks it at distance zero.
+     */
+    it('agrees with brute force on the nearest address', () => {
       const qLat = 50.0813, qLon = 14.4262;
       let bestI = -1, bestD = Infinity;
       const n = a.manifest.num_addresses;
@@ -417,9 +477,11 @@ maybe('against the built index', () => {
         if (d < bestD) { bestD = d; bestI = i; }
       }
       const exact = haversineMetres(qLat, qLon, toDeg(a.addrLat[bestI]!), toDeg(a.addrLon[bestI]!));
-      const got = reverse(a, rev, qLat, qLon, { limit: 1 })[0]!;
-      expect(got.distance!).toBeCloseTo(exact, 0);
-    }, 60_000);
+      const nearestAddress = reverse(a, rev, qLat, qLon, { limit: 20 })
+        .find((r) => r.layer === 'address');
+      expect(nearestAddress).toBeDefined();
+      expect(nearestAddress!.distance!).toBeCloseTo(exact, 0);
+    }, 120_000);
 
     it('respects the radius cap', () => {
       const rs = reverse(a, rev, 50.0813, 14.4262, { limit: 10, radius: 50 });
@@ -434,6 +496,34 @@ maybe('against the built index', () => {
 
   describe('HTTP endpoint', () => {
     const get = (url: string) => app.inject({ method: 'GET', url });
+
+    /**
+     * A UI zooming to a result needs its extent, not a point.
+     *
+     * Note which features have one: an area mapped as a way does, a settlement
+     * does not — OSM maps a city as a node and its boundary as a relation, and
+     * relations are not ingested. So `bbox` is present where the data supports
+     * it and absent otherwise, rather than faked from a radius.
+     */
+    it('carries a bbox on results that have extent, for the UI to zoom to', async () => {
+      const body = (await get('/v1/geocode?q=Englischer+Garten&limit=1')).json();
+      const f = body.features[0];
+      expect(f.bbox).toBeDefined();
+      const [minLon, minLat, maxLon, maxLat] = f.bbox;
+      expect(minLon).toBeLessThan(maxLon);
+      expect(minLat).toBeLessThan(maxLat);
+      // The point must lie inside its own box.
+      expect(f.center[0]).toBeGreaterThanOrEqual(minLon);
+      expect(f.center[0]).toBeLessThanOrEqual(maxLon);
+      expect(f.center[1]).toBeGreaterThanOrEqual(minLat);
+      expect(f.center[1]).toBeLessThanOrEqual(maxLat);
+    });
+
+    it('omits bbox rather than faking one for a feature with no extent', async () => {
+      // Berlin is a place=city *node* in OSM; the boundary is a relation.
+      const f = (await get('/v1/geocode?q=Berlin&limit=1')).json().features[0];
+      expect(f.bbox).toBeUndefined();
+    });
 
     it('serves forward geocoding as GeoJSON', async () => {
       const res = await get('/v1/geocode?q=Praha&limit=2');

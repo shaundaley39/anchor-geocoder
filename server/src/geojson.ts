@@ -9,6 +9,8 @@ import type { GeocodeResult } from './forward.js';
 export interface Feature {
   type: 'Feature';
   id: string;
+  /** [minLon, minLat, maxLon, maxLat]; absent for features with no extent. */
+  bbox?: [number, number, number, number];
   place_type: string[];
   text: string;
   place_name: string;
@@ -45,10 +47,18 @@ export function toFeature(r: GeocodeResult): Feature {
   if (r.category !== undefined) props['category'] = r.category;
   if (r.houseNumber !== undefined) props['house_number'] = r.houseNumber;
   if (r.distance !== undefined) props['distance_m'] = r.distance;
+  if (r.containing) {
+    props['containing'] = true;
+    props['area_m2'] = r.areaM2;
+  }
 
   return {
     type: 'Feature',
     id: r.id,
+    // A UI zooming to a result needs its extent, not just a point: fitting the
+    // map to a point for a city-sized answer is wrong. Matches the conventional
+    // response, which carries center and bbox alongside a Point geometry.
+    ...(r.bbox ? { bbox: r.bbox } : {}),
     place_type: [r.layer],
     text: r.houseNumber ? `${r.name} ${r.houseNumber}` : r.name,
     place_name: placeName(r),

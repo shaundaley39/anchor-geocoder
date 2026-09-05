@@ -30,6 +30,12 @@ export interface GeocodeResult {
   score: number;
   /** Metres from the query point; reverse geocoding only. */
   distance?: number;
+  /** True when the query point falls inside this feature's outline. */
+  containing?: boolean;
+  /** Area of the containing region in m², which is what orders tier one. */
+  areaM2?: number;
+  /** Bounding box as [minLon, minLat, maxLon, maxLat], for the UI to zoom to. */
+  bbox?: [number, number, number, number];
 }
 
 export interface ForwardOptions {
@@ -284,6 +290,24 @@ export function findHouseNumber(
   return numericMatch === null ? null : { index: numericMatch, exact: false };
 }
 
+/**
+ * The anchor's extent as a GeoJSON bbox, or undefined when it has none.
+ *
+ * Degenerate boxes — every anchor without a shape stores its own point twice —
+ * are suppressed: a zero-area bbox tells a UI nothing and would make it zoom to
+ * a pinpoint.
+ */
+export function anchorBBox(
+  a: Artifact, id: number,
+): [number, number, number, number] | undefined {
+  const minLat = a.anchorMinLat[id]!;
+  const maxLat = a.anchorMaxLat[id]!;
+  const minLon = a.anchorMinLon[id]!;
+  const maxLon = a.anchorMaxLon[id]!;
+  if (minLat === maxLat && minLon === maxLon) return undefined;
+  return [toDeg(minLon), toDeg(minLat), toDeg(maxLon), toDeg(maxLat)];
+}
+
 function anchorResult(a: Artifact, id: number, score: number): GeocodeResult {
   const flags = a.anchorFlags[id]!;
   const code = layerOf(flags);
@@ -299,6 +323,7 @@ function anchorResult(a: Artifact, id: number, score: number): GeocodeResult {
     lat: toDeg(a.anchorLat[id]!),
     lon: toDeg(a.anchorLon[id]!),
     score,
+    ...(anchorBBox(a, id) ? { bbox: anchorBBox(a, id)! } : {}),
   };
 }
 

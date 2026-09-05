@@ -28,6 +28,12 @@
 //	anchor_*.bin     struct-of-arrays, one file per field, n_anchors entries
 //	                 anchor_alt holds a string id whose value is the feature's
 //	                 alternate names joined by U+001F
+//	                 anchor_{min,max}{lat,lon} give the bounding box, degenerate
+//	                 to the representative point for features with no extent
+//	geom.bin         int32 lat/lon pairs, fixed point, all shapes concatenated
+//	geom_off.bin     uint32[n_anchors+1] vertex offsets into geom.bin
+//	geom_closed.bin  uint8 per anchor: 1 = ring that can contain a point,
+//	                 0 = open point set (a street), only distances apply
 //	addr_*.bin       struct-of-arrays, n_addresses entries, grouped by anchor.
 //	                 There is deliberately no addr_anchor: an address's owning
 //	                 anchor is recovered by binary-searching anchor_addr_start,
@@ -40,7 +46,7 @@ package index
 
 // Version is bumped whenever the binary layout changes. The server refuses to
 // load an artifact it does not recognise rather than misreading it.
-const Version = 4
+const Version = 5
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (
@@ -56,17 +62,19 @@ const CoordScale = 1e7
 
 // Manifest describes an artifact. It is written as manifest.json.
 type Manifest struct {
-	Version    int            `json:"version"`
-	BuiltAt    string         `json:"built_at"`
-	Countries  []string       `json:"countries"`
-	NumStrings int            `json:"num_strings"`
-	NumAnchors int            `json:"num_anchors"`
-	NumAddrs   int            `json:"num_addresses"`
-	NumTerms   int            `json:"num_terms"`
-	NumPOIs    int            `json:"num_pois"`
-	NumPosting int            `json:"num_postings"`
-	CountryIDs map[string]int `json:"country_ids"`
-	Counts     map[string]int `json:"counts"`
-	Bytes      map[string]int `json:"bytes"`
-	Duration   string         `json:"duration"`
+	Version     int            `json:"version"`
+	BuiltAt     string         `json:"built_at"`
+	Countries   []string       `json:"countries"`
+	NumStrings  int            `json:"num_strings"`
+	NumAnchors  int            `json:"num_anchors"`
+	NumAddrs    int            `json:"num_addresses"`
+	NumTerms    int            `json:"num_terms"`
+	NumPOIs     int            `json:"num_pois"`
+	NumShapes   int            `json:"num_shapes"`
+	NumVertices int            `json:"num_vertices"`
+	NumPosting  int            `json:"num_postings"`
+	CountryIDs  map[string]int `json:"country_ids"`
+	Counts      map[string]int `json:"counts"`
+	Bytes       map[string]int `json:"bytes"`
+	Duration    string         `json:"duration"`
 }
