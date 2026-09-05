@@ -12,7 +12,7 @@
  *   4. if a house number was given, resolve it inside the best anchors' runs
  */
 import {
-  type Artifact, layerOf, countryOf, toDeg, LAYER_PLACE, LAYER_POI,
+  type Artifact, layerOf, countryOf, toDeg, LAYER_PLACE, LAYER_POI, ALT_SEP,
 } from './artifact.js';
 import { tokens as foldTokens } from './normalize.js';
 
@@ -268,16 +268,26 @@ function addressResult(
  * coarse ranking need it, so computing it lazily is cheaper than several MB of
  * index. Memoized because popular anchors recur across queries.
  */
-interface AnchorTokens { name: string[]; locality: string[] }
+interface AnchorTokens {
+  /** The canonical name first, then each alternate name, each folded separately. */
+  names: string[][];
+  locality: string[];
+}
 const anchorTokenCache = new Map<number, AnchorTokens>();
 
 function anchorTokens(a: Artifact, id: number): AnchorTokens {
   const hit = anchorTokenCache.get(id);
   if (hit !== undefined) return hit;
-  const t: AnchorTokens = {
-    name: foldTokens(a.strings.get(a.anchorName[id]!)),
-    locality: foldTokens(a.strings.get(a.anchorLocal[id]!)),
-  };
+
+  const names = [foldTokens(a.strings.get(a.anchorName[id]!))];
+  const altID = a.anchorAlt[id]!;
+  if (altID !== 0) {
+    for (const alt of a.strings.get(altID).split(ALT_SEP)) {
+      const toks = foldTokens(alt);
+      if (toks.length > 0) names.push(toks);
+    }
+  }
+  const t: AnchorTokens = { names, locality: foldTokens(a.strings.get(a.anchorLocal[id]!)) };
   if (anchorTokenCache.size < 200_000) anchorTokenCache.set(id, t);
   return t;
 }
@@ -307,39 +317,52 @@ function hits(tokens: string[], q: string, isLast: boolean): boolean {
  *                which is what keeps "Prazska" from tying with "Nova Prazska".
  */
 function relevance(a: Artifact, id: number, queryTokens: string[]): number {
-  const { name, locality } = anchorTokens(a, id);
-  if (name.length === 0) return 0.05;
+  const { names, locality } = anchorTokens(a, id);
+  if (names.length === 0) return 0.05;
 
-  let inName = 0;
-  let inLocality = 0;
-  for (let i = 0; i < queryTokens.length; i++) {
-    const q = queryTokens[i]!;
-    const isLast = i === queryTokens.length - 1;
-    if (hits(name, q, isLast)) inName++;
-    else if (hits(locality, q, isLast)) inLocality++;
+  // Score every name the feature is known by and keep the best. Scoring the
+  // canonical name alone made exonyms unrankable: "Prague" is indexed as a term
+  // pointing at Praha, but "prague" is not a token of "Praha", so the query
+  // looked like it had matched nothing but incidental context and a POI called
+  // "Prague College" won. Merging the variants into one bag is also wrong — it
+  // would make every well-documented place appear to have a very long name and
+  // score worse the better it is described.
+  let best = 0;
+  for (const name of names) {
+    if (name.length === 0) continue;
+
+    let inName = 0;
+    let inLocality = 0;
+    for (let i = 0; i < queryTokens.length; i++) {
+      const q = queryTokens[i]!;
+      const isLast = i === queryTokens.length - 1;
+      if (hits(name, q, isLast)) inName++;
+      else if (hits(locality, q, isLast)) inLocality++;
+    }
+
+    // Never zero: a POI genuinely standing on the queried street is a weak but
+    // legitimate answer, and should rank last rather than vanish.
+    const explained = Math.max(
+      (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
+    );
+    const nameUsed = inName / name.length;
+    const base = explained * (0.1 + 0.9 * nameUsed);
+
+    // Squared, because a partial name match is a much weaker signal than the
+    // raw token overlap suggests, and the importance priors it competes against
+    // span an order of magnitude.
+    let score = base * base;
+
+    // An exact full-name match — every query token in this name, every token of
+    // this name used — is the strongest signal available. Without it a
+    // perfectly matched street ("Nádražní", prior 1.0) loses to a partial match
+    // on a higher-prior feature: a school "ZŠ Nádražní" (1.8) or a suburb
+    // "Nádražní Předměstí" (2.5).
+    if (inName === name.length && inName === queryTokens.length) score *= 2.5;
+
+    if (score > best) best = score;
   }
-
-  // Never zero: a POI genuinely standing on the queried street is a weak but
-  // legitimate answer, and should rank last rather than vanish.
-  const explained = Math.max(
-    (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
-  );
-  const nameUsed = inName / name.length;
-  const base = explained * (0.1 + 0.9 * nameUsed);
-
-  // Squared, because a partial name match is a much weaker signal than the raw
-  // token overlap suggests, and the importance priors it competes against span
-  // an order of magnitude.
-  let score = base * base;
-
-  // An exact full-name match — every query token in the name, every name token
-  // used — is the strongest signal available and gets its own bonus. Without
-  // it, a perfectly matched street ("Nádražní", prior 1.0) loses to a partial
-  // match on a higher-prior feature: a school called "ZŠ Nádražní" (1.8) or a
-  // suburb called "Nádražní Předměstí" (2.5).
-  if (inName === name.length && inName === queryTokens.length) score *= 2.5;
-
-  return score;
+  return best || 0.05;
 }
 
 /**

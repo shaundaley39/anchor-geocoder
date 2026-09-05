@@ -179,6 +179,50 @@ maybe('against the built index', () => {
       }
     });
 
+    /**
+     * A place has more names than one. OSM records exonyms under name:<lang>,
+     * plus alt_name / short_name / official_name / old_name, and for POIs the
+     * brand and operator.
+     *
+     * Regression: these were indexed as terms all along, but ranking scored
+     * only the canonical name — so "prague" looked like it had matched nothing
+     * but incidental context, and a POI called "Prague College" outranked the
+     * capital. Ranking now scores every name variant and keeps the best.
+     */
+    it('resolves exonyms to the native-language place', () => {
+      expect(top('Prague')?.name).toBe('Praha');
+      expect(top('Warsaw')?.name).toBe('Warszawa');
+      expect(top('Pilsen')?.name).toBe('Plzeň');
+      expect(top('Breslau')?.name).toBe('Wrocław');
+      expect(top('Danzig')?.name).toBe('Gdańsk');
+    });
+
+    it('ranks the city above POIs that merely mention the exonym', () => {
+      // 338 anchors carry the term "prague"; almost all are POIs with it in
+      // their name, and one of them is literally "Prague College".
+      const r = forward(a, 'Prague', { limit: 3 })[0]!;
+      expect(r.layer).toBe('place');
+      expect(r.name).toBe('Praha');
+    });
+
+    it('matches an exonym on a feature that is not a settlement', () => {
+      const r = top('Wenceslas Square');
+      expect(r?.name).toBe('Václavské náměstí');
+    });
+
+    it('finds a POI by brand or operator, not just its own name', () => {
+      expect(top('Zabka', { proximity: { lat: 52.2297, lon: 21.0122 } })?.layer).toBe('poi');
+      const post = top('Ceska posta', { proximity: { lat: 50.0755, lon: 14.4378 } });
+      expect(post?.category).toBe('amenity=post_office');
+    });
+
+    it('does not let a long alias list dilute a short exact match', () => {
+      // Kraków carries 26 alternate names. Scoring the union of them as one
+      // long name would make it rank worse the better it is documented.
+      expect(top('Krakow')?.name).toBe('Kraków');
+      expect(top('Krakau')?.name).toBe('Kraków');
+    });
+
     it('supports prefix autocomplete on the final token', () => {
       expect(top('Warsz')?.name).toBe('Warszawa');
       expect(top('Krak')?.name).toBe('Kraków');

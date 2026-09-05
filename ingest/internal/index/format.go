@@ -26,6 +26,8 @@
 //	strings.bin      concatenated UTF-8, no separators
 //	strings.idx      uint32[n+1] byte offsets into strings.bin
 //	anchor_*.bin     struct-of-arrays, one file per field, n_anchors entries
+//	                 anchor_alt holds a string id whose value is the feature's
+//	                 alternate names joined by U+001F
 //	addr_*.bin       struct-of-arrays, n_addresses entries, grouped by anchor
 //	terms.bin/.idx   sorted distinct search terms (same string-table encoding)
 //	post_off.bin     uint32[n_terms+1] offsets into post.bin
@@ -34,7 +36,7 @@ package index
 
 // Version is bumped whenever the binary layout changes. The server refuses to
 // load an artifact it does not recognise rather than misreading it.
-const Version = 2
+const Version = 3
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (

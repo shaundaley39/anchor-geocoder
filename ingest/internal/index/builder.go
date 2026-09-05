@@ -56,14 +56,18 @@ func (t *StringTable) Write(dir, base string) (int, error) {
 
 // Anchor is a searchable street or place: the unit text queries match against.
 type Anchor struct {
-	Key       string // country|folded name|folded locality — dedup key only
-	NameID    uint32
-	LocalID   uint32 // locality (city) string id
-	Lat, Lon  int32
-	Layer     uint8
-	Country   uint8
-	Score     float32 // importance prior, pre-multiplied at build time
-	CatID     uint32  // POI category string id; 0 for non-POI anchors
+	Key      string // country|folded name|folded locality — dedup key only
+	NameID   uint32
+	LocalID  uint32 // locality (city) string id
+	Lat, Lon int32
+	Layer    uint8
+	Country  uint8
+	Score    float32 // importance prior, pre-multiplied at build time
+	CatID    uint32  // POI category string id; 0 for non-POI anchors
+	// AltID is a string id whose value is the anchor's alternate names joined
+	// by AltSep. Stored rather than discarded after tokenizing because ranking
+	// has to know that "Prague" is a *name* of Praha, not incidental context.
+	AltID     uint32
 	Tokens    []string
 	AddrStart uint32
 	AddrCount uint32
@@ -252,6 +256,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	flags := make([]byte, n)
 	score := make([]float32, n)
 	cat := make([]uint32, n)
+	alt := make([]uint32, n)
 	start := make([]uint32, n)
 	count := make([]uint32, n)
 
@@ -261,12 +266,14 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		flags[i] = a.Layer | a.Country<<4
 		score[i] = a.Score
 		cat[i] = a.CatID
+		alt[i] = a.AltID
 		start[i], count[i] = a.AddrStart, a.AddrCount
 	}
 	w := map[string]any{
 		"anchor_name": name, "anchor_local": local,
 		"anchor_lat": lat, "anchor_lon": lon,
 		"anchor_flags": flags, "anchor_score": score, "anchor_cat": cat,
+		"anchor_alt":        alt,
 		"anchor_addr_start": start, "anchor_addr_count": count,
 	}
 	return writeAll(dir, w, man)
@@ -426,6 +433,10 @@ func PlaceKey(country string, foldedName []string, lat, lon float64) string {
 		strconv.Itoa(int(math.Floor(lat/cellDeg))) + "," +
 		strconv.Itoa(int(math.Floor(lon/cellDeg)))
 }
+
+// AltSep joins an anchor's alternate names inside one interned string. U+001F
+// (unit separator) cannot occur in an OSM name.
+const AltSep = "\x1f"
 
 // Get returns the interned string for an id.
 func (t *StringTable) Get(id uint32) string {

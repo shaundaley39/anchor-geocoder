@@ -124,7 +124,7 @@ func rebuildTokens(r *model.Record) []string {
 			}
 		}
 	}
-	for _, v := range r.Names {
+	for _, v := range r.AltNames {
 		for _, tok := range norm.Tokens(v) {
 			if tok != "" && !seen[tok] {
 				seen[tok] = true

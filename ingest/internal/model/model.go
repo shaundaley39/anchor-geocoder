@@ -53,9 +53,16 @@ type Record struct {
 	// Name is the feature's own display name: the street name for a street,
 	// the settlement name for a place, empty for most address points.
 	Name string `json:"name,omitempty"`
-	// Names holds name:<lang> variants. Bosnia carries ~52k name:sr values in
-	// Cyrillic; keeping them lets "Banja Luka" match "Бања Лука".
-	Names map[string]string `json:"names,omitempty"`
+	// AltNames holds every other name the feature is known by: name:<lang>
+	// exonyms, alt_name, short_name, official_name, old_name, and for POIs the
+	// brand and operator. Each is a searchable name in its own right — "Prague"
+	// and "Praha" are the same city, and a user may type either.
+	//
+	// These are scored per variant rather than merged, so a query matching one
+	// alias exactly is treated as an exact name match. Merging them into one
+	// token bag would make every well-documented place look like it has a very
+	// long name and score worse for it.
+	AltNames []string `json:"alt_names,omitempty"`
 
 	// --- address components -------------------------------------------------
 

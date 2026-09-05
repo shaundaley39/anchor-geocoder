@@ -206,6 +206,9 @@ func addAnchor(b *index.Builder, r *model.Record) {
 	a.Country = b.CountryID(r.Country)
 	a.Tokens = r.Tokens
 	a.Layer = layer
+	if len(r.AltNames) > 0 {
+		a.AltID = b.Strings.Intern(strings.Join(r.AltNames, index.AltSep))
+	}
 
 	switch layer {
 	case index.LayerPlace:

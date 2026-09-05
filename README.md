@@ -239,17 +239,17 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | extract | 5m04s | 12,838,758 records — 11,637,055 addresses, 663,724 POIs, 397,036 streets, 141,233 places |
-| index | 1m22s | 1,341,883 anchors, 11,632,595 addresses, 282,659 terms — **301 MB** |
+| index | 1m22s | 1,341,883 anchors, 11,632,595 addresses, 305,746 terms — **310 MB** |
 | boot | **1.4 s** | 42 ms to load the artifact, 1.3 s to build the k-d tree — **~510 MB RSS** |
 
 Query latency, 16-core M-series laptop, measured by `make bench`:
 
 | query | p50 | p95 | p99 |
 |---|---|---|---|
-| exact city name | 0.438 ms | 0.916 ms | 1.164 ms |
-| 3-char autocomplete prefix | 0.892 ms | 1.398 ms | 1.611 ms |
-| street + house number | 0.044 ms | 0.051 ms | 0.123 ms |
-| two-token street + number | 0.549 ms | 0.711 ms | 0.782 ms |
+| exact city name | 0.564 ms | 0.955 ms | 1.052 ms |
+| 3-char autocomplete prefix | 1.001 ms | 1.494 ms | 1.689 ms |
+| street + house number | 0.089 ms | 0.116 ms | 0.193 ms |
+| two-token street + number | 0.631 ms | 0.783 ms | 0.845 ms |
 | reverse, dense area, k=5 | 0.005 ms | 0.015 ms | 0.028 ms |
 | reverse, sparse (~5 km) | 0.008 ms | 0.135 ms | 0.308 ms |
 
@@ -507,6 +507,41 @@ at Polish latitudes, the box is widened in longitude to guarantee it encloses
 the true circle, and corners falling outside it are discarded so the radius
 means what it says. Results are ranked by real great-circle distance.
 
+### A place has more than one name
+
+20.7% of named Czech features carry at least one alternate name, spread across
+several tags (`cmd/namestat`):
+
+```
+name:<lang>      95,380   de 36,940 · cs 36,224 · en 5,662 · ru 4,100 · pl 3,590 · be · hu · sk · uk · fr · ja · nl · it · zh
+operator         85,128
+brand            29,537
+official_name    21,764
+alt_name          8,880
+short_name        4,311
+old_name          2,907
+```
+
+All of them are indexed. Every `name:<lang>` is taken rather than a fixed
+language list — picking a subset means silently failing queries in the rest —
+along with `alt_name`, `short_name`, `official_name`, `old_name`, `loc_name`,
+`int_name`, `nat_name`, `reg_name`, and semicolon-delimited values are split
+(1,206 of those in Czechia). `brand` and `operator` apply to POIs only: they are
+what people type for "Żabka" or "Česká pošta", but on a school the operator is
+the municipality, which is noise.
+
+So `Prague` → Praha, `Pilsen` → Plzeň, `Breslau` → Wrocław, `Danzig` → Gdańsk,
+`Brunn` → Brno, and `Wenceslas Square` → Václavské náměstí.
+
+Variants are scored **separately, best one wins** — not merged into one token
+bag. Merging would make a well-documented place appear to have a very long name
+and rank worse the better it is described: Kraków carries 26 alternate names.
+
+Note this is data-limited, not code-limited: `Cracow` does *not* resolve to
+Kraków, because Polish OSM sets `name:en=Kraków` and no alias in the data spells
+it that way. GeoNames publishes an `alternateNames` table of historical and
+English exonyms that would close the gap; see Future improvements.
+
 ### Relevance measures the name, not its length
 
 An anchor is indexed on more than its name: a POI carries its street, city and
@@ -697,6 +732,12 @@ expected bounding box (0).
   the case that justifies graceful degradation: falling back to street, then
   locality, with an honest confidence score. The Cyrillic handling is already in
   place.
+- **A curated exonym gazetteer.** OSM's alias coverage is good but uneven —
+  `Cracow` is absent from Kraków. GeoNames publishes an `alternateNames` table
+  (~16M rows, historical and English exonyms, with `isPreferredName` and
+  `isHistoric` flags) keyed by GeoNames id; joining it onto the place layer by
+  name and position would close most of the remaining gaps and supply the
+  population figures the importance prior already wants.
 - **Conflating authoritative national data.** Poland's GUGiK PRG address points
   (~7M, ~20 GB of GML) would materially improve coverage; 20 GB of GML is itself
   a good argument for the compiled ingest stage. Czechia gains less — OSM there

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -28,10 +29,68 @@ var placeRank = map[string]float64{
 	"hamlet": 0.25, "isolated_dwelling": 0.1, "municipality": 0.7,
 }
 
-// langKeys are the name:<lang> variants worth retaining. Serbian and Croatian
-// matter for Bosnia (52k name:sr values, largely Cyrillic); German and English
-// help cross-border and non-local queries.
-var langKeys = []string{"cs", "pl", "sr", "hr", "bs", "de", "en", "sk", "uk"}
+// aliasTags are the non-language tags that carry an alternate name. Measured
+// over the Czech extract (cmd/namestat): official_name 21,764, alt_name 8,880,
+// short_name 4,311, old_name 2,907, loc_name 974.
+var aliasTags = []string{
+	"alt_name", "short_name", "official_name", "old_name",
+	"loc_name", "int_name", "nat_name", "reg_name", "nickname",
+}
+
+// poiAliasTags apply only to points of interest. "Zabka", "Biedronka" and
+// "Ceska posta" are what people type; the feature's own name is often the
+// branch. 85,128 Czech features carry an operator and 29,537 a brand — but on a
+// school the operator is the municipality, which is noise, so these are not
+// applied to other layers.
+var poiAliasTags = []string{"brand", "operator"}
+
+// collectAltNames gathers every alternate name from a feature's tags.
+//
+// All name:<lang> variants are taken rather than a fixed language list: the
+// Czech extract alone carries de, cs, en, ru, pl, be, hu, sk, uk, fr, ja, nl,
+// it and zh, and picking a subset means silently failing queries in the rest.
+func collectAltNames(t map[string]string, isPOI bool) []string {
+	seen := map[string]bool{t["name"]: true}
+	var out []string
+
+	add := func(v string) {
+		// A handful of values are semicolon-delimited lists (1,206 in Czechia).
+		for _, part := range strings.Split(v, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			out = append(out, part)
+		}
+	}
+
+	for k, v := range t {
+		if v == "" || !strings.HasPrefix(k, "name:") {
+			continue
+		}
+		// name:<lang>, not name:left / name:prefix / name:etymology:wikidata.
+		lang := strings.TrimPrefix(k, "name:")
+		if lang == "" || len(lang) > 3 || strings.Contains(lang, ":") {
+			continue
+		}
+		add(v)
+	}
+	for _, k := range aliasTags {
+		if v := t[k]; v != "" {
+			add(v)
+		}
+	}
+	if isPOI {
+		for _, k := range poiAliasTags {
+			if v := t[k]; v != "" {
+				add(v)
+			}
+		}
+	}
+	sort.Strings(out) // deterministic builds
+	return out
+}
 
 // FromTags converts an extracted OSM feature into the records it should
 // produce.
@@ -46,27 +105,20 @@ func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 	lat, lon float64, country string) []*Record {
 
 	base := "osm:" + string(osmType) + strconv.FormatInt(osmID, 10)
-	names := map[string]string{}
-	for _, l := range langKeys {
-		if v := t["name:"+l]; v != "" {
-			names[l] = v
-		}
-	}
-	if len(names) == 0 {
-		names = nil
-	}
+	plainAlts := collectAltNames(t, false)
+	poiAlts := collectAltNames(t, true)
 
-	newRec := func(idSuffix string) *Record {
+	newRec := func(idSuffix string, alts []string) *Record {
 		return &Record{
 			ID: base + idSuffix, Lat: lat, Lon: lon,
-			Country: country, Names: names,
+			Country: country, AltNames: alts,
 		}
 	}
 
 	var out []*Record
 
 	if category != "" {
-		r := newRec("#poi")
+		r := newRec("#poi", poiAlts)
 		buildPOI(r, t, category)
 		if r.Display != "" {
 			r.Tokens = SearchTokens(r)
@@ -77,16 +129,16 @@ func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 	var r *Record
 	switch {
 	case hasAddress(t):
-		r = newRec("")
+		r = newRec("", plainAlts)
 		buildAddress(r, t)
 	case placeRank[t["place"]] > 0 && t["name"] != "":
 		if category != "" {
 			return out // already emitted as a POI; do not double-index
 		}
-		r = newRec("")
+		r = newRec("", plainAlts)
 		buildPlace(r, t)
 	case t["name"] != "" && t["highway"] != "":
-		r = newRec("")
+		r = newRec("", plainAlts)
 		buildStreet(r, t)
 	default:
 		return out
@@ -223,8 +275,8 @@ func SearchTokens(r *Record) []string {
 	add(r.Street)
 	add(r.Place)
 	add(r.City)
-	for _, v := range r.Names {
-		add(v) // Cyrillic variants fold to the same Latin tokens
+	for _, v := range r.AltNames {
+		add(v) // exonyms, brands, Cyrillic variants
 	}
 	if r.Layer == LayerAddress || r.Layer == LayerPOI {
 		add(r.HouseNumber)

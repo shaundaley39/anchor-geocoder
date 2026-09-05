@@ -19,7 +19,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 2;
+export const SUPPORTED_VERSION = 3;
 
 export interface Manifest {
   version: number;
@@ -118,6 +118,8 @@ export interface Artifact {
   anchorScore: Float32Array;
   /** POI category string id; 0 for non-POI anchors. */
   anchorCat: Uint32Array;
+  /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
+  anchorAlt: Uint32Array;
   anchorAddrStart: Uint32Array;
   anchorAddrCount: Uint32Array;
 
@@ -159,7 +161,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   const [
     stringsBin, stringsIdx, termsBin, termsIdx,
     postOff, post,
-    aName, aLocal, aLat, aLon, aFlags, aScore, aCat, aStart, aCount,
+    aName, aLocal, aLat, aLon, aFlags, aScore, aCat, aAlt, aStart, aCount,
     dNum, dLat, dLon, dAnchor, dSort,
   ] = await Promise.all([
     view(dir, 'strings.bin'), view(dir, 'strings.idx'),
@@ -168,7 +170,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     view(dir, 'anchor_name.bin'), view(dir, 'anchor_local.bin'),
     view(dir, 'anchor_lat.bin'), view(dir, 'anchor_lon.bin'),
     view(dir, 'anchor_flags.bin'), view(dir, 'anchor_score.bin'),
-    view(dir, 'anchor_cat.bin'),
+    view(dir, 'anchor_cat.bin'), view(dir, 'anchor_alt.bin'),
     view(dir, 'anchor_addr_start.bin'), view(dir, 'anchor_addr_count.bin'),
     view(dir, 'addr_num.bin'), view(dir, 'addr_lat.bin'), view(dir, 'addr_lon.bin'),
     view(dir, 'addr_anchor.bin'), view(dir, 'addr_sortkey.bin'),
@@ -190,6 +192,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     anchorFlags: new Uint8Array(aFlags.buffer, aFlags.byteOffset, aFlags.byteLength),
     anchorScore: asF32(aScore),
     anchorCat: asU32(aCat),
+    anchorAlt: asU32(aAlt),
     anchorAddrStart: asU32(aStart),
     anchorAddrCount: asU32(aCount),
     addrNum: asU32(dNum),
@@ -213,6 +216,9 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   }
   return artifact;
 }
+
+/** Separator joining an anchor's alternate names inside one interned string. */
+export const ALT_SEP = '\x1f';
 
 export const layerOf = (flags: number): number => flags & 0x0f;
 export const countryOf = (flags: number): number => flags >> 4;
