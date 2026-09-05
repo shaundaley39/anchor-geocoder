@@ -8,7 +8,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type Artifact } from './artifact.js';
 import { forward } from './forward.js';
-import { buildReverseIndex, reverse, type ReverseIndex } from './reverse.js';
+import { reverse, looksTransposed, type ReverseIndex } from './reverse.js';
 import { toFeatureCollection } from './geojson.js';
 
 export interface ServerDeps {
@@ -48,6 +48,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     countries: artifact.manifest.countries,
     anchors: artifact.manifest.num_anchors,
     addresses: artifact.manifest.num_addresses,
+    bbox: reverseIndex.bbox,
   }));
 
   app.get<{ Querystring: GeocodeQuery }>('/v1/geocode', async (req, reply) => {
@@ -98,6 +99,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(country !== undefined ? { country } : {}),
       });
       echo = { type: 'reverse', lat, lon, ...(radius !== undefined ? { radius } : {}) };
+
+      // Empty is a legitimate answer for a point outside coverage, so this
+      // stays a 200 — but if the transposed point *is* inside coverage, say so
+      // rather than leaving the caller to guess.
+      if (results.length === 0 && looksTransposed(reverseIndex.bbox, lat, lon)) {
+        echo['hint'] =
+          `no results at lat=${lat}, lon=${lon}, but lat=${lon}, lon=${lat} is ` +
+          `inside the indexed area — lat and lon may be transposed. Note that ` +
+          `GeoJSON "center" and "coordinates" are [lon, lat], the reverse of ` +
+          `these parameters.`;
+      }
     } else {
       let proximity: { lat: number; lon: number } | undefined;
       if (req.query.proximity) {

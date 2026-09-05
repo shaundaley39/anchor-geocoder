@@ -14,8 +14,14 @@ import KDBush from 'kdbush';
 import { type Artifact, toDeg, countryOf } from './artifact.js';
 import { type GeocodeResult, haversineMetres } from './forward.js';
 
+/** Geographic extent of the indexed data, in degrees. */
+export interface BBox {
+  minLat: number; maxLat: number; minLon: number; maxLon: number;
+}
+
 export interface ReverseIndex {
   tree: KDBush;
+  bbox: BBox;
 }
 
 export function buildReverseIndex(a: Artifact): ReverseIndex {
@@ -23,9 +29,50 @@ export function buildReverseIndex(a: Artifact): ReverseIndex {
   // Int32Array coordinates: the tree indexes the raw fixed-point values, so no
   // float conversion happens during the build and precision is exact.
   const tree = new KDBush(n, 64, Int32Array);
-  for (let i = 0; i < n; i++) tree.add(a.addrLon[i]!, a.addrLat[i]!);
+
+  // The coverage extent comes free from a loop we are already running, and
+  // powers the swapped-coordinate hint below.
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const lat = a.addrLat[i]!;
+    const lon = a.addrLon[i]!;
+    tree.add(lon, lat);
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
   tree.finish();
-  return { tree };
+
+  return {
+    tree,
+    bbox: {
+      minLat: toDeg(minLat), maxLat: toDeg(maxLat),
+      minLon: toDeg(minLon), maxLon: toDeg(maxLon),
+    },
+  };
+}
+
+export function inBBox(b: BBox, lat: number, lon: number): boolean {
+  return lat >= b.minLat && lat <= b.maxLat && lon >= b.minLon && lon <= b.maxLon;
+}
+
+/**
+ * Detects the classic lat/lon transposition.
+ *
+ * This is the most common mistake made against any geocoding API, and this one
+ * invites it: the forward response returns `center` in GeoJSON order, which is
+ * [lon, lat], while the reverse parameters are named `lat` and `lon`. Reading
+ * the array left to right into the parameters transposes them, and for Czechia
+ * and Poland the result — around 16°N 49°E — is off Somalia, so the honest
+ * answer is an empty list and the user is left guessing.
+ *
+ * Returns true only when the given point is outside coverage AND the swapped
+ * one is inside it, so a genuine query from outside the region is never
+ * second-guessed.
+ */
+export function looksTransposed(b: BBox, lat: number, lon: number): boolean {
+  return !inBBox(b, lat, lon) && inBBox(b, lon, lat);
 }
 
 /**

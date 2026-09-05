@@ -327,6 +327,41 @@ maybe('against the built index', () => {
       expect(res.json().hint).toContain('cz');
     });
 
+    /**
+     * The forward response returns `center` as GeoJSON [lon, lat] while the
+     * reverse parameters are named lat/lon, so reading one into the other
+     * transposes them. For Czechia and Poland that lands off Somalia and
+     * returns nothing, with no indication why.
+     */
+    it('flags transposed coordinates instead of silently returning nothing', async () => {
+      const res = await get('/v1/geocode?lat=16.6148&lon=49.2012');
+      expect(res.statusCode).toBe(200); // outside coverage is not an error
+      const body = res.json();
+      expect(body.features).toEqual([]);
+      expect(body.query.hint).toMatch(/transposed/);
+    });
+
+    it('does not second-guess a genuine query from outside coverage', async () => {
+      // Mid-Atlantic: neither orientation is inside the indexed area.
+      const body = (await get('/v1/geocode?lat=30&lon=-40')).json();
+      expect(body.features).toEqual([]);
+      expect(body.query.hint).toBeUndefined();
+    });
+
+    it('does not flag a valid in-coverage query that simply found nothing', async () => {
+      // Inside the bbox but in open water off the Polish coast, tight radius.
+      const body = (await get('/v1/geocode?lat=54.8&lon=18.4&radius=100')).json();
+      expect(body.query.hint).toBeUndefined();
+    });
+
+    it('advertises the coverage bbox on /health', async () => {
+      const b = (await get('/health')).json().bbox;
+      expect(b.minLat).toBeGreaterThan(45);
+      expect(b.maxLat).toBeLessThan(56);
+      expect(b.minLon).toBeGreaterThan(11);
+      expect(b.maxLon).toBeLessThan(25);
+    });
+
     it('reports health', async () => {
       const body = (await get('/health')).json();
       expect(body.status).toBe('ok');

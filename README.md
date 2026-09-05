@@ -141,6 +141,13 @@ curl 'localhost:3000/v1/geocode?q=Nadrazni&proximity=49.19,16.60'
 curl 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=3'
 ```
 
+> **Coordinate order.** GeoJSON `center` and `coordinates` are `[lon, lat]`,
+> which is the reverse of the `lat`/`lon` parameters. Feeding a `center` array
+> straight back in left-to-right transposes them, and for this region the result
+> lands off Somalia. When a reverse query finds nothing but the transposed point
+> is inside coverage, the response says so in `query.hint` rather than just
+> returning an empty list. `/health` reports the indexed bounding box.
+
 | parameter | applies to | meaning |
 |---|---|---|
 | `q` | forward | free-text query; the final token is matched as a prefix |
@@ -149,6 +156,9 @@ curl 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=3'
 | `country` | both | `cz` or `pl` |
 | `proximity` | forward | `lat,lon` to bias ranking |
 | `radius` | reverse | metres, default 5000, capped at 50000 |
+
+Coverage is whatever the artifact holds: currently
+lat 48.547–54.835, lon 12.090–24.160.
 
 Responses are a GeoJSON `FeatureCollection` shaped after the conventional
 geocoding API, so the endpoint is a drop-in for anything already speaking that
