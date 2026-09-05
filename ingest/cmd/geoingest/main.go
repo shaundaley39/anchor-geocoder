@@ -29,10 +29,20 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/pbf"
 )
 
-// defaultCountries is the contiguous central-European block the index covers:
-// a region where OSM address coverage is uniformly good, rather than a
-// scattering of countries.
-const defaultCountries = "de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu"
+// defaultCountries is a four-country default chosen so the whole pipeline can
+// be built and run by someone evaluating it: ~3.5GB of extracts and ~14M
+// addresses, against 14GB and 61M for the full region.
+//
+// It still spans the interesting cases. Czechia exercises the polymorphic
+// address anchor, where 47% of addresses have no street. Poland is the
+// street-and-city model at scale. Switzerland adds a third and fourth language
+// and dense alpine POIs. Bosnia is the sparse-coverage case, ~10% addressed,
+// with Cyrillic and Latin names for the same places.
+//
+// All fourteen countries remain available:
+//
+//	make fetch records index COUNTRIES=de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
+const defaultCountries = "pl,cz,ch,ba"
 
 // source pairs an extract file with the country it is authoritative for.
 type source struct {

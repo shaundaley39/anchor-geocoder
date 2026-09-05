@@ -1,10 +1,26 @@
 # Minimal Geocoding API — Central Europe
 
-A geocoding service over OpenStreetMap data covering a contiguous block of
-fourteen countries: **Germany, Poland, Italy, Netherlands, Czechia, Austria,
-Belgium, Switzerland, Denmark, Slovakia, Hungary, Croatia, Bosnia and
-Herzegovina, Luxembourg** — 61M addresses, 4.8M points of interest, 3.5M
-streets, 509k settlements.
+A geocoding service over OpenStreetMap data.
+
+The default build covers **Poland, Czechia, Switzerland and Bosnia and
+Herzegovina** — 14.0M addresses, 963k points of interest, 2.0M anchors — and
+takes under four minutes end to end. Those four are chosen to span the
+interesting cases rather than to be big: Czechia exercises the polymorphic
+address anchor (47% of its addresses have no street), Poland is the
+street-and-city model at scale, Switzerland brings four languages and dense
+alpine POIs, and Bosnia is the sparse case at ~10% coverage with Cyrillic and
+Latin names for the same places.
+
+The pipeline also runs over a contiguous fourteen-country block — adding
+Germany, Italy, Netherlands, Austria, Belgium, Denmark, Slovakia, Hungary,
+Croatia and Luxembourg for **61M addresses and 4.8M POIs** — with one flag:
+
+```bash
+make all COUNTRIES=de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
+```
+
+Measurements for both scales are given below, since how the design behaves at
+5x the data is the more interesting number.
 
 Built as three stages:
 
@@ -25,19 +41,19 @@ Built as three stages:
 | pnpm | 10+ | `corepack enable && corepack prepare pnpm@latest --activate` |
 
 No cgo, no C++ toolchain, no database, no Docker. `CGO_ENABLED=0` throughout, so
-the ingest binaries are fully static. You need **~20 GB of free disk** (14 GB of extracts, 3.3 GB record stream,
-1.6 GB artifact) and, for the full fourteen-country build, **32 GB of RAM** —
-extraction peaks at 23 GB. A smaller `COUNTRIES` subset scales down
-proportionally; Czechia alone peaks well under 4 GB.
+the ingest binaries are fully static. The default build needs **~5 GB of free disk** and about **16 GB of RAM** —
+extraction peaks at 11.5 GB. The full fourteen-country build needs ~20 GB of
+disk and **32 GB of RAM**, peaking at 23 GB. Czechia alone (`COUNTRIES=cz`)
+builds in ~90 seconds and peaks well under 4 GB.
 
 ### Full build
 
 ```bash
-make fetch       # 14 GB from Geofabrik, md5-verified
-make records     # 24m09s -> build/records.ndjson.gz    (70M records, 3.3 GB)
-make index       #  7m26s -> build/index/               (1.6 GB artifact)
+make fetch       # 3.5 GB from Geofabrik, md5-verified
+make records     # 3m33s -> build/records.ndjson.gz     (16M records)
+make index       #   36s -> build/index/                (398 MB artifact)
 make install     # server dependencies
-make serve       # boots in 7.1 s, listens on 127.0.0.1:3000
+make serve       # boots in 1.9 s, listens on 127.0.0.1:3000
 ```
 
 Or `make all` for the first three. `make serve` runs in the foreground, so open
@@ -56,7 +72,7 @@ make install && make serve
 ```
 
 `COUNTRIES` takes any comma-separated subset of
-`de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu`, and defaults to all fourteen.
+`de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu`, and defaults to `pl,cz,ch,ba`.
 
 ### Verify it works
 
@@ -104,7 +120,7 @@ All optional, read from the environment:
 | `PORT` | `3000` | listen port |
 | `HOST` | `127.0.0.1` | bind address (set `0.0.0.0` in a container) |
 | `CORS_ORIGIN` | `*` | comma-separated allowlist of origins |
-| `RATE_LIMIT_MAX` | `120` | requests per window per IP; `0` disables |
+| `RATE_LIMIT_MAX` | `600` | requests per window per IP; `0` disables |
 | `RATE_LIMIT_WINDOW` | `1 minute` | the window |
 | `LOG_LEVEL` | `info` | pino level |
 
@@ -248,8 +264,20 @@ Built from the 2026-08-31 Geofabrik extracts.
 
 | stage | time | output |
 |---|---|---|
-| fetch | — | 14 GB of extracts, md5-verified |
-| extract | 24m09s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
+**Default build** (pl, cz, ch, ba):
+
+| stage | time | output |
+|---|---|---|
+| fetch | — | 3.5 GB of extracts, md5-verified |
+| extract + index | **3m33s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **398 MB**. Peak 11.5 GB RSS |
+| boot | **1.9 s** | **746 MB RSS** |
+
+**Full region** (all fourteen), for comparison:
+
+| stage | time | output |
+|---|---|---|
+| fetch | — | 14 GB of extracts |
+| extract | 24m39s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
 | index | 7m41s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms, 1,466,886 shapes — **1.8 GB**. Peak 13 GB RSS |
 | boot | **9.6 s** | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — **3.1 GB RSS** |
 

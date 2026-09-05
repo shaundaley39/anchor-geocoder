@@ -88,10 +88,19 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   // Rate limiting: every request touches an in-memory index, so the cost per
   // request is microseconds and the real exposure is one client saturating the
-  // single Node thread. This is a blunt per-IP cap, which is the right shape
-  // for an unauthenticated public endpoint; anything finer wants API keys and
-  // a shared store (the plugin takes a Redis backend for multi-replica use).
-  const maxReq = options.rateLimitMax ?? Number(process.env['RATE_LIMIT_MAX'] ?? 120);
+  // single Node thread.
+  //
+  // The limit is sized for the workload this endpoint actually serves. A search
+  // box does autocomplete, one request per keystroke debounced at ~150ms, so an
+  // actively typing user sustains 6-7 req/s in bursts — and behind NAT or a
+  // corporate proxy, many users share one address. An earlier 120/min default
+  // would have throttled a single person mid-word, which is the one thing a
+  // limit protecting an autocomplete API must not do.
+  //
+  // Still a blunt per-IP cap, which is the right shape for an unauthenticated
+  // public endpoint; anything finer wants API keys and a shared store, and the
+  // plugin takes a Redis backend for the multi-replica case.
+  const maxReq = options.rateLimitMax ?? Number(process.env['RATE_LIMIT_MAX'] ?? 600);
   if (maxReq > 0) {
     await app.register(rateLimit, {
       max: maxReq,

@@ -3,9 +3,12 @@
 
 RAW      := data/raw
 BUILD    := build
-# The contiguous central-European block. Override for a smaller build:
-#   make records COUNTRIES=cz,sk
-COUNTRIES ?= de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
+# A four-country default that anyone can build: ~3.5GB of extracts, ~14M
+# addresses, under ten minutes. Override for the full region:
+#   make all COUNTRIES=de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
+# ...or for a single country in ~90 seconds:
+#   make all COUNTRIES=cz
+COUNTRIES ?= pl,cz,ch,ba
 GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf

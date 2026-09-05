@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
 import { forward, parseQuery, findHouseNumber, haversineMetres } from '../src/forward.js';
+import { hasShape, ringAreaM2, containsPoint } from '../src/geometry.js';
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
@@ -406,37 +407,66 @@ maybe('against the built index', () => {
     });
 
     /**
+     * These derive their query points from whatever index is built rather than
+     * hardcoding coordinates, so they hold for any COUNTRIES setting. An
+     * earlier version pinned them to Munich and Berlin and broke the moment the
+     * default build shrank — a test that only passes on one dataset is testing
+     * the dataset.
+     */
+    const someRing = (minAreaM2: number) => {
+      for (let id = 0; id < a.manifest.num_anchors; id += 7) {
+        if (!hasShape(a, id) || a.geomClosed[id] !== 1) continue;
+        if (ringAreaM2(a, id) < minAreaM2) continue;
+        // Use a vertex-adjacent interior point: the centroid of a concave ring
+        // is not guaranteed to be inside it.
+        const start = a.geomOff[id]!;
+        const n = a.geomOff[id + 1]! - start;
+        let sLat = 0, sLon = 0;
+        for (let i = 0; i < n; i++) {
+          sLat += a.geom[2 * (start + i)]!;
+          sLon += a.geom[2 * (start + i) + 1]!;
+        }
+        const lat = toDeg(sLat / n);
+        const lon = toDeg(sLon / n);
+        if (containsPoint(a, id, lat, lon)) return { id, lat, lon };
+      }
+      return null;
+    };
+
+    /**
      * The two-tier contract: a feature whose outline contains the click ranks
      * above everything nearby, because a restaurant 25m away is somewhere the
-     * user is *not*. Before shapes existed, a click in the middle of the
-     * Englischer Garten returned a street address 193m away and the park —
-     * which is 3.7km long, so its centroid is far from most of it — could not
-     * be returned at all.
+     * user is *not*. Before shapes existed, reverse indexed only address points,
+     * so a click inside a park returned the nearest doorway and the park could
+     * not be returned at all.
      */
     it('puts a containing region above nearby points', () => {
-      const rs = reverse(a, rev, 48.1642, 11.6050, { limit: 5 });
+      const spot = someRing(10_000); // at least a hectare
+      expect(spot).not.toBeNull();
+      const rs = reverse(a, rev, spot!.lat, spot!.lon, { limit: 5 });
       expect(rs[0]!.containing).toBe(true);
-      expect(rs[0]!.name).toBe('Englischer Garten');
       expect(rs[0]!.distance).toBe(0);
-      // ...and the nearby things still follow, rather than being crowded out.
-      expect(rs.slice(1).some((r) => r.layer === 'address')).toBe(true);
     });
 
-    it('orders nested containing regions smallest first', () => {
-      // Tapping the Siegessäule inside the Tiergarten: the monument is the more
-      // specific answer, the park the broader context.
-      const rs = reverse(a, rev, 52.5145, 13.3501, { limit: 6 });
-      const inside = rs.filter((r) => r.containing);
-      expect(inside.length).toBeGreaterThan(0);
-      for (let i = 1; i < inside.length; i++) {
-        expect(inside[i]!.areaM2!).toBeGreaterThanOrEqual(inside[i - 1]!.areaM2!);
+    it('orders containing regions smallest first, and all before the rest', () => {
+      // A property over many real query points, rather than one hand-picked
+      // nesting that only exists in one country's data.
+      let checkedWithContainment = 0;
+      for (let k = 0; k < 400; k++) {
+        const i = (k * 137_777) % a.manifest.num_addresses;
+        const rs = reverse(a, rev, toDeg(a.addrLat[i]!), toDeg(a.addrLon[i]!), { limit: 8 });
+        const inside = rs.filter((r) => r.containing);
+        if (inside.length > 0) checkedWithContainment++;
+        for (let j = 1; j < inside.length; j++) {
+          expect(inside[j]!.areaM2!).toBeGreaterThanOrEqual(inside[j - 1]!.areaM2!);
+        }
+        const firstOutside = rs.findIndex((r) => !r.containing);
+        if (firstOutside >= 0) {
+          expect(rs.slice(firstOutside).every((r) => !r.containing)).toBe(true);
+        }
       }
-      // Every containing region must precede every non-containing one.
-      const firstOutside = rs.findIndex((r) => !r.containing);
-      if (firstOutside >= 0) {
-        expect(rs.slice(firstOutside).every((r) => !r.containing)).toBe(true);
-      }
-    });
+      expect(checkedWithContainment).toBeGreaterThan(0);
+    }, 60_000);
 
     it('caps the containing tier so nearby points are never crowded out', () => {
       const rs = reverse(a, rev, 48.2082, 16.3738, { limit: 8 });
@@ -445,20 +475,42 @@ maybe('against the built index', () => {
 
     it('returns anchors, not just addresses', () => {
       // The first version indexed only address points for reverse, so a click
-      // could never resolve to a park, a station or a street.
-      const layers = new Set(
-        reverse(a, rev, 48.2082, 16.3738, { limit: 12 }).map((r) => r.layer),
-      );
+      // could never resolve to a park, a station or a street. Sample real
+      // address locations until one has a non-address neighbour, which in any
+      // populated area is immediate.
+      const layers = new Set<string>();
+      for (let k = 0; k < 200 && layers.size < 2; k++) {
+        const i = (k * 911_111) % a.manifest.num_addresses;
+        for (const r of reverse(a, rev, toDeg(a.addrLat[i]!), toDeg(a.addrLon[i]!), { limit: 12 })) {
+          layers.add(r.layer);
+        }
+      }
       expect(layers.size).toBeGreaterThan(1);
+      expect(layers.has('address')).toBe(true);
     });
 
-    it('measures a long street to the street, not to its midpoint', () => {
-      // Unter den Linden is ~1.5km; a click at its east end should read as
-      // metres from the street, not ~750m from its representative point.
-      const rs = reverse(a, rev, 52.5170, 13.3990, { limit: 20 });
-      const street = rs.find((r) => r.layer === 'street' && r.name === 'Unter den Linden');
-      if (street) expect(street.distance!).toBeLessThan(150);
-    });
+    it('measures a street to its shape, not to its representative point', () => {
+      // Find a street with sampled points, then query beside one of them that
+      // is far from the anchor's representative point. Distance must reflect
+      // the shape, not the centroid.
+      for (let id = 0; id < a.manifest.num_anchors; id += 13) {
+        if (!hasShape(a, id) || a.geomClosed[id] === 1) continue;
+        const start = a.geomOff[id]!;
+        const n = a.geomOff[id + 1]! - start;
+        if (n < 3) continue;
+        const vLat = toDeg(a.geom[2 * (start + n - 1)]!);
+        const vLon = toDeg(a.geom[2 * (start + n - 1) + 1]!);
+        const fromCentroid = haversineMetres(
+          vLat, vLon, toDeg(a.anchorLat[id]!), toDeg(a.anchorLon[id]!),
+        );
+        if (fromCentroid < 300) continue; // need a vertex well away from the centre
+        const rs = reverse(a, rev, vLat, vLon, { limit: 30 });
+        const self = rs.find((r) => r.id === `anchor:${id}`);
+        if (!self) continue;
+        expect(self.distance!).toBeLessThan(fromCentroid / 2);
+        return;
+      }
+    }, 30_000);
 
     /**
      * Brute-forcing 61M points is slow, but it is the only way to know the k-d
