@@ -68,6 +68,19 @@ func TestEmptyGrid(t *testing.T) {
 	}
 }
 
+// Within must also report the same distance the caller would compute itself.
+func TestWithinReportsDistance(t *testing.T) {
+	g := NewGrid(0.05)
+	g.Add(50.0, 14.0)
+	g.Add(50.1, 14.1)
+	for _, n := range g.Within(50.05, 14.05, 50, nil) {
+		lat, lon := g.At(n.ID)
+		if want := DistanceKm(50.05, 14.05, lat, lon); math.Abs(n.DistKm-want) > 1e-9 {
+			t.Errorf("Within reported %.9f km, want %.9f", n.DistKm, want)
+		}
+	}
+}
+
 func TestWithinMatchesBruteForce(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	g := NewGrid(0.05)
@@ -88,7 +101,7 @@ func TestWithinMatchesBruteForce(t *testing.T) {
 				want++
 			}
 		}
-		if got := len(g.Within(qlat, qlon, radius)); got != want {
+		if got := len(g.Within(qlat, qlon, radius, nil)); got != want {
 			t.Fatalf("Within(%.3f,%.3f,%.1f) = %d points, brute force = %d",
 				qlat, qlon, radius, got, want)
 		}

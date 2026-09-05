@@ -28,7 +28,11 @@
 //	anchor_*.bin     struct-of-arrays, one file per field, n_anchors entries
 //	                 anchor_alt holds a string id whose value is the feature's
 //	                 alternate names joined by U+001F
-//	addr_*.bin       struct-of-arrays, n_addresses entries, grouped by anchor
+//	addr_*.bin       struct-of-arrays, n_addresses entries, grouped by anchor.
+//	                 There is deliberately no addr_anchor: an address's owning
+//	                 anchor is recovered by binary-searching anchor_addr_start,
+//	                 which costs ~23 comparisons and saves 4 bytes per address —
+//	                 244MB across fourteen countries.
 //	terms.bin/.idx   sorted distinct search terms (same string-table encoding)
 //	post_off.bin     uint32[n_terms+1] offsets into post.bin
 //	post.bin         uint32 anchor ids, ascending within each term
@@ -36,7 +40,7 @@ package index
 
 // Version is bumped whenever the binary layout changes. The server refuses to
 // load an artifact it does not recognise rather than misreading it.
-const Version = 3
+const Version = 4
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (

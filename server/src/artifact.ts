@@ -19,7 +19,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 3;
+export const SUPPORTED_VERSION = 4;
 
 export interface Manifest {
   version: number;
@@ -115,6 +115,14 @@ export interface Artifact {
   anchorLat: Int32Array;
   anchorLon: Int32Array;
   anchorFlags: Uint8Array;
+  /**
+   * Country id per anchor, indexing `countryByID`.
+   *
+   * Its own array rather than the high nibble of `anchorFlags`: four bits caps
+   * at sixteen countries and the index already covers fourteen, so the next
+   * additions would have silently wrapped into the layer bits.
+   */
+  anchorCountry: Uint8Array;
   anchorScore: Float32Array;
   /** POI category string id; 0 for non-POI anchors. */
   anchorCat: Uint32Array;
@@ -127,11 +135,24 @@ export interface Artifact {
   addrNum: Uint32Array;
   addrLat: Int32Array;
   addrLon: Int32Array;
-  addrAnchor: Uint32Array;
   addrSortKey: Uint32Array;
 
   /** Country code by numeric id, inverted from the manifest. */
   countryByID: string[];
+
+  /**
+   * Importance of each locality, indexed by its name's string id.
+   *
+   * Street and POI anchors all carry the same flat prior, so among the hundreds
+   * of streets sharing a name there is nothing to rank on and the winner is
+   * arbitrary: "Unter den Linden 1" resolved to a hamlet in Austria rather than
+   * Berlin. This gives every anchor the standing of the place it is in.
+   *
+   * Derived at boot rather than stored: it is a projection of the place layer
+   * already in the artifact, costs one pass over the anchors, and keeping it
+   * out of the format means the ranking can be retuned without a rebuild.
+   */
+  localityScore: Float32Array;
 }
 
 async function view(dir: string, name: string): Promise<Buffer> {
@@ -161,19 +182,20 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   const [
     stringsBin, stringsIdx, termsBin, termsIdx,
     postOff, post,
-    aName, aLocal, aLat, aLon, aFlags, aScore, aCat, aAlt, aStart, aCount,
-    dNum, dLat, dLon, dAnchor, dSort,
+    aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt, aStart, aCount,
+    dNum, dLat, dLon, dSort,
   ] = await Promise.all([
     view(dir, 'strings.bin'), view(dir, 'strings.idx'),
     view(dir, 'terms.bin'), view(dir, 'terms.idx'),
     view(dir, 'post_off.bin'), view(dir, 'post.bin'),
     view(dir, 'anchor_name.bin'), view(dir, 'anchor_local.bin'),
     view(dir, 'anchor_lat.bin'), view(dir, 'anchor_lon.bin'),
-    view(dir, 'anchor_flags.bin'), view(dir, 'anchor_score.bin'),
+    view(dir, 'anchor_flags.bin'), view(dir, 'anchor_country.bin'),
+    view(dir, 'anchor_score.bin'),
     view(dir, 'anchor_cat.bin'), view(dir, 'anchor_alt.bin'),
     view(dir, 'anchor_addr_start.bin'), view(dir, 'anchor_addr_count.bin'),
     view(dir, 'addr_num.bin'), view(dir, 'addr_lat.bin'), view(dir, 'addr_lon.bin'),
-    view(dir, 'addr_anchor.bin'), view(dir, 'addr_sortkey.bin'),
+    view(dir, 'addr_sortkey.bin'),
   ]);
 
   const countryByID: string[] = [];
@@ -190,6 +212,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     anchorLat: asI32(aLat),
     anchorLon: asI32(aLon),
     anchorFlags: new Uint8Array(aFlags.buffer, aFlags.byteOffset, aFlags.byteLength),
+    anchorCountry: new Uint8Array(aCountry.buffer, aCountry.byteOffset, aCountry.byteLength),
     anchorScore: asF32(aScore),
     anchorCat: asU32(aCat),
     anchorAlt: asU32(aAlt),
@@ -198,10 +221,20 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     addrNum: asU32(dNum),
     addrLat: asI32(dLat),
     addrLon: asI32(dLon),
-    addrAnchor: asU32(dAnchor),
     addrSortKey: asU32(dSort),
     countryByID,
+    localityScore: new Float32Array(0), // filled in below
   };
+
+  // Project the place layer onto a lookup by locality name id.
+  const localityScore = new Float32Array(artifact.strings.length);
+  for (let id = 0; id < manifest.num_anchors; id++) {
+    if ((artifact.anchorFlags[id]! & 0x0f) !== LAYER_PLACE) continue;
+    const nameID = artifact.anchorName[id]!;
+    const score = artifact.anchorScore[id]!;
+    if (score > localityScore[nameID]!) localityScore[nameID] = score;
+  }
+  artifact.localityScore = localityScore;
 
   // Fail loudly at boot rather than producing wrong answers per request.
   if (artifact.anchorName.length !== manifest.num_anchors) {
@@ -221,5 +254,23 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
 export const ALT_SEP = '\x1f';
 
 export const layerOf = (flags: number): number => flags & 0x0f;
-export const countryOf = (flags: number): number => flags >> 4;
+
+/**
+ * The anchor owning address `i`.
+ *
+ * Addresses are stored grouped by anchor, so this is a binary search over
+ * `anchorAddrStart` for the last anchor whose run begins at or before `i` —
+ * ~23 comparisons. Storing it explicitly would cost 4 bytes per address, which
+ * is 244MB across the indexed region, to save that.
+ */
+export function anchorOfAddress(a: Artifact, i: number): number {
+  let lo = 0;
+  let hi = a.anchorAddrStart.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (a.anchorAddrStart[mid]! <= i) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
 export const toDeg = (fixed: number): number => fixed / COORD_SCALE;

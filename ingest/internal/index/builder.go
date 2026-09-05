@@ -3,6 +3,7 @@ package index
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -181,19 +182,27 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		return b.Strings.list[a.NumID] < b.Strings.list[c.NumID]
 	})
 
-	for i := range b.Anchors {
-		b.Anchors[i].AddrStart = 0
-		b.Anchors[i].AddrCount = 0
+	// Build the address ranges as a proper CSR offset array: every anchor gets
+	// a start, and an anchor with no addresses takes the offset of the next
+	// run rather than zero.
+	//
+	// That matters because the server recovers an address's owning anchor by
+	// binary-searching this array instead of storing it (244MB saved), and the
+	// search requires it to be monotonically non-decreasing. Leaving empty
+	// anchors at zero would break it for every POI — and POIs are the majority
+	// of anchors.
+	counts := make([]uint32, len(b.Anchors))
+	for _, ad := range b.Addrs {
+		counts[ad.AnchorID]++
 	}
-	for i := 0; i < len(b.Addrs); {
-		j := i
-		aid := b.Addrs[i].AnchorID
-		for j < len(b.Addrs) && b.Addrs[j].AnchorID == aid {
-			j++
-		}
-		b.Anchors[aid].AddrStart = uint32(i)
-		b.Anchors[aid].AddrCount = uint32(j - i)
-		i = j
+	var running uint32
+	for i := range b.Anchors {
+		b.Anchors[i].AddrStart = running
+		b.Anchors[i].AddrCount = counts[i]
+		running += counts[i]
+	}
+	if int(running) != len(b.Addrs) {
+		return fmt.Errorf("address range accounting: %d != %d", running, len(b.Addrs))
 	}
 
 	// An anchor with no coordinates of its own (a placeholder) borrows the
@@ -254,6 +263,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	lat := make([]int32, n)
 	lon := make([]int32, n)
 	flags := make([]byte, n)
+	country := make([]byte, n)
 	score := make([]float32, n)
 	cat := make([]uint32, n)
 	alt := make([]uint32, n)
@@ -263,7 +273,8 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	for i, a := range b.Anchors {
 		name[i], local[i] = a.NameID, a.LocalID
 		lat[i], lon[i] = a.Lat, a.Lon
-		flags[i] = a.Layer | a.Country<<4
+		flags[i] = a.Layer
+		country[i] = a.Country
 		score[i] = a.Score
 		cat[i] = a.CatID
 		alt[i] = a.AltID
@@ -272,7 +283,8 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	w := map[string]any{
 		"anchor_name": name, "anchor_local": local,
 		"anchor_lat": lat, "anchor_lon": lon,
-		"anchor_flags": flags, "anchor_score": score, "anchor_cat": cat,
+		"anchor_flags": flags, "anchor_country": country,
+		"anchor_score": score, "anchor_cat": cat,
 		"anchor_alt":        alt,
 		"anchor_addr_start": start, "anchor_addr_count": count,
 	}
@@ -284,14 +296,16 @@ func (b *Builder) writeAddrs(dir string, man *Manifest) error {
 	num := make([]uint32, n)
 	lat := make([]int32, n)
 	lon := make([]int32, n)
-	anc := make([]uint32, n)
 	key := make([]uint32, n)
 	for i, a := range b.Addrs {
-		num[i], lat[i], lon[i], anc[i], key[i] = a.NumID, a.Lat, a.Lon, a.AnchorID, a.SortKey
+		num[i], lat[i], lon[i], key[i] = a.NumID, a.Lat, a.Lon, a.SortKey
 	}
+	// No addr_anchor: addresses are stored grouped by anchor, so the owning
+	// anchor is a binary search over anchor_addr_start. 4 bytes per address is
+	// 244MB across fourteen countries, for ~23 comparisons on the reverse path.
 	w := map[string]any{
 		"addr_num": num, "addr_lat": lat, "addr_lon": lon,
-		"addr_anchor": anc, "addr_sortkey": key,
+		"addr_sortkey": key,
 	}
 	return writeAll(dir, w, man)
 }

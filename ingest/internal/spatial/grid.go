@@ -136,33 +136,45 @@ func max32(a, b int32) int32 {
 	return b
 }
 
-// Within returns the indices of all points within maxKm of the query, in no
-// particular order.
+// Neighbour is a point found by Within, with its distance already computed.
+type Neighbour struct {
+	ID     int32
+	DistKm float64
+}
+
+// Within appends the points within maxKm of the query to buf, in no particular
+// order, and returns the extended slice.
 //
 // Street-to-settlement assignment needs this rather than Nearest: picking the
 // literally closest settlement puts streets on the edge of Prague into whatever
-// village happens to sit just outside the city. The caller instead weighs every
+// village happens to sit just outside. The caller instead weighs every
 // candidate in range against the settlement's size.
-func (g *Grid) Within(lat, lon, maxKm float64) []int32 {
+//
+// The distance comes back with the id because the caller needs it too, and this
+// is the hot loop of the whole build: one call per street segment and per
+// locality-less address, several million of them, against a grid holding every
+// settlement in fourteen countries. Recomputing the haversine caller-side
+// doubled the cost of the slowest phase, and passing buf in lets the caller
+// reuse one allocation across all of those calls.
+func (g *Grid) Within(lat, lon, maxKm float64, buf []Neighbour) []Neighbour {
 	if len(g.lats) == 0 {
-		return nil
+		return buf
 	}
 	center := g.cellOf(lat, lon)
 	kmPerDegLon := 111.32 * math.Cos(lat*math.Pi/180)
 	cellKm := g.cellDeg * math.Min(111.32, math.Max(kmPerDegLon, 1e-6))
 	maxRing := int32(math.Ceil(maxKm/math.Max(cellKm, 1e-9))) + 1
 
-	var out []int32
 	for r := int32(0); r <= maxRing; r++ {
 		for _, c := range ring(center, r) {
 			for _, pid := range g.buckets[c] {
-				if DistanceKm(lat, lon, g.lats[pid], g.lons[pid]) <= maxKm {
-					out = append(out, pid)
+				if d := DistanceKm(lat, lon, g.lats[pid], g.lons[pid]); d <= maxKm {
+					buf = append(buf, Neighbour{ID: pid, DistKm: d})
 				}
 			}
 		}
 	}
-	return out
+	return buf
 }
 
 // At returns the coordinates of an indexed point.

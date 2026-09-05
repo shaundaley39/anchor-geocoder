@@ -28,6 +28,11 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/pbf"
 )
 
+// defaultCountries is the contiguous central-European block the index covers:
+// a region where OSM address coverage is uniformly good, rather than a
+// scattering of countries.
+const defaultCountries = "de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu"
+
 // source pairs an extract file with the country it is authoritative for.
 type source struct {
 	country string
@@ -38,14 +43,30 @@ func main() {
 	var (
 		rawDir = flag.String("raw", "../data/raw", "directory holding .osm.pbf extracts")
 		outDir = flag.String("out", "../build", "directory for the index artifact")
-		list   = flag.String("countries", "cz,pl", "comma-separated country codes to ingest")
+		list   = flag.String("countries", defaultCountries,
+			"comma-separated country codes to ingest")
 	)
 	flag.Parse()
 
+	// Extraction order matters for cross-extract deduplication: the first
+	// extract to claim an OSM id wins, and Geofabrik country files overlap at
+	// the borders. Ordering by descending data quality and size means a shared
+	// border feature is kept from the country that maps it best.
 	files := map[string]string{
-		"cz": "czech-republic-latest.osm.pbf",
+		"de": "germany-latest.osm.pbf",
 		"pl": "poland-latest.osm.pbf",
+		"it": "italy-latest.osm.pbf",
+		"nl": "netherlands-latest.osm.pbf",
+		"cz": "czech-republic-latest.osm.pbf",
+		"at": "austria-latest.osm.pbf",
+		"be": "belgium-latest.osm.pbf",
+		"ch": "switzerland-latest.osm.pbf",
+		"dk": "denmark-latest.osm.pbf",
+		"sk": "slovakia-latest.osm.pbf",
+		"hu": "hungary-latest.osm.pbf",
+		"hr": "croatia-latest.osm.pbf",
 		"ba": "bosnia-herzegovina-latest.osm.pbf",
+		"lu": "luxembourg-latest.osm.pbf",
 	}
 
 	var sources []source
@@ -53,7 +74,12 @@ func main() {
 		c = strings.TrimSpace(c)
 		f, ok := files[c]
 		if !ok {
-			log.Fatalf("unknown country %q (known: cz, pl, ba)", c)
+			known := make([]string, 0, len(files))
+			for k := range files {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			log.Fatalf("unknown country %q (known: %s)", c, strings.Join(known, ", "))
 		}
 		p := filepath.Join(*rawDir, f)
 		if _, err := os.Stat(p); err != nil {
@@ -149,7 +175,12 @@ func run(sources []source, outDir string) error {
 		// cross-border buffer: the Poland extract contains Czech villages
 		// (Detrichovec) and German ones (Gorlitz). Without this, every border
 		// settlement is indexed twice. First extract to claim an OSM ID wins.
-		seenOSM = make(map[string]struct{}, 12_000_000)
+		//
+		// Keyed by a packed int64 rather than the "osm:n123" string. Across
+		// fourteen countries this map holds ~70M entries, where Go string keys
+		// would cost roughly 90 bytes each in header, backing array and bucket
+		// overhead — some 6GB — against 16 for an int64.
+		seenOSM = make(map[int64]struct{}, 16_000_000)
 		segs    []streetSeg
 		orphans []streetSeg // addresses with no locality tag of any kind
 		places  = map[string]*model.Record{}
@@ -174,7 +205,7 @@ func run(sources []source, outDir string) error {
 		var route func(*model.Record, string) error
 
 		ex.Emit = func(rf pbf.RawFeature) error {
-			key := "osm:" + string(rf.OSMType) + fmt.Sprint(rf.OSMID)
+			key := packOSMKey(rf.OSMType, rf.OSMID)
 			if _, dup := seenOSM[key]; dup {
 				counts["dedup_cross_extract"]++
 				return nil
@@ -317,6 +348,19 @@ func run(sources []source, outDir string) error {
 		log.Printf("  %-24s %d", k, counts[k])
 	}
 	return nil
+}
+
+// packOSMKey folds an OSM type and id into one int64. OSM ids are well under
+// 2^62, so two low bits are free for the type.
+func packOSMKey(osmType byte, id int64) int64 {
+	var t int64
+	switch osmType {
+	case 'w':
+		t = 1
+	case 'r':
+		t = 2
+	}
+	return id<<2 | t
 }
 
 // placeScore ranks duplicate place features so the better mapping survives.

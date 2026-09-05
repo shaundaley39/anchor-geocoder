@@ -25,6 +25,7 @@ package pbf
 var poiKeys = []string{
 	"amenity", "shop", "tourism", "leisure", "historic", "office",
 	"healthcare", "craft", "railway", "aeroway", "public_transport", "man_made",
+	"natural", "waterway", "mountain_pass",
 }
 
 // excluded lists, per key, the values that are map furniture rather than
@@ -83,6 +84,24 @@ var excluded = map[string]map[string]bool{
 		"windsock": true, "gate": true,
 	},
 	"shop": {"vacant": true, "no": true},
+	// Named natural features are destinations — the Matterhorn, the
+	// Schwarzwald, the Bodensee — and the region is alpine, so leaving them out
+	// meant "Matterhorn" resolved to a tram stop in the Netherlands. What is
+	// excluded is ground cover: an individual tree or a patch of scrub has a
+	// name only incidentally.
+	"natural": {
+		"tree": true, "tree_row": true, "scrub": true, "grassland": true,
+		"heath": true, "wetland": true, "rock": true, "stone": true,
+		"sand": true, "coastline": true, "shingle": true, "bare_rock": true,
+		"scree": true, "hedge": true, "earth_bank": true, "shrub": true,
+		"tree_stump": true, "gully": true, "sinkhole": true, "crevasse": true,
+	},
+	// Rivers and canals are landmarks; drainage is not.
+	"waterway": {
+		"stream": true, "ditch": true, "drain": true, "weir": true,
+		"lock_gate": true, "riverbank": true, "fish_pass": true,
+		"turning_point": true, "water_point": true, "fuel": true,
+	},
 }
 
 // isPOI reports whether tags describe a searchable point of interest, and under

@@ -239,11 +239,20 @@ func poiScore(r *model.Record) float32 {
 		return 5.5
 	case "amenity=hospital", "amenity=university":
 		return 5
+	case "natural=peak", "natural=volcano", "natural=glacier",
+		"natural=bay", "waterway=river", "natural=water":
+		// A named mountain or lake is a landmark of the same standing as a
+		// station, and rather more permanent.
+		return 5
 	case "historic=castle", "tourism=museum", "tourism=zoo", "tourism=theme_park":
 		return 4.5
 	case "railway=halt", "amenity=bus_station", "amenity=townhall",
 		"amenity=college", "tourism=attraction":
 		return 4
+	case "natural=wood", "natural=beach", "natural=island", "natural=cape",
+		"natural=spring", "waterway=waterfall", "mountain_pass=yes",
+		"natural=saddle", "natural=cliff", "natural=cave_entrance":
+		return 3.5
 	case "amenity=theatre", "amenity=cinema", "tourism=gallery",
 		"historic=monument", "leisure=stadium", "amenity=library":
 		return 3.5

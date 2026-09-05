@@ -1,7 +1,12 @@
-# Minimal Geocoding API — Czechia & Poland
+# Minimal Geocoding API — Central Europe
 
-A geocoding service over OpenStreetMap data for Czechia and Poland (Bosnia and
-Herzegovina optional), built as two stages:
+A geocoding service over OpenStreetMap data covering a contiguous block of
+fourteen countries: **Germany, Poland, Italy, Netherlands, Czechia, Austria,
+Belgium, Switzerland, Denmark, Slovakia, Hungary, Croatia, Bosnia and
+Herzegovina, Luxembourg** — 61M addresses, 4.8M points of interest, 3.5M
+streets, 509k settlements.
+
+Built as three stages:
 
 | Stage | Language | What it does |
 |---|---|---|
@@ -20,18 +25,19 @@ Herzegovina optional), built as two stages:
 | pnpm | 10+ | `corepack enable && corepack prepare pnpm@latest --activate` |
 
 No cgo, no C++ toolchain, no database, no Docker. `CGO_ENABLED=0` throughout, so
-the ingest binaries are fully static. You need **~4 GB of free disk** (3 GB of
-extracts, 570 MB record stream, 254 MB artifact) and about **8 GB of RAM** for
-the Poland build.
+the ingest binaries are fully static. You need **~20 GB of free disk** (14 GB of extracts, 3.3 GB record stream,
+1.6 GB artifact) and, for the full fourteen-country build, **32 GB of RAM** —
+extraction peaks at 23 GB. A smaller `COUNTRIES` subset scales down
+proportionally; Czechia alone peaks well under 4 GB.
 
 ### Full build
 
 ```bash
-make fetch       # ~3 GB from Geofabrik, md5-verified   (a few min on fast wifi)
-make records     # 4m51s -> build/records.ndjson.gz     (12.2M records, 570 MB)
-make index       # 1m18s -> build/index/                (254 MB artifact)
+make fetch       # 14 GB from Geofabrik, md5-verified
+make records     # 24m09s -> build/records.ndjson.gz    (70M records, 3.3 GB)
+make index       #  7m26s -> build/index/               (1.6 GB artifact)
 make install     # server dependencies
-make serve       # boots in 1.4 s, listens on 127.0.0.1:3000
+make serve       # boots in 7.1 s, listens on 127.0.0.1:3000
 ```
 
 Or `make all` for the first three. `make serve` runs in the foreground, so open
@@ -39,8 +45,8 @@ a second terminal to query it.
 
 ### Faster first run
 
-Czechia alone is a third of the data and gives a fully working API in **~90
-seconds** of build time — enough to try every feature except Polish addresses:
+Czechia alone is 6% of the data and gives a fully working API in **~90 seconds**
+of build time — enough to try every feature on a laptop:
 
 ```bash
 make fetch COUNTRIES=cz          # 901 MB instead of 3 GB
@@ -49,9 +55,8 @@ make index                       # 22 s
 make install && make serve
 ```
 
-`COUNTRIES` takes any comma-separated subset of `cz,pl,ba` and defaults to
-`cz,pl`. (Bosnia needs `make fetch-ba` first, and is only ~10% address-covered —
-see Future improvements.)
+`COUNTRIES` takes any comma-separated subset of
+`de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu`, and defaults to all fourteen.
 
 ### Verify it works
 
@@ -109,7 +114,7 @@ cd server && INDEX_DIR=/srv/geo-index PORT=8080 HOST=0.0.0.0 pnpm exec tsx src/i
 
 ### Docker
 
-The index is a 254 MB build artifact, not source, and it is not in the
+The index is a 1.6 GB build artifact, not source, and it is not in the
 repository — so there are two shapes, and which you want depends on whether you
 are iterating or deploying.
 
@@ -124,12 +129,13 @@ docker compose up         # same as docker-run, via compose.yaml
 | target | image | index | good for |
 |---|---|---|---|
 | `runtime` | 245 MB | mounted at `/index` | local dev — rebuild the index without rebuilding the image |
-| `bundled` | 631 MB | baked in | deployment — one immutable artifact, nothing to mount |
+| `bundled` | 245 MB + index | baked in | deployment — one immutable artifact, nothing to mount |
 
 Both run as the unprivileged `node` user with a `HEALTHCHECK` against
-`/health`. Boot is ~1.4 s and steady-state RSS is ~490 MB, so **give the
-container at least 1 GB** — below ~768 MB it is OOM-killed while building the
-k-d tree.
+`/health`. For the full fourteen-country index, boot is ~7 s and steady-state
+RSS is ~2.6 GB, so **give the container at least 4 GB** — a tighter limit is
+OOM-killed while the k-d tree is being built. Verified at 2.375 GiB of a 4 GiB
+limit.
 
 The index is deliberately **not** built inside Docker. It needs 2.8 GB of OSM
 extracts and ~6 minutes of CPU, which does not belong in an image build: it is a
@@ -238,20 +244,38 @@ Built from the 2026-08-31 Geofabrik extracts.
 
 | stage | time | output |
 |---|---|---|
-| extract | 5m04s | 12,838,758 records — 11,637,055 addresses, 663,724 POIs, 397,036 streets, 141,233 places |
-| index | 1m22s | 1,341,883 anchors, 11,632,595 addresses, 305,746 terms — **310 MB** |
-| boot | **1.4 s** | 42 ms to load the artifact, 1.3 s to build the k-d tree — **~510 MB RSS** |
+| fetch | — | 14 GB of extracts, md5-verified |
+| extract | 24m09s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
+| index | 7m26s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms — **1.6 GB**. Peak 12 GB RSS |
+| boot | **7.1 s** | 84 ms to load the artifact, 7.0 s to build the k-d tree over 61M points — **2.6 GB RSS** |
+
+Per country, as indexed:
+
+| | addresses | anchors | | addresses | anchors |
+|---|---|---|---|---|---|
+| de | 20,614,031 | 3,727,116 | sk | 1,605,064 | 165,395 |
+| nl | 9,920,836 | 638,407 | hu | 755,755 | 306,296 |
+| pl | 8,549,230 | 1,074,206 | hr | 257,634 | 161,435 |
+| it | 4,592,476 | 2,000,585 | lu | 166,549 | 24,328 |
+| be | 4,098,467 | 409,362 | ba | 133,468 | 60,574 |
+| cz | 3,035,605 | 337,451 | | | |
+| dk | 2,613,417 | 315,937 | | | |
+| at | 2,469,845 | 548,341 | | | |
+| ch | 2,190,200 | 471,410 | | | |
 
 Query latency, 16-core M-series laptop, measured by `make bench`:
 
 | query | p50 | p95 | p99 |
 |---|---|---|---|
-| exact city name | 0.564 ms | 0.955 ms | 1.052 ms |
-| 3-char autocomplete prefix | 1.001 ms | 1.494 ms | 1.689 ms |
-| street + house number | 0.089 ms | 0.116 ms | 0.193 ms |
-| two-token street + number | 0.631 ms | 0.783 ms | 0.845 ms |
-| reverse, dense area, k=5 | 0.005 ms | 0.015 ms | 0.028 ms |
-| reverse, sparse (~5 km) | 0.008 ms | 0.135 ms | 0.308 ms |
+| exact city name | 0.569 ms | 0.998 ms | 1.235 ms |
+| 3-char autocomplete prefix | 1.276 ms | 1.747 ms | 1.912 ms |
+| street + house number | 0.095 ms | 0.118 ms | 0.213 ms |
+| two-token street + number | 0.933 ms | 1.229 ms | 1.387 ms |
+| reverse, dense area, k=5 | 0.010 ms | 0.047 ms | 0.104 ms |
+| reverse, sparse (~5 km) | 0.013 ms | 0.312 ms | 0.907 ms |
+
+Latency is essentially flat against a 5x larger corpus: candidate lists grew,
+but the per-layer cut bounds the reranking work regardless of index size.
 
 One case is much slower and is called out under Future improvements: a reverse
 query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
@@ -384,6 +408,29 @@ whole contract, and there is a test asserting the two code paths cannot drift.
   and then dropped as stopwords, so `ul. Marszałkowska`, `ulica Marszałkowska`
   and `Marszałkowska` converge on one token. Removal is skipped when it would
   empty the list, protecting features genuinely named `Rynek` or `Plac`.
+
+### Scaling to fourteen countries surfaced three ceilings
+
+Going from 11.6M to 61M addresses was not a matter of passing more filenames.
+Three things in the code were sized for the smaller corpus:
+
+- **The cross-extract dedup map** was keyed by the string `"osm:n123"`. At ~70M
+  entries that is roughly 90 bytes each in header, backing array and bucket
+  overhead — about 6 GB. Packing the type and id into one `int64` costs 16.
+- **The country id was a 4-bit nibble** of `anchor_flags`, capping at sixteen.
+  Fourteen countries came uncomfortably close to silently wrapping into the
+  layer bits, so country moved to its own array.
+- **`addr_anchor` stored the owning anchor per address.** At 61M addresses that
+  is 244 MB to avoid a binary search over `anchor_addr_start`, so it was dropped
+  and the anchor is derived in ~23 comparisons. That required making the start
+  offsets a proper CSR array: anchors with no addresses previously stored zero,
+  which is most anchors now that POIs exist, and would have broken the search.
+
+Extraction was also 2.1x slower than it needed to be. Street-to-settlement
+assignment scanned a 30 km radius when the largest catchment is a city's 15 km,
+so three quarters of the candidates were fetched only to be rejected; and
+`Within` computed each distance then discarded it, leaving the caller to
+recompute. Fixing both took the extract from **50m22s to 24m09s**.
 
 ### Points of interest are curated, not swept up
 
@@ -712,12 +759,16 @@ expected bounding box (0).
   inside the same ~28 km cell. Most are genuine node-and-area pairs of one
   settlement, which is the intended collapse, but the two cases are not
   currently distinguished.
+- **Some landmarks mapped as relations are missing**, per the relation gap
+  below. Prague's airport and the Colosseum are the visible examples; Vienna's
+  Schönbrunn, Berlin's Brandenburger Tor, the Matterhorn and the Zugspitze all
+  resolve correctly.
 - **No fuzzy matching.** A typo returns nothing. Diacritic-insensitivity
   (`Plzen` → `Plzeň`) is *not* fuzzy matching — both sides pass through the same
   deterministic normalizer, so it is an exact match on a folded form. Tolerating
   a genuine misspelling needs edit distance; see Future improvements.
 - **OSM relations are skipped**, so multipolygon-mapped features are missing.
-  Measured: 36,703 named POI-tagged relations across both countries against
+  Measured on Czechia and Poland: 36,703 named POI-tagged relations against
   663,724 indexed POIs, so 5.2% by count — but they skew large. Prague's
   Letiště Václava Havla is a multipolygon and is absent, while Warsaw Chopin and
   Kraków-Balice, mapped as ways, are present. Resolving multipolygon geometry

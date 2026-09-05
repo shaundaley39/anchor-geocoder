@@ -23,9 +23,11 @@ var catchmentKm = map[string]float64{
 	"neighbourhood": 1.2, "hamlet": 1.2, "isolated_dwelling": 0.4,
 }
 
-// searchRadiusKm bounds the candidate lookup. Nothing has a catchment beyond
-// 15km, so 30km is a generous ceiling.
-const searchRadiusKm = 30
+// searchRadiusKm bounds the candidate lookup. A candidate is rejected outright
+// once distance exceeds its catchment, and the largest catchment is a city's
+// 15km, so anything fetched beyond that is fetched only to be thrown away.
+// Scanning 30km examined roughly four times the area for no change in result.
+const searchRadiusKm = 15
 
 // groupStreets assigns each buffered street segment to a settlement and merges
 // segments sharing a (country, name, locality) key into one record.
@@ -58,6 +60,8 @@ func groupStreets(segs []streetSeg, places map[string]*model.Record, counts map[
 
 	out := map[string]*streetAgg{}
 	var unassigned int
+	// One reusable buffer across millions of lookups.
+	var buf []spatial.Neighbour
 
 	for i := range segs {
 		seg := &segs[i]
@@ -66,13 +70,11 @@ func groupStreets(segs []streetSeg, places map[string]*model.Record, counts map[
 		if locality == "" {
 			if g := grids[seg.country]; g != nil {
 				best, bestScore := (*model.Record)(nil), 0.0
-				for _, id := range g.Within(seg.lat, seg.lon, searchRadiusKm) {
-					cand := names[seg.country][id]
-					plat, plon := g.At(id)
-					d := spatial.DistanceKm(seg.lat, seg.lon, plat, plon)
-					c := catchmentKm[cand.PlaceType]
+				buf = g.Within(seg.lat, seg.lon, searchRadiusKm, buf[:0])
+				for _, n := range buf {
+					cand := names[seg.country][n.ID]
 					// Lower is better; skip anything outside its catchment.
-					score := d / c
+					score := n.DistKm / catchmentKm[cand.PlaceType]
 					if score > 1 {
 						continue
 					}
@@ -161,6 +163,7 @@ func resolveOrphanAddresses(orphans []streetSeg, places map[string]*model.Record
 	}
 
 	resolved := 0
+	var buf []spatial.Neighbour
 	for i := range orphans {
 		o := &orphans[i]
 		g := grids[o.country]
@@ -169,10 +172,10 @@ func resolveOrphanAddresses(orphans []streetSeg, places map[string]*model.Record
 		}
 		var best *model.Record
 		bestScore := 0.0
-		for _, id := range g.Within(o.lat, o.lon, searchRadiusKm) {
-			cand := names[o.country][id]
-			plat, plon := g.At(id)
-			score := spatial.DistanceKm(o.lat, o.lon, plat, plon) / catchmentKm[cand.PlaceType]
+		buf = g.Within(o.lat, o.lon, searchRadiusKm, buf[:0])
+		for _, n := range buf {
+			cand := names[o.country][n.ID]
+			score := n.DistKm / catchmentKm[cand.PlaceType]
 			if score > 1 {
 				continue
 			}

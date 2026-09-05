@@ -3,15 +3,15 @@
 
 RAW      := data/raw
 BUILD    := build
-COUNTRIES?= cz,pl
+# The contiguous central-European block. Override for a smaller build:
+#   make records COUNTRIES=cz,sk
+COUNTRIES ?= de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
 GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
-PL_PBF := $(RAW)/poland-latest.osm.pbf
-BA_PBF := $(RAW)/bosnia-herzegovina-latest.osm.pbf
 GEOFABRIK := https://download.geofabrik.de/europe
 
-.PHONY: all fetch records index test test-go test-server clean fetch-ba verify \
+.PHONY: all fetch records index test test-go test-server clean verify \
         fold-vectors serve bench install docker docker-bundled docker-run \
         docker-run-bundled
 
@@ -21,9 +21,21 @@ comma := ,
 
 # Map the COUNTRIES list onto extract filenames so `make fetch COUNTRIES=cz`
 # downloads only what that build will actually read.
-cc-file = $(RAW)/$(strip $(if $(filter cz,$1),czech-republic,\
-                          $(if $(filter pl,$1),poland,\
-                          $(if $(filter ba,$1),bosnia-herzegovina,$1))))-latest.osm.pbf
+slug-cz := czech-republic
+slug-pl := poland
+slug-ba := bosnia-herzegovina
+slug-de := germany
+slug-it := italy
+slug-nl := netherlands
+slug-at := austria
+slug-be := belgium
+slug-ch := switzerland
+slug-dk := denmark
+slug-sk := slovakia
+slug-hu := hungary
+slug-hr := croatia
+slug-lu := luxembourg
+cc-file = $(RAW)/$(slug-$(strip $1))-latest.osm.pbf
 ## fetch: download and checksum the extracts named by COUNTRIES (default cz,pl)
 fetch: $(foreach c,$(subst $(comma), ,$(COUNTRIES)),$(call cc-file,$c))
 
@@ -34,9 +46,6 @@ $(RAW)/%-latest.osm.pbf:
 	@cd $(RAW) && test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
 	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)" \
 	   && echo "  checksum OK: $*" || (echo "  CHECKSUM MISMATCH: $*" && exit 1)
-
-## fetch-ba: Bosnia is an optional third country
-fetch-ba: $(BA_PBF)
 
 ## records: extract OSM into the normalized record stream (build/records.ndjson.gz)
 records:

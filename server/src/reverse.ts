@@ -11,7 +11,7 @@
  * and keeps the artifact independent of kdbush's internal layout.
  */
 import KDBush from 'kdbush';
-import { type Artifact, toDeg, countryOf } from './artifact.js';
+import { type Artifact, toDeg, anchorOfAddress } from './artifact.js';
 import { type GeocodeResult, haversineMetres } from './forward.js';
 
 /** Geographic extent of the indexed data, in degrees. */
@@ -131,10 +131,8 @@ export function reverse(
     if (hits.length > 0) {
       found = [];
       for (const i of hits) {
-        if (wantCountry !== undefined) {
-          const flags = a.anchorFlags[a.addrAnchor[i]!]!;
-          if (countryOf(flags) !== wantCountry) continue;
-        }
+        if (wantCountry !== undefined &&
+            a.anchorCountry[anchorOfAddress(a, i)] !== wantCountry) continue;
         const d = haversineMetres(lat, lon, toDeg(a.addrLat[i]!), toDeg(a.addrLon[i]!));
         // The box is a square in degree space; discard the corners that fall
         // outside the true circle so the radius means what it says.
@@ -149,15 +147,14 @@ export function reverse(
   found.sort((x, y) => x.dist - y.dist);
 
   return found.slice(0, limit).map(({ idx: i, dist }) => {
-    const anchorID = a.addrAnchor[i]!;
-    const flags = a.anchorFlags[anchorID]!;
+    const anchorID = anchorOfAddress(a, i);
     return {
       id: `addr:${i}`,
       layer: 'address' as const,
       name: a.strings.get(a.anchorName[anchorID]!),
       locality: a.strings.get(a.anchorLocal[anchorID]!),
       houseNumber: a.strings.get(a.addrNum[i]!),
-      country: a.countryByID[countryOf(flags)] ?? '',
+      country: a.countryByID[a.anchorCountry[anchorID]!] ?? '',
       lat: toDeg(a.addrLat[i]!),
       lon: toDeg(a.addrLon[i]!),
       score: 1 / (1 + dist),

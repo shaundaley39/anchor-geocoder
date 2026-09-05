@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadArtifact, type Artifact, toDeg } from '../src/artifact.js';
+import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
 import { forward, parseQuery, findHouseNumber, haversineMetres } from '../src/forward.js';
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
@@ -50,31 +50,59 @@ describe('rate limiting', () => {
 });
 
 describe('parseQuery', () => {
+  // parseQuery returns candidate readings, best guess first; forward() takes
+  // the first that finds anything.
+  const first = (q: string) => parseQuery(q)[0]!;
+
   it('splits a trailing house number off the street name', () => {
-    expect(parseQuery('Marszalkowska 12')).toEqual({
+    expect(first('Marszalkowska 12')).toEqual({
       nameTokens: ['marszalkowska'], houseNumber: '12',
     });
   });
 
   it('recombines a Czech conscription/orientation pair', () => {
-    expect(parseQuery('Prazska 248/39')).toEqual({
+    expect(first('Prazska 248/39')).toEqual({
       nameTokens: ['prazska'], houseNumber: '248/39',
     });
   });
 
+  /**
+   * Much of the region writes the number between the street and the city, so a
+   * trailing-only rule fails "Via Roma 1 Torino" and "Damrak 1 Amsterdam"
+   * outright — no results at all, rather than a worse ordering.
+   */
+  it('extracts a medial house number', () => {
+    expect(first('Via Roma 1 Torino')).toEqual({
+      nameTokens: ['via', 'roma', 'torino'], houseNumber: '1',
+    });
+    expect(first('Damrak 1 Amsterdam')).toEqual({
+      nameTokens: ['damrak', 'amsterdam'], houseNumber: '1',
+    });
+  });
+
   it('does not treat a leading number as a house number', () => {
-    // "3 Maja" (Third of May) is a very common Polish street name.
-    const p = parseQuery('3 Maja');
+    // "3 Maja" (Third of May) is a very common Polish street name, and
+    // "17 Novembre" and friends are the same idea elsewhere in the region.
+    const p = first('3 Maja');
     expect(p.houseNumber).toBeNull();
     expect(p.nameTokens).toEqual(['3', 'maja']);
+    expect(first('3 Maja Warszawa').houseNumber).toBeNull();
+  });
+
+  it('always offers the whole query as a fallback reading', () => {
+    const readings = parseQuery('Via Roma 1 Torino');
+    expect(readings.length).toBe(2);
+    expect(readings[1]).toEqual({
+      nameTokens: ['via', 'roma', '1', 'torino'], houseNumber: null,
+    });
   });
 
   it('keeps a bare number as a name token, having nothing to anchor it to', () => {
-    expect(parseQuery('299')).toEqual({ nameTokens: ['299'], houseNumber: null });
+    expect(first('299')).toEqual({ nameTokens: ['299'], houseNumber: null });
   });
 
   it('returns nothing for an empty query', () => {
-    expect(parseQuery('   ')).toEqual({ nameTokens: [], houseNumber: null });
+    expect(first('   ')).toEqual({ nameTokens: [], houseNumber: null });
   });
 });
 
@@ -120,8 +148,10 @@ maybe('against the built index', () => {
         const start = a.anchorAddrStart[id]!;
         const count = a.anchorAddrCount[id]!;
         expect(start + count).toBeLessThanOrEqual(n);
+        // The owning anchor is derived, not stored; verify the derivation
+        // agrees with the range it came from.
         for (let i = start; i < start + count; i++) {
-          expect(a.addrAnchor[i]).toBe(id);
+          expect(anchorOfAddress(a, i)).toBe(id);
         }
         checked++;
       }
@@ -443,9 +473,19 @@ maybe('against the built index', () => {
     });
 
     it('rejects a country outside the index', async () => {
-      const res = await get('/v1/geocode?q=Praha&country=de');
+      // Derived from the manifest rather than hardcoded: the covered set grows.
+      const covered = new Set(Object.keys(a.manifest.country_ids));
+      const absent = ['fr', 'es', 'pt', 'se', 'no'].find((c) => !covered.has(c));
+      expect(absent).toBeDefined();
+      const res = await get(`/v1/geocode?q=Praha&country=${absent}`);
       expect(res.statusCode).toBe(400);
-      expect(res.json().hint).toContain('cz');
+      expect(res.json().error).toBe('bad_request');
+    });
+
+    it('accepts every country the index actually covers', async () => {
+      for (const cc of Object.keys(a.manifest.country_ids)) {
+        expect((await get(`/v1/geocode?q=a&country=${cc}`)).statusCode).toBe(200);
+      }
     });
 
     /**
@@ -486,12 +526,21 @@ maybe('against the built index', () => {
       expect(res.headers['access-control-allow-methods']).toContain('GET');
     });
 
-    it('advertises the coverage bbox on /health', async () => {
+    it('advertises a coverage bbox that contains the indexed data', async () => {
       const b = (await get('/health')).json().bbox;
-      expect(b.minLat).toBeGreaterThan(45);
-      expect(b.maxLat).toBeLessThan(56);
-      expect(b.minLon).toBeGreaterThan(11);
-      expect(b.maxLon).toBeLessThan(25);
+      expect(b.minLat).toBeLessThan(b.maxLat);
+      expect(b.minLon).toBeLessThan(b.maxLon);
+      // Somewhere in Europe, not the whole globe.
+      expect(b.minLat).toBeGreaterThan(30);
+      expect(b.maxLat).toBeLessThan(60);
+      expect(b.minLon).toBeGreaterThan(0);
+      expect(b.maxLon).toBeLessThan(30);
+      // And it must actually contain a place the index returns.
+      const praha = forward(a, 'Praha', { limit: 1 })[0]!;
+      expect(praha.lat).toBeGreaterThanOrEqual(b.minLat);
+      expect(praha.lat).toBeLessThanOrEqual(b.maxLat);
+      expect(praha.lon).toBeGreaterThanOrEqual(b.minLon);
+      expect(praha.lon).toBeLessThanOrEqual(b.maxLon);
     });
 
     it('reports health', async () => {
