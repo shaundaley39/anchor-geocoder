@@ -173,13 +173,19 @@ func addAnchor(b *index.Builder, r *model.Record) {
 		return
 	}
 	layer := index.LayerStreet
-	if r.Layer == model.LayerPlace {
+	switch r.Layer {
+	case model.LayerPlace:
 		layer = index.LayerPlace
+	case model.LayerPOI:
+		layer = index.LayerPOI
 	}
 	var key string
-	if layer == index.LayerPlace {
+	switch layer {
+	case index.LayerPlace:
 		key = index.PlaceKey(r.Country, norm.Tokens(name), r.Lat, r.Lon)
-	} else {
+	case index.LayerPOI:
+		key = index.POIKey(r.ID)
+	default:
 		key = index.AnchorKey(r.Country, layer, norm.Tokens(name), norm.Tokens(r.City))
 	}
 	id, _ := b.AnchorID(key)
@@ -201,13 +207,53 @@ func addAnchor(b *index.Builder, r *model.Record) {
 	a.Tokens = r.Tokens
 	a.Layer = layer
 
-	if layer == index.LayerPlace {
+	switch layer {
+	case index.LayerPlace:
 		a.Score = placeScore(r)
 		b.Counts["anchor_place"]++
-	} else {
+	case index.LayerPOI:
+		a.Score = poiScore(r)
+		a.CatID = b.Strings.Intern(r.Category)
+		b.Counts["anchor_poi"]++
+	default:
 		a.Score = 1
 		b.Counts["anchor_street"]++
 	}
+}
+
+// poiScore is the importance prior for a point of interest, on the same scale
+// as placeScore where an ordinary street is 1.
+//
+// The ordering reflects what people actually search for by name. A railway
+// station or an airport is a navigation landmark and should outrank a village;
+// a hairdresser should not. Chain retail sits in the middle: "Lidl" is a common
+// and reasonable query, but it should never beat a town called Lidl would-be.
+func poiScore(r *model.Record) float32 {
+	switch r.Category {
+	case "aeroway=aerodrome":
+		return 7
+	case "railway=station", "public_transport=station":
+		return 5.5
+	case "amenity=hospital", "amenity=university":
+		return 5
+	case "historic=castle", "tourism=museum", "tourism=zoo", "tourism=theme_park":
+		return 4.5
+	case "railway=halt", "amenity=bus_station", "amenity=townhall",
+		"amenity=college", "tourism=attraction":
+		return 4
+	case "amenity=theatre", "amenity=cinema", "tourism=gallery",
+		"historic=monument", "leisure=stadium", "amenity=library":
+		return 3.5
+	case "amenity=school", "amenity=place_of_worship", "leisure=park",
+		"amenity=police", "amenity=post_office", "railway=tram_stop":
+		return 3
+	case "tourism=hotel", "amenity=pharmacy", "amenity=fuel",
+		"shop=supermarket", "shop=mall", "amenity=marketplace":
+		return 2.5
+	}
+	// Everything else that survived curation: shops, cafes, offices, clinics.
+	// Above a plain street, below any settlement.
+	return 1.8
 }
 
 // placeScore is the importance prior for a settlement, on a scale where an

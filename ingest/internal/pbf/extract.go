@@ -76,6 +76,10 @@ type RawFeature struct {
 	Tags    map[string]string
 	Lat     float64
 	Lon     float64
+	// Category is non-empty when the feature qualifies as a point of interest;
+	// see poi.go. Computed during extraction so the converter does not repeat
+	// the classification.
+	Category string
 }
 
 func (e *Extractor) log(format string, args ...any) {
@@ -169,6 +173,8 @@ type Stats struct {
 	PlaceNodes     int64
 	PlaceWays      int64
 	StreetWays     int64
+	POINodes       int64
+	POIWays        int64
 	WaysUnresolved int64 // selected but geometry could not be built
 }
 

@@ -42,6 +42,7 @@ export function toFeature(r: GeocodeResult): Feature {
     country: r.country,
   };
   if (r.locality) props['locality'] = r.locality;
+  if (r.category !== undefined) props['category'] = r.category;
   if (r.houseNumber !== undefined) props['house_number'] = r.houseNumber;
   if (r.distance !== undefined) props['distance_m'] = r.distance;
 

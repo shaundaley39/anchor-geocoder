@@ -63,6 +63,7 @@ type Anchor struct {
 	Layer     uint8
 	Country   uint8
 	Score     float32 // importance prior, pre-multiplied at build time
+	CatID     uint32  // POI category string id; 0 for non-POI anchors
 	Tokens    []string
 	AddrStart uint32
 	AddrCount uint32
@@ -229,6 +230,7 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 	man.NumAddrs = len(b.Addrs)
 	man.Version = Version
 	man.Counts = b.Counts
+	man.NumPOIs = b.Counts["anchor_poi"]
 	man.CountryIDs = b.Countries
 
 	mf, err := os.Create(filepath.Join(dir, "manifest.json"))
@@ -249,6 +251,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	lon := make([]int32, n)
 	flags := make([]byte, n)
 	score := make([]float32, n)
+	cat := make([]uint32, n)
 	start := make([]uint32, n)
 	count := make([]uint32, n)
 
@@ -257,12 +260,13 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		lat[i], lon[i] = a.Lat, a.Lon
 		flags[i] = a.Layer | a.Country<<4
 		score[i] = a.Score
+		cat[i] = a.CatID
 		start[i], count[i] = a.AddrStart, a.AddrCount
 	}
 	w := map[string]any{
 		"anchor_name": name, "anchor_local": local,
 		"anchor_lat": lat, "anchor_lon": lon,
-		"anchor_flags": flags, "anchor_score": score,
+		"anchor_flags": flags, "anchor_score": score, "anchor_cat": cat,
 		"anchor_addr_start": start, "anchor_addr_count": count,
 	}
 	return writeAll(dir, w, man)
@@ -401,6 +405,11 @@ func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string)
 	return country + "|" + l + "|" + strings.Join(foldedName, " ") +
 		"|" + strings.Join(foldedLocality, " ")
 }
+
+// POIKey is the dedup key for a point of interest. geoingest has already
+// collapsed node-and-way duplicates of one POI, so this only needs to keep
+// genuinely distinct POIs apart — hence the OSM id rather than a name.
+func POIKey(id string) string { return "poi|" + id }
 
 // PlaceKey is the dedup key for a settlement. A place record's locality is its
 // own name, so AnchorKey alone merges every same-named village in a country —

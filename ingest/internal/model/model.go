@@ -18,6 +18,7 @@ const (
 	LayerAddress Layer = "address"
 	LayerStreet  Layer = "street"
 	LayerPlace   Layer = "place"
+	LayerPOI     Layer = "poi"
 )
 
 // LayerRank gives the ranking prior for a layer. Higher wins.
@@ -25,6 +26,8 @@ func LayerRank(l Layer) float64 {
 	switch l {
 	case LayerAddress:
 		return 3
+	case LayerPOI:
+		return 2.5
 	case LayerStreet:
 		return 2
 	case LayerPlace:
@@ -82,6 +85,9 @@ type Record struct {
 
 	PlaceType  string `json:"place_type,omitempty"` // city|town|village|hamlet|suburb...
 	Population int64  `json:"population,omitempty"`
+	// Category is the POI classification, "key=value" as tagged in OSM
+	// (amenity=restaurant, railway=station, shop=supermarket...).
+	Category string `json:"category,omitempty"`
 
 	// Search text, precomputed by the normalizer so the server never has to.
 	// Tokens is the folded, transliterated token list actually indexed.

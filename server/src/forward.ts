@@ -12,17 +12,19 @@
  *   4. if a house number was given, resolve it inside the best anchors' runs
  */
 import {
-  type Artifact, layerOf, countryOf, toDeg, LAYER_PLACE,
+  type Artifact, layerOf, countryOf, toDeg, LAYER_PLACE, LAYER_POI,
 } from './artifact.js';
 import { tokens as foldTokens } from './normalize.js';
 
 export interface GeocodeResult {
   id: string;
-  layer: 'address' | 'street' | 'place';
+  layer: 'address' | 'street' | 'place' | 'poi';
   name: string;
   locality: string;
   houseNumber?: string;
   country: string;
+  /** OSM classification for POIs, e.g. "amenity=restaurant". */
+  category?: string;
   lat: number;
   lon: number;
   score: number;
@@ -226,13 +228,16 @@ export function findHouseNumber(
 
 function anchorResult(a: Artifact, id: number, score: number): GeocodeResult {
   const flags = a.anchorFlags[id]!;
-  const layer = layerOf(flags) === LAYER_PLACE ? 'place' : 'street';
+  const code = layerOf(flags);
+  const layer = code === LAYER_PLACE ? 'place' : code === LAYER_POI ? 'poi' : 'street';
+  const category = code === LAYER_POI ? a.strings.get(a.anchorCat[id]!) : undefined;
   return {
     id: `anchor:${id}`,
     layer,
     name: a.strings.get(a.anchorName[id]!),
     locality: a.strings.get(a.anchorLocal[id]!),
     country: a.countryByID[countryOf(flags)] ?? '',
+    ...(category ? { category } : {}),
     lat: toDeg(a.anchorLat[id]!),
     lon: toDeg(a.anchorLon[id]!),
     score,
@@ -257,23 +262,111 @@ function addressResult(
 }
 
 /**
- * Number of folded tokens in an anchor's own name.
+ * An anchor's own name and locality, folded into tokens.
  *
- * Not stored in the artifact: it is only needed for the few hundred candidates
- * that survive to reranking, so computing it lazily is cheaper than 2.7MB of
- * index and a rebuild. Memoized because popular anchors recur across queries.
+ * Not stored in the artifact: only the few hundred candidates that survive
+ * coarse ranking need it, so computing it lazily is cheaper than several MB of
+ * index. Memoized because popular anchors recur across queries.
  */
-const nameTokenCount = new Map<number, number>();
-function anchorNameTokens(a: Artifact, id: number): number {
-  const hit = nameTokenCount.get(id);
+interface AnchorTokens { name: string[]; locality: string[] }
+const anchorTokenCache = new Map<number, AnchorTokens>();
+
+function anchorTokens(a: Artifact, id: number): AnchorTokens {
+  const hit = anchorTokenCache.get(id);
   if (hit !== undefined) return hit;
-  const n = foldTokens(a.strings.get(a.anchorName[id]!)).length || 1;
-  if (nameTokenCount.size < 200_000) nameTokenCount.set(id, n);
-  return n;
+  const t: AnchorTokens = {
+    name: foldTokens(a.strings.get(a.anchorName[id]!)),
+    locality: foldTokens(a.strings.get(a.anchorLocal[id]!)),
+  };
+  if (anchorTokenCache.size < 200_000) anchorTokenCache.set(id, t);
+  return t;
 }
 
-/** How many candidates survive coarse scoring to be reranked properly. */
-const RERANK_DEPTH = 400;
+/** Exact for every token but the last, which is a prefix (autocomplete). */
+function hits(tokens: string[], q: string, isLast: boolean): boolean {
+  return isLast ? tokens.some((t) => t.startsWith(q)) : tokens.includes(q);
+}
+
+/**
+ * How well an anchor's own name and locality explain the query.
+ *
+ * An anchor is indexed on more than its name: a POI carries its street, city
+ * and postcode as searchable tokens too. Scoring on name *length* alone
+ * therefore credits matches that never touched the name — a railway station
+ * named "Lednice" standing at Nádražní 1 scored full marks for the query
+ * "Nadrazni" and, with a station's importance prior, outranked every actual
+ * street of that name in the country.
+ *
+ * So two things are measured:
+ *
+ *   explained  — the share of query tokens found in the name (full credit) or
+ *                the locality (partial). Adding a city to a query should help,
+ *                not dilute, so locality counts; matching neither barely counts
+ *                at all.
+ *   nameUsed   — the share of the anchor's own name the query accounted for,
+ *                which is what keeps "Prazska" from tying with "Nova Prazska".
+ */
+function relevance(a: Artifact, id: number, queryTokens: string[]): number {
+  const { name, locality } = anchorTokens(a, id);
+  if (name.length === 0) return 0.05;
+
+  let inName = 0;
+  let inLocality = 0;
+  for (let i = 0; i < queryTokens.length; i++) {
+    const q = queryTokens[i]!;
+    const isLast = i === queryTokens.length - 1;
+    if (hits(name, q, isLast)) inName++;
+    else if (hits(locality, q, isLast)) inLocality++;
+  }
+
+  // Never zero: a POI genuinely standing on the queried street is a weak but
+  // legitimate answer, and should rank last rather than vanish.
+  const explained = Math.max(
+    (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
+  );
+  const nameUsed = inName / name.length;
+  const base = explained * (0.1 + 0.9 * nameUsed);
+
+  // Squared, because a partial name match is a much weaker signal than the raw
+  // token overlap suggests, and the importance priors it competes against span
+  // an order of magnitude.
+  let score = base * base;
+
+  // An exact full-name match — every query token in the name, every name token
+  // used — is the strongest signal available and gets its own bonus. Without
+  // it, a perfectly matched street ("Nádražní", prior 1.0) loses to a partial
+  // match on a higher-prior feature: a school called "ZŠ Nádražní" (1.8) or a
+  // suburb called "Nádražní Předměstí" (2.5).
+  if (inName === name.length && inName === queryTokens.length) score *= 2.5;
+
+  return score;
+}
+
+/**
+ * How many candidates survive coarse scoring, per layer.
+ *
+ * Per layer, not overall, and that matters. The coarse pass can only rank on
+ * the importance prior, which spans 1.0 for a street to 7.0 for an airport —
+ * so a single overall cut deletes the lowest-prior layer wholesale whenever a
+ * term has more high-prior postings than the budget. Measured: the term
+ * "nadrazni" has 1,136 postings, 424 of them POIs, and the Nádražní in Brno
+ * came 427th and was discarded on every query, proximity included, because 424
+ * stations and museums outranked all 710 streets before anything looked at
+ * whether the query matched a name.
+ */
+const RERANK_DEPTH_PER_LAYER = 200;
+
+/**
+ * Distance decay for the `proximity` bias: ~2x at the query point, ~1.5x at
+ * 50km, asymptotically 1x. Never zero, so proximity reorders results rather
+ * than filtering them — a far-away exact match still beats a nearby poor one.
+ */
+function proximityBoost(
+  p: { lat: number; lon: number }, a: Artifact, id: number,
+): number {
+  const d = haversineMetres(p.lat, p.lon, toDeg(a.anchorLat[id]!), toDeg(a.anchorLon[id]!));
+  return 1 + 1 / (1 + d / 50_000);
+}
 
 export function forward(
   a: Artifact, query: string, opts: ForwardOptions = {},
@@ -286,7 +379,7 @@ export function forward(
     ? a.manifest.country_ids[opts.country.toLowerCase()]
     : undefined;
 
-  const scored = candidates(a, parsed.nameTokens, RERANK_DEPTH);
+  const scored = candidates(a, parsed.nameTokens, RERANK_DEPTH_PER_LAYER * 3);
   if (scored.size === 0) return [];
 
   // Stage 1: coarse ranking, to cut the candidate set down to something worth
@@ -298,31 +391,35 @@ export function forward(
   // street whose locality is Praha — so ranking on text alone leaves the top
   // 400 an arbitrary slice of a 3,665-way tie, and Praha itself falls out of
   // it. Multiplying by the prior first is one array read and costs nothing.
-  const coarse: { id: number; text: number; score: number }[] = [];
+  const byLayer: { id: number; text: number; score: number }[][] = [[], [], []];
   for (const [id, text] of scored) {
-    if (wantCountry !== undefined && countryOf(a.anchorFlags[id]!) !== wantCountry) continue;
-    coarse.push({ id, text, score: text * a.anchorScore[id]! });
+    const flags = a.anchorFlags[id]!;
+    if (wantCountry !== undefined && countryOf(flags) !== wantCountry) continue;
+    let s = text * a.anchorScore[id]!;
+    // Proximity biases the coarse pass too, for the same reason the prior
+    // does: "nadrazni" names 651 Czech streets sharing one text weight and one
+    // prior, so without it the surviving slice of that tie is arbitrary and
+    // the one next to the query point may not be in it.
+    if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
+    (byLayer[layerOf(flags)] ?? byLayer[0]!).push({ id, text, score: s });
   }
-  coarse.sort((x, y) => y.score - x.score);
-  coarse.length = Math.min(coarse.length, RERANK_DEPTH);
+
+  const coarse: { id: number; text: number; score: number }[] = [];
+  for (const bucket of byLayer) {
+    bucket.sort((x, y) => y.score - x.score);
+    for (const c of bucket.slice(0, RERANK_DEPTH_PER_LAYER)) coarse.push(c);
+  }
 
   // Stage 2: rerank precisely.
-  const qTokens = parsed.nameTokens.length;
   const ranked: { id: number; score: number; addrIdx: number | null }[] = [];
 
   for (const { id, text } of coarse) {
     const flags = a.anchorFlags[id]!;
     let score = text * a.anchorScore[id]!;
 
-    // Coverage: how much of the anchor's own name the query accounted for.
-    // Without this "Prazska" scores the same on "Prazska" as on "Nova Prazska"
-    // and "Prazska brana", and the street the user actually meant is lost among
-    // its longer namesakes. Squared, because partial name matches are much
-    // weaker signals than the raw token overlap suggests.
-    const nameLen = anchorNameTokens(a, id);
-    const coverage = Math.min(qTokens, nameLen) / nameLen;
-    score *= coverage * coverage;
+    score *= relevance(a, id, parsed.nameTokens);
 
+    // A bare settlement name is more often the intent than a POI sharing it.
     if (layerOf(flags) === LAYER_PLACE) score *= 1.25;
 
     // Resolve the house number now, not after truncating to `limit`: an anchor
@@ -343,15 +440,7 @@ export function forward(
       }
     }
 
-    if (opts.proximity) {
-      const d = haversineMetres(
-        opts.proximity.lat, opts.proximity.lon,
-        toDeg(a.anchorLat[id]!), toDeg(a.anchorLon[id]!),
-      );
-      // Decays smoothly: ~2x at the query point, ~1.5x at 50km, never zero, so
-      // proximity reorders results rather than filtering them.
-      score *= 1 + 1 / (1 + d / 50_000);
-    }
+    if (opts.proximity) score *= proximityBoost(opts.proximity, a, id);
     ranked.push({ id, score, addrIdx });
   }
 
@@ -360,9 +449,37 @@ export function forward(
   const out: GeocodeResult[] = [];
   for (const { id, score, addrIdx } of ranked) {
     if (out.length >= limit) break;
-    out.push(addrIdx !== null
+    const r = addrIdx !== null
       ? addressResult(a, addrIdx, id, score)
-      : anchorResult(a, id, score));
+      : anchorResult(a, id, score);
+    if (isDuplicateOf(out, r)) continue;
+    out.push(r);
   }
   return out;
+}
+
+/** Two results this close with the same name describe the same place. */
+const DUPLICATE_RADIUS_M = 600;
+
+/**
+ * Collapses results that name the same real-world thing.
+ *
+ * One place is routinely several OSM features: Karlův most is mapped as an
+ * attraction more than once along its length, and a tram stop is a node per
+ * direction. Returning all of them spends the caller's result slots on one
+ * answer. Build-time deduplication cannot fix this — the features are hundreds
+ * of metres apart, and widening the merge radius that far would fold together
+ * genuinely distinct shops of the same chain — so it is a presentation concern
+ * and belongs here.
+ */
+function isDuplicateOf(accepted: GeocodeResult[], r: GeocodeResult): boolean {
+  for (const prev of accepted) {
+    if (prev.layer !== r.layer) continue;
+    if (prev.houseNumber !== r.houseNumber) continue;
+    if (foldTokens(prev.name).join(' ') !== foldTokens(r.name).join(' ')) continue;
+    if (haversineMetres(prev.lat, prev.lon, r.lat, r.lon) <= DUPLICATE_RADIUS_M) {
+      return true;
+    }
+  }
+  return false;
 }

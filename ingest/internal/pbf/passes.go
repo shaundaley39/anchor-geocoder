@@ -34,7 +34,8 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int
 		addressed := isAddressed(tags)
 		place := isPlace(tags)
 		street := isNamedStreet(tags)
-		if !addressed && !place && !street {
+		_, poi := isPOI(tags)
+		if !addressed && !place && !street && !poi {
 			continue
 		}
 		if len(w.Nodes) == 0 {
@@ -44,7 +45,7 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int
 
 		// A building or place polygon needs every vertex for its centroid; a
 		// street needs only a point that lies on the line. See package doc.
-		wantAll := addressed || place
+		wantAll := addressed || place || poi
 		ways = append(ways, wantedWay{id: int64(w.ID), tags: tags, isBuild: wantAll})
 
 		if wantAll {
@@ -61,6 +62,8 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int
 			st.AddrWays++
 		case place:
 			st.PlaceWays++
+		case poi:
+			st.POIWays++
 		default:
 			st.StreetWays++
 		}
@@ -104,16 +107,22 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 		tags := tagsOf(n.Tags)
 		addressed := isAddressed(tags)
 		place := isPlace(tags)
-		if !addressed && !place {
+		_, poi := isPOI(tags)
+		if !addressed && !place && !poi {
 			continue
 		}
-		if addressed {
+		switch {
+		case addressed:
 			st.AddrNodes++
-		} else {
+		case place:
 			st.PlaceNodes++
+		default:
+			st.POINodes++
 		}
+		poiCat, _ := isPOI(tags)
 		if err := e.Emit(RawFeature{
-			OSMType: 'n', OSMID: int64(n.ID), Tags: tags, Lat: n.Lat, Lon: n.Lon,
+			OSMType: 'n', OSMID: int64(n.ID), Tags: tags,
+			Lat: n.Lat, Lon: n.Lon, Category: poiCat,
 		}); err != nil {
 			return found, err
 		}
@@ -179,8 +188,10 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, n
 		}
 
 		lat, lon := representativePoint(pts, ww.isBuild)
+		poiCat, _ := isPOI(ww.tags)
 		if err := e.Emit(RawFeature{
-			OSMType: 'w', OSMID: ww.id, Tags: ww.tags, Lat: lat, Lon: lon,
+			OSMType: 'w', OSMID: ww.id, Tags: ww.tags,
+			Lat: lat, Lon: lon, Category: poiCat,
 		}); err != nil {
 			return err
 		}

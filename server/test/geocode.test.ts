@@ -23,6 +23,32 @@ const INDEX_DIR = fileURLToPath(new URL('../../build/index', import.meta.url));
 const haveIndex = existsSync(`${INDEX_DIR}/manifest.json`);
 const maybe = haveIndex ? describe : describe.skip;
 
+describe('rate limiting', () => {
+  it('returns 429 with Retry-After once the window is exhausted', async () => {
+    if (!haveIndex) return;
+    const a = await loadArtifact(INDEX_DIR);
+    // A tiny index slice is enough; the limiter runs before the handler.
+    const rev = buildReverseIndex(a);
+    const app = await buildServer({
+      artifact: a, reverseIndex: rev,
+      options: { rateLimitMax: 2, rateLimitWindow: '1 minute', logger: false },
+    });
+    const get = () => app.inject({ method: 'GET', url: '/v1/geocode?q=Praha' });
+
+    expect((await get()).statusCode).toBe(200);
+    expect((await get()).statusCode).toBe(200);
+
+    const blocked = await get();
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.headers['retry-after']).toBeDefined();
+    expect(blocked.json().error).toBe('rate_limited');
+
+    // Health checks must never be throttled, or the container runtime starts
+    // reporting the service unhealthy under exactly the load it should survive.
+    expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+  }, 120_000);
+});
+
 describe('parseQuery', () => {
   it('splits a trailing house number off the street name', () => {
     expect(parseQuery('Marszalkowska 12')).toEqual({
@@ -76,7 +102,12 @@ maybe('against the built index', () => {
   beforeAll(async () => {
     a = await loadArtifact(INDEX_DIR);
     rev = buildReverseIndex(a);
-    app = buildServer({ artifact: a, reverseIndex: rev });
+    // Rate limiting off and logging silenced: the suite fires far more than
+    // 120 requests a minute, and per-request logs drown the test output.
+    app = await buildServer({
+      artifact: a, reverseIndex: rev,
+      options: { rateLimitMax: 0, logger: false },
+    });
   }, 120_000);
 
   describe('artifact integrity', () => {
@@ -187,6 +218,52 @@ maybe('against the built index', () => {
       })[0]!;
       const d = haversineMetres(49.1951, 16.6068, nearBrno.lat, nearBrno.lon);
       expect(d).toBeLessThan(30_000);
+    });
+
+    it('finds points of interest by name', () => {
+      expect(top('Prazsky hrad')?.layer).toBe('poi');
+      expect(top('Karluv most')?.name).toBe('Karlův most');
+      const station = top('Brno hlavni nadrazi');
+      expect(station?.layer).toBe('poi');
+      expect(station?.category).toBe('railway=station');
+    });
+
+    /**
+     * A POI carries its street and city as searchable tokens, so a query naming
+     * a street must not be answered by a POI that merely stands on it. A
+     * station called "Lednice" at Nádražní 1 once outranked all 651 streets
+     * named Nádražní, because relevance was measured against name *length*
+     * rather than whether the name matched.
+     */
+    it('ranks a street above a POI that merely sits on it', () => {
+      const r = forward(a, 'Nadrazni', {
+        limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
+      })[0]!;
+      expect(r.layer).toBe('street');
+      expect(r.name).toBe('Nádražní');
+      expect(haversineMetres(49.1951, 16.6068, r.lat, r.lon)).toBeLessThan(5_000);
+    });
+
+    /**
+     * The coarse pass ranks on the importance prior alone, which spans 1.0 for
+     * a street to 7.0 for an airport. A single overall cut therefore deletes
+     * the lowest-prior layer wholesale, so the cut is per layer.
+     */
+    it('never lets one layer crowd another out of the candidate set', () => {
+      const layers = new Set(forward(a, 'Nadrazni', { limit: 20 }).map((r) => r.layer));
+      expect(layers.has('street')).toBe(true);
+    });
+
+    it('collapses duplicate mappings of one place', () => {
+      // Karlův most is mapped as an attraction more than once along its length.
+      const rs = forward(a, 'Karluv most', { limit: 5 })
+        .filter((r) => r.layer === 'poi' && r.name === 'Karlův most');
+      expect(rs.length).toBe(1);
+    });
+
+    it('keeps genuinely distinct branches of a chain', () => {
+      const rs = forward(a, 'Biedronka', { limit: 5 }).filter((r) => r.layer === 'poi');
+      expect(rs.length).toBeGreaterThan(1);
     });
 
     it('returns nothing rather than nonsense for gibberish', () => {
@@ -352,6 +429,17 @@ maybe('against the built index', () => {
       // Inside the bbox but in open water off the Polish coast, tight radius.
       const body = (await get('/v1/geocode?lat=54.8&lon=18.4&radius=100')).json();
       expect(body.query.hint).toBeUndefined();
+    });
+
+    it('sets CORS headers so a browser autocomplete can call it', async () => {
+      const res = await app.inject({
+        method: 'OPTIONS', url: '/v1/geocode?q=Praha',
+        headers: { origin: 'https://example.com', 'access-control-request-method': 'GET' },
+      });
+      // With origin:true the plugin reflects the caller's origin rather than
+      // emitting a literal '*', which is what a browser needs.
+      expect(res.headers['access-control-allow-origin']).toBe('https://example.com');
+      expect(res.headers['access-control-allow-methods']).toContain('GET');
     });
 
     it('advertises the coverage bbox on /health', async () => {

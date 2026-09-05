@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const t2 = performance.now();
   console.log(`  done (${(t2 - t1).toFixed(0)}ms)`);
 
-  const app = buildServer({ artifact, reverseIndex });
+  const app = await buildServer({ artifact, reverseIndex });
   await app.listen({ port: PORT, host: HOST });
 
   const rss = process.memoryUsage().rss / 1e6;

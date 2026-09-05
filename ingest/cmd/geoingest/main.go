@@ -153,6 +153,7 @@ func run(sources []source, outDir string) error {
 		segs    []streetSeg
 		orphans []streetSeg // addresses with no locality tag of any kind
 		places  = map[string]*model.Record{}
+		pois    = map[string]*model.Record{}
 		counts  = map[string]int{}
 		stats   = map[string]any{}
 	)
@@ -169,6 +170,9 @@ func run(sources []source, outDir string) error {
 			Country:  src.country,
 			Progress: func(s string) { log.Printf("[%s] %s", src.country, s) },
 		}
+		// Declared up front: Emit calls it, and it is defined below.
+		var route func(*model.Record, string) error
+
 		ex.Emit = func(rf pbf.RawFeature) error {
 			key := "osm:" + string(rf.OSMType) + fmt.Sprint(rf.OSMID)
 			if _, dup := seenOSM[key]; dup {
@@ -177,25 +181,45 @@ func run(sources []source, outDir string) error {
 			}
 			seenOSM[key] = struct{}{}
 
-			r := model.FromTags(rf.OSMType, rf.OSMID, rf.Tags, rf.Lat, rf.Lon, src.country)
-			if r == nil {
-				return nil
+			for _, r := range model.FromTags(rf.OSMType, rf.OSMID, rf.Category,
+				rf.Tags, rf.Lat, rf.Lon, src.country) {
+				if err := route(r, src.country); err != nil {
+					return err
+				}
 			}
+			return nil
+		}
 
+		route = func(r *model.Record, country string) error {
 			switch r.Layer {
+			case model.LayerPOI:
+				// A single POI is often mapped twice, as a node inside its own
+				// building way. Collapse on name plus a ~500m cell, keeping
+				// whichever carries more detail.
+				k := fmt.Sprintf("%s|%s|%s|%.3f|%.3f", country, r.Category,
+					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
+				if prev, ok := pois[k]; ok {
+					counts["dedup_poi"]++
+					if len(r.Tokens) <= len(prev.Tokens) {
+						return nil
+					}
+				}
+				pois[k] = r
+				return nil
+
 			case model.LayerStreet:
 				// Buffered: grouping needs a locality, and OSM highways almost
 				// never carry one. It is derived spatially once every place in
 				// every extract has been seen.
 				segs = append(segs, streetSeg{rec: r, lat: r.Lat, lon: r.Lon,
-					country: src.country})
+					country: country})
 				return nil
 
 			case model.LayerPlace:
 				// A settlement is often mapped as both a node and an area.
 				// Collapse them on name plus a ~1km cell, keeping the
 				// higher-ranked class (a "town" beats a "suburb" of the name).
-				k := fmt.Sprintf("%s|%s|%.2f|%.2f", src.country,
+				k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := places[k]; ok {
 					if placeScore(r) <= placeScore(prev) {
@@ -253,6 +277,11 @@ func run(sources []source, outDir string) error {
 	}
 	for _, k := range sortedKeysRec(places) {
 		if err := writeRec(places[k]); err != nil {
+			return err
+		}
+	}
+	for _, k := range sortedKeysRec(pois) {
+		if err := writeRec(pois[k]); err != nil {
 			return err
 		}
 	}

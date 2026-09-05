@@ -34,12 +34,13 @@ package index
 
 // Version is bumped whenever the binary layout changes. The server refuses to
 // load an artifact it does not recognise rather than misreading it.
-const Version = 1
+const Version = 2
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (
 	LayerStreet uint8 = 0
 	LayerPlace  uint8 = 1
+	LayerPOI    uint8 = 2
 )
 
 // CoordScale is the fixed-point factor for latitude and longitude. 1e7 gives
@@ -56,6 +57,7 @@ type Manifest struct {
 	NumAnchors int            `json:"num_anchors"`
 	NumAddrs   int            `json:"num_addresses"`
 	NumTerms   int            `json:"num_terms"`
+	NumPOIs    int            `json:"num_pois"`
 	NumPosting int            `json:"num_postings"`
 	CountryIDs map[string]int `json:"country_ids"`
 	Counts     map[string]int `json:"counts"`

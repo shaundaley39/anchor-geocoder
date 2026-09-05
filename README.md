@@ -98,6 +98,10 @@ All optional, read from the environment:
 | `INDEX_DIR` | `../build/index` | directory holding the artifact |
 | `PORT` | `3000` | listen port |
 | `HOST` | `127.0.0.1` | bind address (set `0.0.0.0` in a container) |
+| `CORS_ORIGIN` | `*` | comma-separated allowlist of origins |
+| `RATE_LIMIT_MAX` | `120` | requests per window per IP; `0` disables |
+| `RATE_LIMIT_WINDOW` | `1 minute` | the window |
+| `LOG_LEVEL` | `info` | pino level |
 
 ```bash
 cd server && INDEX_DIR=/srv/geo-index PORT=8080 HOST=0.0.0.0 pnpm exec tsx src/index.ts
@@ -195,6 +199,10 @@ curl 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=3'
 | `proximity` | forward | `lat,lon` to bias ranking |
 | `radius` | reverse | metres, default 5000, capped at 50000 |
 
+Results span four layers, returned mixed and ranked: `address`, `poi`,
+`street`, `place`. POI results carry a `category` property with the OSM
+classification (`railway=station`, `amenity=restaurant`, `historic=castle`).
+
 Coverage is whatever the artifact holds: currently
 lat 48.547–54.835, lon 12.090–24.160.
 
@@ -230,18 +238,18 @@ Built from the 2026-08-31 Geofabrik extracts.
 
 | stage | time | output |
 |---|---|---|
-| extract | 4m51s | 12,175,034 records (11,637,055 addresses / 396,723 streets / 141,256 places) |
-| index | 1m18s | 677,786 anchors, 11,632,595 addresses, 127,039 terms — **254 MB** |
-| boot | **1.4 s** | 42 ms to load the artifact, 1.3 s to build the k-d tree — **513 MB RSS** |
+| extract | 5m04s | 12,838,758 records — 11,637,055 addresses, 663,724 POIs, 397,036 streets, 141,233 places |
+| index | 1m22s | 1,341,883 anchors, 11,632,595 addresses, 282,659 terms — **301 MB** |
+| boot | **1.4 s** | 42 ms to load the artifact, 1.3 s to build the k-d tree — **~510 MB RSS** |
 
 Query latency, 16-core M-series laptop, measured by `make bench`:
 
 | query | p50 | p95 | p99 |
 |---|---|---|---|
-| exact city name | 0.156 ms | 0.260 ms | 0.363 ms |
-| 3-char autocomplete prefix | 0.423 ms | 0.616 ms | 0.738 ms |
-| street + house number | 0.014 ms | 0.023 ms | 0.028 ms |
-| two-token street + number | 0.376 ms | 0.482 ms | 0.566 ms |
+| exact city name | 0.438 ms | 0.916 ms | 1.164 ms |
+| 3-char autocomplete prefix | 0.892 ms | 1.398 ms | 1.611 ms |
+| street + house number | 0.044 ms | 0.051 ms | 0.123 ms |
+| two-token street + number | 0.549 ms | 0.711 ms | 0.782 ms |
 | reverse, dense area, k=5 | 0.005 ms | 0.015 ms | 0.028 ms |
 | reverse, sparse (~5 km) | 0.008 ms | 0.135 ms | 0.308 ms |
 
@@ -377,6 +385,33 @@ whole contract, and there is a test asserting the two code paths cannot drift.
   and `Marszałkowska` converge on one token. Removal is skipped when it would
   empty the list, protecting features genuinely named `Rynek` or `Plac`.
 
+### Points of interest are curated, not swept up
+
+"Everything named with a POI tag" is 332,648 features in Czechia alone, and the
+top of that distribution is furniture rather than destinations:
+
+```
+public_transport=platform   59,545   one per bus-stop platform, all sharing the stop's name
+tourism=information         56,930   hiking guideposts and notice boards
+public_transport=stop_position 13,421
+amenity=parcel_locker       11,218
+historic=yes                 6,114
+amenity=parking              3,218   mostly literally named "Parkoviště"
+historic=wayside_shrine      2,307   plus 1,284 wayside crosses
+amenity=atm                  1,791
+```
+
+Indexing that would bury every real result. Selection is therefore an allowlist
+of twelve keys with a per-key exclusion of the values that are not places anyone
+searches for — the test being whether a person would plausibly type the name
+into a search box. That yields **663,724 POIs** across both countries.
+
+A POI that also carries a house number produces **two** records, not one: the
+POI and the address point beneath it. 10.5% of named Czech POIs are tagged this
+way, and collapsing them would mean either losing "Restaurace U Fleků" from
+search or losing "Křemencova 11" from the address layer — and with it from
+reverse geocoding, which only searches addresses.
+
 ### The index is built over anchors, not addresses
 
 Measured on the built corpus: **11,637,055 address points resolve to just
@@ -471,6 +506,81 @@ built in raw degrees, where a degree of longitude is ~0.64x a degree of latitude
 at Polish latitudes, the box is widened in longitude to guarantee it encloses
 the true circle, and corners falling outside it are discarded so the radius
 means what it says. Results are ranked by real great-circle distance.
+
+### Relevance measures the name, not its length
+
+An anchor is indexed on more than its name: a POI carries its street, city and
+postcode as searchable tokens too, so that "Restaurace U Fleků" is reachable by
+its address. Scoring on name *length* therefore credits matches that never
+touched the name. A railway station named **Lednice**, standing at Nádražní 1,
+scored full marks for the query "Nadrazni" and — with a station's importance
+prior of 5.5 against a street's 1.0 — outranked all 651 Czech streets of that
+name.
+
+So two quantities are measured: how much of the *query* the name and locality
+explain (locality at partial credit, because adding a city should help rather
+than dilute), and how much of the *name* the query accounted for. An exact
+full-name match — every query token in the name, every name token used — gets
+its own 2.5x bonus, because otherwise a perfectly matched street loses to a
+partial match on a higher-prior feature.
+
+### The coarse cut is per layer
+
+Importance priors span 1.0 for a street to 7.0 for an airport, and the coarse
+pass can only rank on the prior — it has no idea whether the query matched a
+name. A single overall cut therefore deletes the lowest-prior layer wholesale
+whenever a term has more high-prior postings than the budget.
+
+Measured: the term `nadrazni` has 1,136 postings, 424 of them POIs. Every
+station, museum and cinema outranked every one of the 710 street anchors, so
+`Nádražní / Brno` came **427th** and was discarded on every query — proximity
+included — before anything looked at the name. The cut is now 200 per layer.
+
+Proximity is applied in the coarse pass for the same reason: 651 streets share
+one term weight and one prior, so without it the surviving slice of that tie is
+arbitrary and the one next to the query point may not be in it.
+
+### Results are deduplicated at query time
+
+One place is routinely several OSM features — Karlův most is mapped as an
+attraction more than once along its length, a tram stop is a node per direction.
+Returning all of them spends the caller's result slots on one answer.
+Build-time merging cannot fix it: the features are hundreds of metres apart, and
+a merge radius that wide would fold together genuinely distinct branches of a
+shop chain. So same-name, same-layer results within 600 m collapse at
+presentation time, which keeps both cases right.
+
+### Production middleware
+
+Three things that are not core geocoding but are the difference between a demo
+and a service:
+
+- **CORS** (`@fastify/cors`). A geocoding endpoint is called from browsers by
+  definition — an autocomplete box in someone else's page — so it is useless
+  without this. Open by default because the data is public and there is no auth;
+  `CORS_ORIGIN` narrows it to a comma-separated allowlist.
+- **Rate limiting** (`@fastify/rate-limit`). Every request touches an in-memory
+  index, so the per-request cost is microseconds and the real exposure is one
+  client saturating the single Node thread. A blunt per-IP cap is the right
+  shape for an unauthenticated public endpoint; `RATE_LIMIT_MAX` and
+  `RATE_LIMIT_WINDOW` tune it. Returns 429 with `RateLimit-*` and `Retry-After`
+  headers. `/health` is exempt — throttling it would make the container runtime
+  report the service unhealthy under exactly the load it should survive, and
+  kill it.
+- **Structured logging** (Fastify's pino). One JSON line per request with a
+  request id, path, status, duration and result count; `Authorization` and
+  `Cookie` redacted; `trustProxy` on so client IPs survive a load balancer.
+  Health checks are excluded — they fire every 30 s and would otherwise
+  dominate the log.
+
+```json
+{"level":30,"reqId":"req-1","method":"GET","path":"/v1/geocode","status":200,
+ "duration_ms":3.29,"query_type":"forward","results":10,"msg":"request"}
+```
+
+CI is deliberately absent. It is genuinely low-effort, but it is production
+scaffolding rather than part of the problem, and the time was better spent on
+the POI layer.
 
 ### Query folding is a tested cross-language contract
 
@@ -567,9 +677,16 @@ expected bounding box (0).
   inside the same ~28 km cell. Most are genuine node-and-area pairs of one
   settlement, which is the intended collapse, but the two cases are not
   currently distinguished.
-- **No fuzzy matching.** A typo returns nothing. The term dictionary is sorted
-  and in memory, so a SymSpell deletes-index or a BK-tree over it is the natural
-  next step.
+- **No fuzzy matching.** A typo returns nothing. Diacritic-insensitivity
+  (`Plzen` → `Plzeň`) is *not* fuzzy matching — both sides pass through the same
+  deterministic normalizer, so it is an exact match on a folded form. Tolerating
+  a genuine misspelling needs edit distance; see Future improvements.
+- **OSM relations are skipped**, so multipolygon-mapped features are missing.
+  Measured: 36,703 named POI-tagged relations across both countries against
+  663,724 indexed POIs, so 5.2% by count — but they skew large. Prague's
+  Letiště Václava Havla is a multipolygon and is absent, while Warsaw Chopin and
+  Kraków-Balice, mapped as ways, are present. Resolving multipolygon geometry
+  needs member ways and then their nodes: two more extraction passes.
 
 ## Future improvements
 

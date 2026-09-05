@@ -33,42 +33,98 @@ var placeRank = map[string]float64{
 // help cross-border and non-local queries.
 var langKeys = []string{"cs", "pl", "sr", "hr", "bs", "de", "en", "sk", "uk"}
 
-// FromTags converts an extracted OSM feature into a Record, or returns nil if
-// the feature is not something we index.
-func FromTags(osmType byte, osmID int64, t map[string]string, lat, lon float64, country string) *Record {
-	r := &Record{
-		ID:      "osm:" + string(osmType) + strconv.FormatInt(osmID, 10),
-		Lat:     lat,
-		Lon:     lon,
-		Country: country,
-	}
+// FromTags converts an extracted OSM feature into the records it should
+// produce.
+//
+// Usually one, but a named POI that also carries a house number yields two:
+// the POI itself and the address point underneath it. 10.5% of named Czech POIs
+// are tagged this way, and collapsing them into one record would mean either
+// losing "Restaurace U Fleku" from search or losing "Kremencova 11" from the
+// address layer — and with it from reverse geocoding, which only searches
+// addresses.
+func FromTags(osmType byte, osmID int64, category string, t map[string]string,
+	lat, lon float64, country string) []*Record {
 
-	// Multilingual names, retained for every layer.
+	base := "osm:" + string(osmType) + strconv.FormatInt(osmID, 10)
+	names := map[string]string{}
 	for _, l := range langKeys {
 		if v := t["name:"+l]; v != "" {
-			if r.Names == nil {
-				r.Names = map[string]string{}
-			}
-			r.Names[l] = v
+			names[l] = v
+		}
+	}
+	if len(names) == 0 {
+		names = nil
+	}
+
+	newRec := func(idSuffix string) *Record {
+		return &Record{
+			ID: base + idSuffix, Lat: lat, Lon: lon,
+			Country: country, Names: names,
 		}
 	}
 
+	var out []*Record
+
+	if category != "" {
+		r := newRec("#poi")
+		buildPOI(r, t, category)
+		if r.Display != "" {
+			r.Tokens = SearchTokens(r)
+			out = append(out, r)
+		}
+	}
+
+	var r *Record
 	switch {
 	case hasAddress(t):
+		r = newRec("")
 		buildAddress(r, t)
 	case placeRank[t["place"]] > 0 && t["name"] != "":
+		if category != "" {
+			return out // already emitted as a POI; do not double-index
+		}
+		r = newRec("")
 		buildPlace(r, t)
 	case t["name"] != "" && t["highway"] != "":
+		r = newRec("")
 		buildStreet(r, t)
 	default:
-		return nil
+		return out
 	}
 
 	if r.Display == "" {
-		return nil
+		return out
 	}
 	r.Tokens = SearchTokens(r)
-	return r
+	return append(out, r)
+}
+
+// buildPOI fills in a point of interest. Address components are retained when
+// present so the result renders "Restaurace U Fleku, Kremencova 11, Praha"
+// rather than a bare name, and so the address tokens are searchable alongside
+// it.
+func buildPOI(r *Record, t map[string]string, category string) {
+	r.Layer = LayerPOI
+	r.Name = t["name"]
+	r.Category = category
+	r.Street = t["addr:street"]
+	r.Place = t["addr:place"]
+	r.City = firstNonEmpty(t["addr:city"], t["addr:place"], t["is_in:city"])
+	r.Postcode = t["addr:postcode"]
+	r.HouseNumber = t["addr:housenumber"]
+
+	parts := []string{r.Name}
+	if r.Street != "" {
+		if r.HouseNumber != "" {
+			parts = append(parts, r.Street+" "+r.HouseNumber)
+		} else {
+			parts = append(parts, r.Street)
+		}
+	}
+	if r.City != "" && !strings.EqualFold(r.City, r.Name) {
+		parts = append(parts, r.City)
+	}
+	r.Display = strings.Join(parts, ", ")
 }
 
 func hasAddress(t map[string]string) bool {
@@ -170,7 +226,7 @@ func SearchTokens(r *Record) []string {
 	for _, v := range r.Names {
 		add(v) // Cyrillic variants fold to the same Latin tokens
 	}
-	if r.Layer == LayerAddress {
+	if r.Layer == LayerAddress || r.Layer == LayerPOI {
 		add(r.HouseNumber)
 		// Czech addresses are written "248/39" but spoken and typed either way,
 		// so both numbers are indexed separately in addition to the composed
