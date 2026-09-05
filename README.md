@@ -3,35 +3,100 @@
 A geocoding service over OpenStreetMap data for Czechia and Poland (Bosnia and
 Herzegovina optional), built as two stages:
 
-| Stage | Language | Status | What it does |
-|---|---|---|---|
-| **Ingest** | Go | ✅ working | Reads `.osm.pbf` extracts, resolves geometry, normalizes text, emits an immutable index artifact |
-| **Serve** | TypeScript | 🚧 next | Loads the artifact at boot, serves one `/v1/geocode` endpoint for both forward and reverse queries |
+| Stage | Language | What it does |
+|---|---|---|
+| **Extract** | Go | Reads `.osm.pbf`, resolves way geometry, normalizes text, groups streets — emits a record stream |
+| **Index** | Go | Turns the record stream into a binary artifact of flat typed arrays |
+| **Serve** | TypeScript | Loads the artifact at boot, serves one `/v1/geocode` endpoint for both directions |
 
 ## Quick start
 
 ```bash
 make fetch     # ~3 GB of OSM extracts from Geofabrik, checksum-verified
-make build     # ~5 min on an M-series laptop -> build/records.ndjson.gz
-make test      # Go test suite
+make records   # ~5 min  -> build/records.ndjson.gz   (12.2M records)
+make index     # ~78 s   -> build/index/              (254 MB artifact)
+make install   # server dependencies
+make serve     # boots in 1.4 s, listens on :3000
+make test      # Go + TypeScript suites
 ```
 
-Requires Go 1.24+. No cgo, no C++ toolchain, no external dependencies —
-`CGO_ENABLED=0` throughout, so the ingest binary is fully static.
+Go 1.24+, Node 22+, pnpm. No cgo, no C++ toolchain — `CGO_ENABLED=0`
+throughout, so the ingest binaries are fully static.
 
-## Current output
+## The endpoint
 
-Built from the 2026-08-31 Geofabrik extracts in **4m51s**:
+One endpoint serving both directions, dispatching on which parameters are
+present. Forward and reverse return the same feature shape.
 
-| | records |
-|---|---|
-| addresses | 11,637,055 |
-| streets | 396,723 |
-| places | 141,256 |
-| **total** | **12,175,034** |
+```bash
+# forward
+curl 'localhost:3000/v1/geocode?q=Marszalkowska+12'
+curl 'localhost:3000/v1/geocode?q=Prazska+248/39'
+curl 'localhost:3000/v1/geocode?q=Warsz&limit=5'              # autocomplete
+curl 'localhost:3000/v1/geocode?q=Nadrazni&proximity=49.19,16.60'
 
-570 MB gzipped NDJSON plus a `manifest.json` recording provenance, counts and
-timings. Full numbers in `build/manifest.json`.
+# reverse — same endpoint
+curl 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=3'
+```
+
+| parameter | applies to | meaning |
+|---|---|---|
+| `q` | forward | free-text query; the final token is matched as a prefix |
+| `lat`, `lon` | reverse | query point (mutually exclusive with `q`) |
+| `limit` | both | 1–50, default 10 forward / 5 reverse |
+| `country` | both | `cz` or `pl` |
+| `proximity` | forward | `lat,lon` to bias ranking |
+| `radius` | reverse | metres, default 5000, capped at 50000 |
+
+Responses are a GeoJSON `FeatureCollection` shaped after the conventional
+geocoding API, so the endpoint is a drop-in for anything already speaking that
+dialect.
+
+```json
+{
+  "type": "FeatureCollection",
+  "query": { "type": "forward", "q": "Prazska 248/39" },
+  "features": [{
+    "type": "Feature",
+    "id": "addr:3106418",
+    "place_type": ["address"],
+    "text": "Pražská 248/39",
+    "place_name": "Pražská 248/39, Olomouc, CZ",
+    "center": [17.2232, 49.6015],
+    "geometry": { "type": "Point", "coordinates": [17.2232, 49.6015] },
+    "properties": {
+      "layer": "address", "name": "Pražská", "country": "cz",
+      "locality": "Olomouc", "house_number": "248/39"
+    },
+    "relevance": 74.0161
+  }],
+  "attribution": "© OpenStreetMap contributors (ODbL)"
+}
+```
+
+## Measured behaviour
+
+Built from the 2026-08-31 Geofabrik extracts.
+
+| stage | time | output |
+|---|---|---|
+| extract | 4m51s | 12,175,034 records (11,637,055 addresses / 396,723 streets / 141,256 places) |
+| index | 1m18s | 677,786 anchors, 11,632,595 addresses, 127,039 terms — **254 MB** |
+| boot | **1.4 s** | 42 ms to load the artifact, 1.3 s to build the k-d tree — **513 MB RSS** |
+
+Query latency, 16-core M-series laptop, measured by `make bench`:
+
+| query | p50 | p95 | p99 |
+|---|---|---|---|
+| exact city name | 0.155 ms | 0.256 ms | 0.333 ms |
+| 3-char autocomplete prefix | 0.404 ms | 0.593 ms | 0.672 ms |
+| street + house number | 0.014 ms | 0.021 ms | 0.026 ms |
+| two-token street + number | 0.368 ms | 0.470 ms | 0.519 ms |
+| reverse, dense area, k=5 | 0.006 ms | 0.016 ms | 0.028 ms |
+| reverse, sparse (~5 km) | 0.008 ms | 0.133 ms | 0.349 ms |
+
+One case is much slower and is called out under Future improvements: a reverse
+query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
 
 ---
 
@@ -162,6 +227,98 @@ whole contract, and there is a test asserting the two code paths cannot drift.
   and `Marszałkowska` converge on one token. Removal is skipped when it would
   empty the list, protecting features genuinely named `Rynek` or `Plac`.
 
+### The index is built over anchors, not addresses
+
+Measured on the built corpus: **11,637,055 address points resolve to just
+430,551 distinct (street-or-place, locality) anchors.** A house number is not a
+name anyone searches for — it is a lookup *within* a street. So text search runs
+over 677,786 anchor documents rather than 12M address documents, a 17x smaller
+index, and the number is resolved afterwards by binary search inside the matched
+anchor's contiguous run of addresses.
+
+This is also what keeps the artifact small. Storing a rendered display string
+per address would cost ~370 MB; dictionary-encoding the 156,578 distinct names
+and 262,313 distinct house numbers costs **3.7 MB**.
+
+A wrinkle the data forced: 141,524 anchors are referenced only by address points
+and were never mapped as a highway or a place in their own right, so the builder
+synthesises them and gives them the centroid of their address run.
+
+### The artifact is flat typed arrays
+
+Every file in `build/index/` maps onto exactly one JavaScript typed array, so
+loading is a read plus a view — no parsing, no per-record objects:
+
+```
+strings.bin/.idx   concatenated UTF-8 + uint32 offsets
+anchor_*.bin       struct-of-arrays x 677,786   (name, locality, lat, lon, flags, score, addr range)
+addr_*.bin         struct-of-arrays x 11.6M     (number, lat, lon, anchor, sort key)
+terms.bin/.idx     127,039 sorted search terms
+post_off/post.bin  inverted index, 1.6M postings
+```
+
+Coordinates are `Int32` fixed-point at 1e7 (~1.1 cm) rather than `Float64`,
+halving the largest arrays. The result: **254 MB on disk, 42 ms to load, 513 MB
+resident** for 11.6M addresses. The same data as JavaScript objects would be
+several GB and minutes of startup.
+
+Two searches exploit the layout directly. Terms are stored sorted, so
+autocomplete on the final query token is two binary searches for a prefix range
+rather than a scan of 127,039 terms. Address runs are sorted by the house
+number's leading integer, so finding number 248 on a street with thousands of
+addresses is a binary search.
+
+### Retrieve, then rerank
+
+Ranking happens in two stages, and the split is not premature optimisation — it
+fixes a real failure. The term `praha` has **3,665 postings**, every street whose
+locality is Praha, all sharing one text weight. Truncating that to a candidate
+set by text score alone leaves an arbitrary slice of a 3,665-way tie, and Praha
+itself falls out of it. So the coarse stage multiplies in the importance prior
+(one array read, no string decoding), and only the top 400 survivors get scored
+properly.
+
+The rerank adds two things the coarse pass cannot afford:
+
+- **Name coverage.** Without it, `Pražská` scores identically against `Pražská`,
+  `Nová Pražská` and `Pražská brána`, and the street the user meant is lost among
+  its longer namesakes. Coverage is `min(queryTokens, nameTokens) / nameTokens`,
+  squared.
+- **House-number resolution.** An anchor that actually has number 248 is boosted
+  6x over one that merely shares the street name. This has to happen before
+  truncating to `limit`, because the right street can sit well down the coarse
+  ranking — that was the bug that made `Pražská 248/39` return streets instead of
+  the address.
+
+An exact term match on the final token also beats a mere prefix hit (1.6x), so
+`Praha` outranks `Prahatice` — which is a real OSM name variant, not a typo of
+mine.
+
+### Reverse geocoding
+
+A static k-d tree (`kdbush`) over all 11.6M address points, built at boot in
+1.3 s. It indexes flat `Int32Array` coordinates — the raw fixed-point values, so
+no conversion happens during the build and precision is exact — and stores its
+own index the same way, which is why 11.6M points cost ~140 MB and produce no GC
+pressure.
+
+The search grows its radius (150 m, then x4 each round) rather than using one
+fixed box: most queries land in a populated area and are satisfied immediately,
+while a query in a forest widens until it finds something. Because the tree is
+built in raw degrees, where a degree of longitude is ~0.64x a degree of latitude
+at Polish latitudes, the box is widened in longitude to guarantee it encloses
+the true circle, and corners falling outside it are discarded so the radius
+means what it says. Results are ranked by real great-circle distance.
+
+### Query folding is a tested cross-language contract
+
+The server re-implements the Go normalizer in TypeScript. If the two ever drift,
+queries silently stop matching the index — zero results, no error, nothing in a
+log. So `ingest/cmd/foldvectors` emits fold and token fixtures for 4,000 real
+names drawn from the built corpus plus hand-picked edge cases, and
+`server/test/normalize.contract.test.ts` asserts the TypeScript reproduces every
+one exactly. Regenerate with `make fold-vectors`.
+
 ### Why Go, not Java
 
 Java is a common choice for this stage; Go was a deliberate alternative, and the
@@ -178,51 +335,79 @@ undercut the point of the split.
 ## Repository layout
 
 ```
-ingest/
-  cmd/geoingest/     pipeline entry point, street grouping, orphan resolution
-  cmd/tagstat/       measures real tag distributions in an extract
-  internal/pbf/      three-pass .osm.pbf extraction, geometry resolution
-  internal/model/    the normalized record schema and OSM tag -> record mapping
-  internal/norm/     Unicode folding, transliteration, abbreviations
-  internal/spatial/  uniform grid index for nearest/radius queries
-build/               generated artifact (gitignored)
-data/raw/            downloaded extracts (gitignored)
+ingest/                       Go — offline stages
+  cmd/geoingest/              extraction entry point, street grouping, orphan resolution
+  cmd/geoindex/               record stream -> binary artifact
+  cmd/tagstat/                measures real tag distributions in an extract
+  cmd/foldvectors/            emits the Go->TS normalization contract fixtures
+  internal/pbf/               three-pass .osm.pbf extraction, geometry resolution
+  internal/model/             normalized record schema, OSM tag -> record mapping
+  internal/norm/              Unicode folding, transliteration, abbreviations
+  internal/spatial/           uniform grid index for nearest/radius queries
+  internal/index/             artifact format and builder
+
+server/                       TypeScript — online stage
+  src/artifact.ts             loads the binary artifact into typed arrays
+  src/normalize.ts            query folding; a port of internal/norm, contract-tested
+  src/forward.ts              inverted index, retrieve-then-rerank, house numbers
+  src/reverse.ts              k-d tree over 11.6M points
+  src/geojson.ts              conventional FeatureCollection rendering
+  src/server.ts               the single /v1/geocode endpoint
+  test/                       43 tests, run against the real artifact
+
+build/                        generated artifact (gitignored)
+data/raw/                     downloaded extracts (gitignored)
 ```
 
 ## Testing
 
-The `spatial` package is verified against brute force on 2,000 randomized
-nearest-neighbour queries and 500 radius queries — a grid that stops at the
-first non-empty ring returns wrong answers, and the test catches exactly that.
-The `norm` package asserts real folding cases per language plus Cyrillic/Latin
-convergence.
+`make test` runs both suites. 43 TypeScript tests and the Go suite, all against
+real data rather than fixtures — the things most likely to break in a geocoder
+are the joins between stages, and those are invisible to a unit test with a
+hand-made input.
+
+The tests that would actually catch a regression:
+
+- **Reverse geocoding vs brute force.** The k-d tree result is compared against
+  a linear scan of all 11.6M points. A tree bug or a mistake in the
+  longitude-widening logic returns a plausible-looking wrong answer, and nothing
+  short of brute force notices.
+- **The spatial grid vs brute force**, on 2,000 randomized nearest-neighbour and
+  500 radius queries. A grid that stops at the first non-empty ring is wrong,
+  and this catches exactly that.
+- **The Go/TypeScript folding contract**, on 4,000 real names — see above.
+- **Artifact integrity**: every anchor's address range lies inside the address
+  arrays and back-references its own anchor; every run is sorted by house
+  number; terms are sorted. The binary searches are only correct if these hold.
+- **Round-tripping every house number** on a well-populated street back through
+  `findHouseNumber`.
+- **GeoJSON coordinate order** is `[lon, lat]`, the classic way to ship a broken
+  map.
 
 Data-level verification after each build: layer and country counts, anchor
-distribution, records with no search tokens (0), and coordinates outside the
+distribution, records with no search tokens (0), coordinates outside the
 expected bounding box (0).
 
----
+## Known limitations
 
-## Next: the serving stage
-
-One endpoint, dispatching on parameters:
-
-```
-GET /v1/geocode?q=Marszałkowska+12        -> forward
-GET /v1/geocode?lat=50.0755&lon=14.4378   -> reverse
-```
-
-Planned index structures, per the analysis that produced this schema:
-
-- **Forward** — inverted index over the precomputed tokens. All query tokens but
-  the last matched exactly, the last as a prefix range, which is what makes
-  autocomplete work. Ranking multiplies a BM25-ish text score by layer prior,
-  settlement importance and optional proximity.
-- **Reverse** — a static k-d tree (`kdbush`/`geokdbush`) over packed typed
-  arrays. Millions of points, k-nearest in true great-circle order, no
-  per-point JS objects.
-- **Memory layout** — struct-of-arrays with fixed-point `Int32Array`
-  coordinates and one concatenated string buffer, rather than 12M JS objects.
+- **Reverse geocoding far from any address is slow.** A query 12 km offshore
+  with the radius raised to 50 km takes ~40 ms, because the expanding box finds
+  nothing until it is large, then haversines everything inside it. The fix is a
+  true k-nearest walk (`geokdbush`'s `around()`), which descends the tree in
+  distance order and stops at k instead of scanning a box; the default 5 km cap
+  keeps this off the common path for now.
+- **Streets reduce to a single representative point**, so reverse geocoding
+  cannot say "the even-numbered side of the street", and a long street's centre
+  is only approximately where you would point at it.
+- **A few Prague streets take a quarter name** ("Modřany") rather than "Praha",
+  where the quarter's catchment wins locally.
+- **8,344 place records still share an anchor key** with a same-named settlement
+  inside the same ~28 km cell. Most are genuine node-and-area pairs of one
+  settlement, which is the intended collapse, but the two cases are not
+  currently distinguished.
+- **No fuzzy matching.** A typo returns nothing. The term dictionary is sorted
+  and in memory, so a SymSpell deletes-index or a BK-tree over it is the natural
+  next step.
 
 ## Future improvements
 
@@ -243,3 +428,14 @@ Planned index structures, per the analysis that produced this schema:
   or centreline would let reverse geocoding say "no. 12 side of the street".
 - **Address interpolation.** Deliberately skipped: `addr:interpolation` appears
   258 times in Czechia and 39 in Poland. Measured, not assumed.
+- **Scaling out.** The artifact is immutable and the server is stateless, so
+  horizontal scaling is replication: build once, ship the directory, run N
+  identical processes behind a load balancer. Past the point where 254 MB per
+  country pair stops fitting comfortably, the natural shard key is the country
+  (already a field in the artifact) or a geohash prefix, with a thin router.
+- **Cheaper artifact.** `addr_anchor` (46 MB) is derivable by binary-searching
+  `anchor_addr_start`, and posting lists would compress well as delta-varints.
+  Neither is worth doing until the size actually hurts.
+- **Rebuild cadence.** A full rebuild is ~6.5 minutes for both countries, so
+  nightly is comfortable. Incremental updates from Geofabrik `.osc.gz` diffs
+  would be the step after that.

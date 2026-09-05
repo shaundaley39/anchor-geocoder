@@ -1,5 +1,5 @@
-# Geocoding pipeline. The ingest stage is Go; the serving stage (next) is
-# TypeScript. `make all` reproduces the index artifact from nothing.
+# Geocoding pipeline: Go ingest -> binary index artifact -> TypeScript API.
+# `make all` reproduces everything from nothing.
 
 RAW      := data/raw
 BUILD    := build
@@ -11,9 +11,10 @@ PL_PBF := $(RAW)/poland-latest.osm.pbf
 BA_PBF := $(RAW)/bosnia-herzegovina-latest.osm.pbf
 GEOFABRIK := https://download.geofabrik.de/europe
 
-.PHONY: all fetch build test clean fetch-ba verify
+.PHONY: all fetch records index test test-go test-server clean fetch-ba verify \
+        fold-vectors serve bench install
 
-all: fetch build
+all: fetch records index
 
 ## fetch: download and checksum the OSM extracts
 fetch: $(CZ_PBF) $(PL_PBF)
@@ -29,14 +30,40 @@ $(RAW)/%-latest.osm.pbf:
 ## fetch-ba: Bosnia is an optional third country
 fetch-ba: $(BA_PBF)
 
-## build: run the Go ingest over the extracts, producing build/records.ndjson.gz
-build:
+## records: extract OSM into the normalized record stream (build/records.ndjson.gz)
+records:
 	@mkdir -p $(BUILD)
 	cd ingest && $(GO) run ./cmd/geoingest -countries $(COUNTRIES) -raw ../$(RAW) -out ../$(BUILD)
 
-## test: run the Go test suite
-test:
+## index: turn the record stream into the binary artifact the server loads
+index:
+	cd ingest && $(GO) run ./cmd/geoindex -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
+
+## fold-vectors: regenerate the Go->TS normalization contract fixtures
+fold-vectors:
+	cd ingest && $(GO) run ./cmd/foldvectors \
+	  -in ../$(BUILD)/records.ndjson.gz -out ../server/test/fold-vectors.json
+
+## install: install server dependencies
+install:
+	cd server && pnpm install
+
+## serve: run the API server (INDEX_DIR, PORT, HOST are overridable)
+serve:
+	cd server && INDEX_DIR=../$(BUILD)/index pnpm exec tsx src/index.ts
+
+## bench: measure query latency against the built index
+bench:
+	cd server && pnpm exec tsx bench.mts
+
+## test: run both test suites
+test: test-go test-server
+
+test-go:
 	cd ingest && $(GO) test ./...
+
+test-server:
+	cd server && pnpm exec vitest run
 
 ## verify: report what the tag distribution in an extract actually looks like
 verify:
