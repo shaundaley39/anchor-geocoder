@@ -1,0 +1,12 @@
+# The extracts are 2.8 GB and are only ever read by the Go build, which runs on
+# the host. Never ship them into a build context.
+data/
+build/records.ndjson.gz
+
+.git/
+**/node_modules/
+**/dist/
+*.md
+!README.md
+
+# build/index/ is deliberately NOT excluded: the `bundled` target copies it.

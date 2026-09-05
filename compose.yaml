@@ -1,0 +1,22 @@
+# Local run of the slim image against an index built on the host.
+#
+# `make index` first; the artifact is mounted read-only rather than copied into
+# the image, so rebuilding the index does not mean rebuilding the image.
+services:
+  geocode:
+    build:
+      context: .
+      target: runtime
+    image: anchor-geocoder:slim
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./build/index:/index:ro
+    environment:
+      INDEX_DIR: /index
+      HOST: 0.0.0.0
+      PORT: "3000"
+    # The process holds the whole index in typed arrays; ~500 MB resident for
+    # Czechia and Poland. Below ~768 MB it will be OOM-killed mid-boot.
+    mem_limit: 1g
+    restart: unless-stopped

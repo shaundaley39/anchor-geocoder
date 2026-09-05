@@ -12,7 +12,8 @@ BA_PBF := $(RAW)/bosnia-herzegovina-latest.osm.pbf
 GEOFABRIK := https://download.geofabrik.de/europe
 
 .PHONY: all fetch records index test test-go test-server clean fetch-ba verify \
-        fold-vectors serve bench install
+        fold-vectors serve bench install docker docker-bundled docker-run \
+        docker-run-bundled
 
 all: fetch records index
 
@@ -75,6 +76,28 @@ test-server:
 ## verify: report what the tag distribution in an extract actually looks like
 verify:
 	cd ingest && $(GO) run ./cmd/tagstat -f ../$(CZ_PBF)
+
+# ---------------------------------------------------------------- docker ----
+IMAGE ?= anchor-geocoder
+
+## docker: slim image; the index is mounted at run time
+docker:
+	docker build --target runtime -t $(IMAGE):slim .
+
+## docker-bundled: self-contained image with the index baked in (needs `make index`)
+docker-bundled: $(BUILD)/index/manifest.json
+	docker build --target bundled -t $(IMAGE):bundled .
+
+$(BUILD)/index/manifest.json:
+	@echo "no index at $(BUILD)/index — run 'make index' first" && exit 1
+
+## docker-run: run the slim image with the local index mounted read-only
+docker-run: docker
+	docker run --rm -p 3000:3000 -v "$(PWD)/$(BUILD)/index:/index:ro" $(IMAGE):slim
+
+## docker-run-bundled: run the self-contained image, no volume
+docker-run-bundled: docker-bundled
+	docker run --rm -p 3000:3000 $(IMAGE):bundled
 
 clean:
 	rm -rf $(BUILD)

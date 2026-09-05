@@ -103,6 +103,42 @@ All optional, read from the environment:
 cd server && INDEX_DIR=/srv/geo-index PORT=8080 HOST=0.0.0.0 pnpm exec tsx src/index.ts
 ```
 
+### Docker
+
+The index is a 254 MB build artifact, not source, and it is not in the
+repository — so there are two shapes, and which you want depends on whether you
+are iterating or deploying.
+
+```bash
+make index                # produce build/index/ on the host first
+
+make docker-run           # slim image (245 MB), index mounted read-only
+make docker-run-bundled   # self-contained image (631 MB), no volume
+docker compose up         # same as docker-run, via compose.yaml
+```
+
+| target | image | index | good for |
+|---|---|---|---|
+| `runtime` | 245 MB | mounted at `/index` | local dev — rebuild the index without rebuilding the image |
+| `bundled` | 631 MB | baked in | deployment — one immutable artifact, nothing to mount |
+
+Both run as the unprivileged `node` user with a `HEALTHCHECK` against
+`/health`. Boot is ~1.4 s and steady-state RSS is ~490 MB, so **give the
+container at least 1 GB** — below ~768 MB it is OOM-killed while building the
+k-d tree.
+
+The index is deliberately **not** built inside Docker. It needs 2.8 GB of OSM
+extracts and ~6 minutes of CPU, which does not belong in an image build: it is a
+data pipeline on its own cadence, and the artifact it produces is immutable and
+shared by every replica. Build it once — on the host or in CI — then mount it or
+bake it in.
+
+For a real deployment the third shape is better than either: build the index in
+CI, push the directory to object storage, and have the slim image fetch it on
+boot (or read it from a shared read-only volume). That keeps images small,
+decouples index rebuilds from code deploys, and lets N replicas share one build.
+It is not implemented here.
+
 ### Other targets
 
 ```bash
@@ -111,6 +147,8 @@ make bench          # query latency percentiles
 make verify         # report real OSM tag distributions in an extract
 make fold-vectors   # regenerate the Go->TS normalization fixtures
 make clean          # remove build/ (keeps the downloaded extracts)
+make docker         # build the slim image
+make docker-bundled # build the self-contained image
 ```
 
 ### Troubleshooting
