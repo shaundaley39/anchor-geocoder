@@ -21,3 +21,6 @@ packages/*/dist/
 # compiled binaries
 /ingest/geoingest
 /ingest/geoindex
+
+# stray build output
+tmp/
