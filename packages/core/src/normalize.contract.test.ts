@@ -66,3 +66,30 @@ describe('folding invariants the index depends on', () => {
     expect(tokens('Plac')).toEqual(['plac']);
   });
 });
+
+/**
+ * The Cyrillic table must be total over the catalogue's scripts, and identical
+ * in both languages. Letters outside the Serbian alphabet used to pass through
+ * raw, producing tokens half Latin and half Cyrillic.
+ */
+describe('Cyrillic folds completely and in step with Go', () => {
+  const pairs: [string, string][] = [
+    ['Београд', 'Beograd'], ['Скопје', 'Skopje'], ['Подгорица', 'Podgorica'],
+    ['София', 'Sofia'], ['Пловдив', 'Plovdiv'], ['Львів', 'Lviv'],
+    ['Мінск', 'Minsk'],
+  ];
+  it('converges the two scripts of a name', () => {
+    for (const [cyr, latin] of pairs) {
+      expect(fold(cyr), `${cyr} vs ${latin}`).toBe(fold(latin));
+    }
+  });
+
+  it('never leaves a token in two scripts at once', () => {
+    for (const s of ['София', 'Київ', 'Львів', 'Мінск', 'Бургас', 'Ужгород',
+                     'Чернігів', 'Гродна', 'Скопје', 'Београд']) {
+      const out = fold(s);
+      expect(/[a-z]/.test(out) && /[\u0400-\u04FF]/.test(out), `${s} -> ${out}`)
+        .toBe(false);
+    }
+  });
+});

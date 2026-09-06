@@ -96,3 +96,45 @@ func BenchmarkFold(b *testing.B) {
 		_ = Fold("Náměstí Svobody 12/34, Brno")
 	}
 }
+
+// The Cyrillic table has to be total over the scripts the catalogue covers.
+// Letters outside the Serbian alphabet used to pass through raw, leaving tokens
+// half Latin and half Cyrillic that matched neither spelling.
+func TestCyrillicFoldsCompletely(t *testing.T) {
+	for _, c := range []struct{ cyr, latin string }{
+		{"Београд", "Beograd"},     // sr — the case the table was written for
+		{"Скопје", "Skopje"},       // mk
+		{"Подгорица", "Podgorica"}, // me
+		{"София", "Sofia"},         // bg, via я
+		{"Пловдив", "Plovdiv"},     // bg
+		{"Львів", "Lviv"},          // uk, via ь and і
+		{"Мінск", "Minsk"},         // be, via і
+	} {
+		got, want := Fold(c.cyr), Fold(c.latin)
+		if got != want {
+			t.Errorf("%q -> %q, but %q -> %q", c.cyr, got, c.latin, want)
+		}
+	}
+}
+
+// A token must not come out in two scripts at once, whatever the input.
+func TestFoldLeavesNoMixedScriptTokens(t *testing.T) {
+	for _, s := range []string{
+		"София", "Київ", "Львів", "Мінск", "Пловдив", "Бургас", "Щецин",
+		"Ужгород", "Чернігів", "Гродна", "Скопје", "Београд",
+	} {
+		out := Fold(s)
+		var latin, cyr bool
+		for _, r := range out {
+			switch {
+			case r >= 'a' && r <= 'z':
+				latin = true
+			case r >= 0x0400 && r <= 0x04FF:
+				cyr = true
+			}
+		}
+		if latin && cyr {
+			t.Errorf("%q folded to %q, which is half Latin and half Cyrillic", s, out)
+		}
+	}
+}

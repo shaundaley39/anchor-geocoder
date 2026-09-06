@@ -32,14 +32,38 @@ var singletons = map[rune]string{
 	'ı': "i", 'İ': "i",
 }
 
-// Serbian Cyrillic to Latin: a bijection apart from three digraphs, which is
-// why a table suffices. Bosnia carries ~52k name:sr values.
+// Cyrillic to Latin. Written for Serbo-Croatian, where the same language is
+// written in both scripts and the mapping is a bijection apart from three
+// digraphs, so a table suffices and "Београд" and "Beograd" must converge.
+//
+// It has to be *total* over the Cyrillic the corpus contains, which it was not:
+// letters outside the Serbian alphabet passed through raw and produced tokens
+// half in each script. "София" folded to "sofiя", matching neither "София" nor
+// "Sofia"; "Мінск" to "mіnsk"; "Львів" to "lьvіv". Bulgarian, Ukrainian and
+// Belarusian are all in the catalogue, so that was three shipped countries.
+//
+// The additions collapse hard, matching the Serbian entries: ш and щ both to s,
+// ч to c, ж to z. That is what makes the Serbian case work — Latin Serbian
+// spells them š, č, ž, which strip to the same letters — and it is why English
+// romanisations (sh, ch, zh) will not match. Those come in as name:en aliases,
+// scored as separate name variants, which is how exonyms already work.
 var cyrillic = map[rune]string{
 	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'ђ': "dj", 'е': "e",
 	'ж': "z", 'з': "z", 'и': "i", 'ј': "j", 'к': "k", 'л': "l", 'љ': "lj",
 	'м': "m", 'н': "n", 'њ': "nj", 'о': "o", 'п': "p", 'р': "r", 'с': "s",
 	'т': "t", 'ћ': "c", 'у': "u", 'ф': "f", 'х': "h", 'ц': "c", 'ч': "c",
 	'џ': "dz", 'ш': "s",
+
+	// Macedonian
+	'ѓ': "gj", 'ќ': "kj", 'ѕ': "dz", 'ѐ': "e", 'ѝ': "i",
+
+	// Bulgarian, Ukrainian, Belarusian, Russian
+	'ё': "e", 'є': "e", 'і': "i", 'ї': "i", 'й': "j", 'ґ': "g", 'ў': "u",
+	'щ': "s", 'ы': "y", 'э': "e", 'ю': "u", 'я': "a",
+	// The soft sign modifies the preceding consonant and has no letter of its
+	// own; the hard sign is silent in Russian but a full vowel in Bulgarian,
+	// where dropping it would leave "Бургас" without its u.
+	'ь': "", 'ъ': "a",
 }
 
 // Street-type abbreviations, expanded before stopword removal so "ul.", "ulica"
