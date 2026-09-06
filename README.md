@@ -38,6 +38,66 @@ Built as three stages:
 | **Index** | Go | Turns the record stream into a binary artifact of flat typed arrays |
 | **Serve** | TypeScript | Loads the artifact at boot, serves one `/v1/geocode` endpoint for both directions |
 
+## Sixty-second demo
+
+Three calls against the default build, with their actual output.
+
+**A Czech address with no street.** 47% of Czech addresses hang off `addr:place`
+rather than a street, and the query is typed without diacritics:
+
+```bash
+curl 'localhost:3000/v1/geocode?q=Velka+Upa+299&limit=1'
+```
+```json
+{
+  "query": { "type": "forward", "q": "Velka Upa 299" },
+  "features": [{
+    "place_name": "Velká Úpa 299, CZ",
+    "center": [15.7636224, 50.6784589],
+    "properties": {
+      "layer": "address", "name": "Velká Úpa", "country": "cz",
+      "locality": "Velká Úpa", "house_number": "299"
+    }
+  }]
+}
+```
+
+**A misspelling.** Correction runs only after an exact search finds nothing, and
+the response says what was actually searched:
+
+```bash
+curl 'localhost:3000/v1/geocode?q=Warszwa&limit=1'
+```
+```json
+{
+  "query": { "type": "forward", "q": "Warszwa", "corrected": "warszawa" },
+  "features": [{
+    "place_name": "Warszawa, PL",
+    "center": [21.0067249, 52.2319581],
+    "relevance": 183.0286
+  }]
+}
+```
+
+**A click on Prague's Old Town Square.** Regions containing the point come
+first, then everything else by distance:
+
+```bash
+curl 'localhost:3000/v1/geocode?lat=50.0870&lon=14.4207&limit=3'
+```
+```json
+[
+  { "place_name": "Praha, památková rezervace, CZ", "distance_m": 0,   "containing": true },
+  { "place_name": "Staroměstský orloj, CZ",         "distance_m": 2.4, "containing": null },
+  { "place_name": "Radniční věž, CZ",               "distance_m": 3.8, "containing": null }
+]
+```
+
+*(The third is abridged to the fields that matter; each feature is a full
+GeoJSON `Feature`.)*
+
+Getting there from nothing takes one command and about four minutes — see below.
+
 ## Setup
 
 ### Prerequisites

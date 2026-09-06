@@ -1,10 +1,9 @@
-// Command relstat measures what is lost by skipping OSM relations.
+// Command relstat measures the relation population an extract carries.
 //
-// Extraction reads nodes and ways only; resolving multipolygon geometry needs
-// two more passes. A defensible trade, but only if the gap is measured. On
-// Czechia and Poland: 36,703 named POI relations against 663,724 indexed POIs,
-// 5.2% by count — but they skew large. Prague's airport is a multipolygon and
-// missing; Warsaw Chopin, mapped as a way, is present.
+// It is what sized the multipolygon work: on Czechia, 2,955 named POI-tagged
+// multipolygons, median 2 member ways, p90 6, max 122. Only 67% have a single
+// outer way, so stitching was unavoidable — Prague's airport is one ring split
+// across 68 of them.
 package main
 
 import (

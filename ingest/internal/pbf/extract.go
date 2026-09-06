@@ -89,9 +89,15 @@ type RawFeature struct {
 	// Non-empty when the feature is a POI (see poi.go), computed here so the
 	// converter need not repeat the classification.
 	Category string
-	// Simplified outline, only for area features big enough for their shape to
-	// matter. Nil for nodes, buildings, and anything under the size threshold.
+	// Simplified outline, for any way big enough for its shape to matter. Nil for
+	// nodes, buildings, and anything under the size threshold.
 	Ring []geom.Point
+	// RingClosed distinguishes an area from a linear way. Both get a Ring — a
+	// river is worth measuring distance to — but only a closed one can contain a
+	// click, and the two must not be confused: the Vltava's centreline, treated
+	// as a ring, joins its endpoints into an 11km lens that "contains" Old Town
+	// Square.
+	RingClosed bool
 }
 
 func (e *Extractor) log(format string, args ...any) {
@@ -141,12 +147,20 @@ func tagsOf(t osm.Tags) map[string]string {
 	return m
 }
 
-// Run performs the three-pass extraction.
+// Run performs the four-pass extraction.
 func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	var st Stats
 
+	// ---- pass 0: multipolygon relations and the ways they are built from ----
+	mps, memberWays, err := e.scanRelations(ctx, &st)
+	if err != nil {
+		return st, fmt.Errorf("pass 0 (relations): %w", err)
+	}
+	e.log("pass 0 done: %d multipolygons selected, %d member ways to retain",
+		len(mps), len(memberWays))
+
 	// ---- pass 1: select ways, collect the node IDs they need ----------------
-	ways, needed, err := e.scanWays(ctx, &st)
+	ways, needed, err := e.scanWays(ctx, &st, memberWays)
 	if err != nil {
 		return st, fmt.Errorf("pass 1 (ways): %w", err)
 	}
@@ -168,9 +182,17 @@ func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	e.log("pass 2 done: %d/%d node locations resolved", found, len(needed))
 
 	// ---- pass 3: resolve way geometry and emit ------------------------------
-	if err := e.emitWays(ctx, &st, ways, needed, locs); err != nil {
+	geoms, err := e.emitWays(ctx, &st, ways, needed, locs, memberWays)
+	if err != nil {
 		return st, fmt.Errorf("pass 3 (way geometry): %w", err)
 	}
+
+	// ---- stitch and emit the relations, in memory ---------------------------
+	if err := e.emitRelations(&st, mps, geoms); err != nil {
+		return st, fmt.Errorf("relation assembly: %w", err)
+	}
+	e.log("relations: %d/%d multipolygons resolved to a closed ring",
+		st.RelationsResolved, st.RelationsSelected)
 	return st, nil
 }
 
@@ -186,6 +208,10 @@ type Stats struct {
 	POINodes       int64
 	POIWays        int64
 	WaysUnresolved int64 // selected but geometry could not be built
+
+	RelationsScanned  int64
+	RelationsSelected int64
+	RelationsResolved int64 // outer ring successfully stitched closed
 }
 
 func dedupeSorted(a []int64) []int64 {

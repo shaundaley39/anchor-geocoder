@@ -23,7 +23,7 @@ const (
 
 // scanWays is pass 1: select the ways worth keeping and record the node ids
 // needed to give each one a point.
-func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, error) {
+func (e *Extractor) scanWays(ctx context.Context, st *Stats, memberWays []int64) ([]int64, []int64, error) {
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -49,7 +49,10 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, 
 		place := isPlace(tags)
 		street := isNamedStreet(tags)
 		_, poi := isPOI(tags)
-		if !addressed && !place && !street && !poi {
+		// A relation member usually carries no tags of its own, so nothing else
+		// would keep it, and its vertices are the relation's only geometry.
+		member := search(memberWays, int64(w.ID)) >= 0
+		if !addressed && !place && !street && !poi && !member {
 			continue
 		}
 		if len(w.Nodes) == 0 {
@@ -59,7 +62,7 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, 
 
 		// A building or place polygon needs every vertex for its centroid; a street
 		// needs only a point that lies on the line. See package doc.
-		wantAll := addressed || place || poi
+		wantAll := addressed || place || poi || member
 		ways = append(ways, packWay(int64(w.ID), wantAll))
 
 		if wantAll {
@@ -72,6 +75,8 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, 
 		}
 
 		switch {
+		case !addressed && !place && !street && !poi:
+			// retained only as relation geometry
 		case addressed:
 			st.AddrWays++
 		case place:
@@ -148,7 +153,12 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 
 // emitWays is pass 3: rebuild each selected way's geometry from the retained
 // locations.
-func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, needed []int64, locs []coord) error {
+func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, needed []int64,
+	locs []coord, memberWays []int64) (map[int64]memberWay, error) {
+
+	// Geometry of the ways a relation is built from, kept for stitching. Only
+	// the members, so this holds thousands of ways rather than millions.
+	geoms := make(map[int64]memberWay, len(memberWays))
 	// `ways` is sorted, so membership is a binary search — ~25 comparisons against
 	// a flat int64 slice, rather than a map of tens of millions of entries that
 	// would itself cost gigabytes.
@@ -156,7 +166,7 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	defer s.Close()
@@ -196,6 +206,18 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 				}
 			}
 		}
+		if len(w.Nodes) >= 2 && search(memberWays, int64(w.ID)) >= 0 && len(pts) == len(w.Nodes) {
+			gp := make([]geom.Point, len(pts))
+			for i, p := range pts {
+				gp[i] = geom.Point{Lat: p[0], Lon: p[1]}
+			}
+			geoms[int64(w.ID)] = memberWay{
+				first: int64(w.Nodes[0].ID),
+				last:  int64(w.Nodes[len(w.Nodes)-1].ID),
+				pts:   gp,
+			}
+		}
+
 		if len(pts) == 0 {
 			st.WaysUnresolved++
 			continue
@@ -203,6 +225,10 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 
 		lat, lon := representativePoint(pts, isBuild)
 		poiCat, _ := isPOI(tags)
+
+		// `isBuild` means every vertex was retained, not that the way is an area.
+		// Closedness has to come from the way itself.
+		closed := len(w.Nodes) >= 4 && w.Nodes[0].ID == w.Nodes[len(w.Nodes)-1].ID
 
 		// Keep the outline only where it can change an answer. A building is a few
 		// metres across, so its centroid is already inside clicking tolerance and a
@@ -220,16 +246,16 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 
 		if err := e.Emit(RawFeature{
 			OSMType: 'w', OSMID: int64(w.ID), Tags: tags,
-			Lat: lat, Lon: lon, Category: poiCat, Ring: ring,
+			Lat: lat, Lon: lon, Category: poiCat, Ring: ring, RingClosed: closed,
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		emitted++
 		if emitted%1_000_000 == 0 {
 			e.log("  pass 3: %dM ways emitted", emitted/1e6)
 		}
 	}
-	return s.Err()
+	return geoms, s.Err()
 }
 
 // representativePoint reduces a way's vertices to the single point the geocoder

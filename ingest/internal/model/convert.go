@@ -93,7 +93,7 @@ func collectAltNames(t map[string]string, isPOI bool) []string {
 // named Czech POIs. Collapsing them would lose either the POI from search or
 // the address from the address layer, and so from reverse geocoding.
 func FromTags(osmType byte, osmID int64, category string, t map[string]string,
-	lat, lon float64, country string, ring []geom.Point) []*Record {
+	lat, lon float64, country string, ring []geom.Point, ringClosed bool) []*Record {
 
 	var shape []float64
 	if len(ring) >= 4 {
@@ -111,7 +111,7 @@ func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 		return &Record{
 			ID: base + idSuffix, Lat: lat, Lon: lon,
 			Country: country, AltNames: alts,
-			Shape: shape, Closed: len(shape) > 0,
+			Shape: shape, Closed: ringClosed && len(shape) > 0,
 		}
 	}
 

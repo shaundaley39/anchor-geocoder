@@ -52,15 +52,15 @@ func Simplify(pts []Point, toleranceM float64, maxPoints int) []Point {
 		return pts
 	}
 	out := douglasPeucker(pts, toleranceM)
-	// Douglas-Peucker has no upper bound: a coastline can still return thousands.
-	// Drop evenly spaced points until it fits.
-	for len(out) > maxPoints {
-		stride := float64(len(out)) / float64(maxPoints)
-		thinned := make([]Point, 0, maxPoints)
-		for i := 0.0; int(i) < len(out) && len(thinned) < maxPoints; i += stride {
-			thinned = append(thinned, out[int(i)])
-		}
-		out = thinned
+	// Douglas-Peucker has no upper bound, so a river or a coastline still comes
+	// back with thousands. Coarsen the tolerance until it fits, rather than
+	// dropping evenly spaced vertices: decimation takes no account of shape, and
+	// on a long sinuous polygon it cuts straight across the meanders. That put
+	// the Vltava's 6.3 km² riverbank into 27 points spaced 469m apart, a blob
+	// that excluded the middle of the river and contained Old Town Square, 300m
+	// inland. Coarse Douglas-Peucker keeps a thin river thin.
+	for tol := toleranceM * 2; len(out) > maxPoints; tol *= 2 {
+		out = douglasPeucker(pts, tol)
 	}
 	return out
 }

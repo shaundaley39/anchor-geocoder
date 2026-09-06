@@ -146,7 +146,7 @@ func run(sources []source, outDir string) error {
 			seenOSM[key] = struct{}{}
 
 			for _, r := range model.FromTags(rf.OSMType, rf.OSMID, rf.Category,
-				rf.Tags, rf.Lat, rf.Lon, src.country, rf.Ring) {
+				rf.Tags, rf.Lat, rf.Lon, src.country, rf.Ring, rf.RingClosed) {
 				if err := route(r, src.country); err != nil {
 					return err
 				}
