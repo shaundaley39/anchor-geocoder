@@ -6,6 +6,9 @@ build/records.ndjson.gz
 .git/
 **/node_modules/
 **/dist/
+# A build-info file without its outputs makes tsc skip emitting entirely: it
+# believes the build is current, and dist/ is excluded above.
+**/*.tsbuildinfo
 *.md
 !README.md
 

@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { fold, tokens } from '../src/normalize.js';
+import { fold, tokens } from './normalize.js';
 
 interface Vector { in: string; fold: string; tokens: string[] }
 

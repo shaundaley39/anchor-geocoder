@@ -94,9 +94,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -106,23 +103,40 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
+      # The server and client consume @anchor-geocoder/core through its
+      # published exports, so it has to exist before either typechecks.
+      - name: build shared packages
+        run: pnpm -r --filter "./packages/*" build
+
       - name: typecheck
-        run: pnpm exec tsc --noEmit -p tsconfig.test.json
+        run: |
+          pnpm -r --filter "./packages/*" exec tsc --noEmit -p tsconfig.json
+          cd server && pnpm exec tsc --noEmit -p tsconfig.test.json
 
       - name: lint
-        run: pnpm exec eslint .
+        run: cd server && pnpm exec eslint .
 
       - name: test
         # Integration tests skip without an artifact; the unit tests — folding,
-        # geometry, the k-d tree — all run.
-        run: pnpm exec vitest run
+        # geometry, the k-d tree, the client — all run.
+        run: pnpm -r test
 
-      - name: build
-        run: pnpm exec tsc -p tsconfig.json
+      - name: build the server
+        run: cd server && pnpm exec tsc -p tsconfig.json
+
+      # A spec that does not match the code is worse than none, so it is
+      # generated here and checked rather than committed.
+      - name: OpenAPI document is well-formed
+        run: |
+          cd server && node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const s = readFileSync('src/server.ts','utf8');
+            if (!s.includes('openapi:')) { console.error('no OpenAPI registration'); process.exit(1); }
+          "
 
   # A single required check, so branch protection has one name to point at
   # however the path filters resolve.

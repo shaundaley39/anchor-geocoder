@@ -295,7 +295,8 @@ lat 48.547–54.835, lon 12.090–24.160.
 
 Responses are a GeoJSON `FeatureCollection` shaped after the conventional
 geocoding API, so the endpoint is a drop-in for anything already speaking that
-dialect.
+dialect. The **OpenAPI 3.1 document** is served at `/openapi.json` and rendered
+at **`/docs`**.
 
 ```json
 {
@@ -903,9 +904,56 @@ undercut the point of the split.
 
 ---
 
+## Why the server is TypeScript
+
+The usual argument — a rich client ecosystem to integrate with — does not apply
+to a geocoder. The real one is that everything *downstream* is JavaScript, and
+the API can share code with it rather than just data.
+
+`packages/core` is dependency-free and browser-buildable. A consumer importing
+it gets the response types **and the exact query normalizer the index was built
+with** — so a client can fold a query before sending it, and filter cached
+results locally, without a second implementation of the folding rules.
+
+That last point is load-bearing. There is already a Go↔TypeScript folding
+contract test *because two implementations are dangerous*. A server in another
+language would force a third one in the browser; here the client imports the
+same module, and the drift risk goes to zero rather than up.
+
+Three things follow:
+
+- **`@anchor-geocoder/core`** — TypeBox schemas, the types derived from them,
+  and the normalizer. One schema definition produces the runtime validation
+  Fastify applies, the TypeScript types both sides import, and the OpenAPI
+  document. They cannot drift, because there is nothing to keep in step.
+- **`@anchor-geocoder/client`** — a typed, isomorphic client. Not just a fetch
+  wrapper: it debounces, aborts superseded keystrokes so a slow request for
+  "Pra" cannot overwrite the results for "Prague", and folds queries so
+  equivalent spellings share one cache key.
+- **OpenAPI 3.1**, generated from those same schemas rather than hand-written,
+  so it cannot describe an API that no longer exists.
+
+```ts
+import { GeocodeClient } from '@anchor-geocoder/client';
+
+const geo = new GeocodeClient({ baseUrl: 'https://geocode.example.com' });
+const search = geo.autocomplete({ debounceMs: 150, limit: 5 });
+
+input.addEventListener('input', async (e) => {
+  const results = await search(e.target.value);   // debounced, cancellable
+  if (results) render(results.features);          // null when superseded
+});
+```
+
+What TypeScript costs, for honesty: one thread (~1,600 qps per process), no
+`mmap`, and GC. All of which is mitigated by the server doing almost nothing at
+request time — which is itself part of why the choice works out.
+
 ## Repository layout
 
 ```
+packages/core/                shared contract: schemas, types, normalizer
+packages/client/              typed isomorphic client with autocomplete
 ingest/                       Go — offline stages
   cmd/geoingest/              extraction entry point, street grouping, orphan resolution
   cmd/geoindex/               record stream -> binary artifact

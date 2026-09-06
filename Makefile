@@ -60,16 +60,18 @@ fixtures: fold-vectors format-constants
 
 fold-vectors:
 	cd ingest && $(GO) run ./cmd/foldvectors \
-	  -in ../$(BUILD)/records.ndjson.gz -out ../server/test/fold-vectors.json
+	  -in ../$(BUILD)/records.ndjson.gz -out ../packages/core/src/fold-vectors.json
 
 format-constants:
 	cd ingest && $(GO) run ./cmd/formatconsts -out ../server/test/format-constants.json
 
-## install: install server dependencies
+## install: install workspace dependencies and build the shared packages
 install:
-	cd server && pnpm install
+	pnpm install
+	pnpm -r --filter "./packages/*" build
 
 ## serve: run the API server (INDEX_DIR, PORT, HOST are overridable)
+##         OpenAPI at /openapi.json, docs at /docs
 serve:
 	cd server && INDEX_DIR=../$(BUILD)/index pnpm exec tsx src/index.ts
 
@@ -92,6 +94,7 @@ lint-go:
 	  || echo "  golangci-lint not installed; skipped (brew install golangci-lint)"
 
 lint-server:
+	pnpm -r --filter "./packages/*" build
 	cd server && pnpm exec tsc --noEmit -p tsconfig.test.json
 	cd server && pnpm exec eslint .
 
@@ -102,7 +105,8 @@ test-go:
 	cd ingest && $(GO) test ./...
 
 test-server:
-	cd server && pnpm exec vitest run
+	pnpm -r --filter "./packages/*" build
+	pnpm -r test
 
 ## verify: report what the tag distribution in an extract actually looks like
 verify:

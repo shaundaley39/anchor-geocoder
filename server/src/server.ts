@@ -5,6 +5,14 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import scalar from '@scalar/fastify-api-reference';
+import { type TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
+import {
+  SHARED_SCHEMAS, GeocodeQuery, FeatureCollection, ErrorResponse, HealthResponse,
+  type GeocodeQuery as GeocodeQueryType,
+  type FeatureCollection as FeatureCollectionType,
+} from '@anchor-geocoder/core';
 import { type Artifact } from './artifact.js';
 import { forward } from './forward.js';
 import { reverse, looksTransposed, type ReverseIndex } from './reverse.js';
@@ -26,25 +34,8 @@ export interface ServerOptions {
   logger?: boolean | Record<string, unknown>;
 }
 
-interface GeocodeQuery {
-  q?: string;
-  lat?: string;
-  lon?: string;
-  limit?: string;
-  country?: string;
-  radius?: string;
-  proximity?: string;
-}
-
 function badRequest(message: string, hint?: string) {
-  return { error: 'bad_request', message, ...(hint ? { hint } : {}) };
-}
-
-/** Parses a numeric parameter, returning null when absent or malformed. */
-function num(v: string | undefined): number | null {
-  if (v === undefined || v.trim() === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  return { statusCode: 400, error: 'bad_request', message, ...(hint ? { hint } : {}) };
 }
 
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
@@ -66,7 +57,33 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     // and the handler's own timing. (Fastify 6 moves this to logController.)
     disableRequestLogging: true,
     trustProxy: true, // honour X-Forwarded-For behind a load balancer
+  }).withTypeProvider<TypeBoxTypeProvider>();
+
+  // The shared schemas are registered once and referenced by $id, so the
+  // OpenAPI document and the validators are the same objects.
+  for (const schema of SHARED_SCHEMAS) app.addSchema(schema);
+
+  await app.register(swagger, {
+    openapi: {
+      openapi: '3.1.0',
+      info: {
+        title: 'Geocoding API',
+        version: String(artifact.manifest.version),
+        description:
+          'Forward and reverse geocoding over OpenStreetMap data, on one endpoint. ' +
+          '`q` searches by text; `lat` and `lon` search by position.',
+      },
+      servers: [{ url: '/' }],
+      tags: [{ name: 'geocoding' }, { name: 'operations' }],
+    },
+    // Without this the components come out as def-0, def-1 … which is useless
+    // to anyone generating a client from the document.
+    refResolver: {
+      buildLocalReference: (json, _base, _fragment, i) =>
+        (json.$id as string | undefined) ?? `def-${String(i)}`,
+    },
   });
+  await app.register(scalar, { routePrefix: '/docs' });
 
   // A geocoding endpoint is called from browsers by definition, so it is
   // useless without this. Open by default because the data is public and there
@@ -112,13 +129,19 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       path: req.routeOptions.url ?? req.url,
       status: reply.statusCode,
       duration_ms: Number(reply.elapsedTime.toFixed(3)),
-      query_type: (req.query as GeocodeQuery).q !== undefined ? 'forward' : 'reverse',
+      query_type: (req.query as GeocodeQueryType).q !== undefined ? 'forward' : 'reverse',
       results: (req as { geocodeResults?: number }).geocodeResults,
     }, 'request');
   });
 
-  app.get('/health', async () => ({
-    status: 'ok',
+  app.get('/health', {
+    schema: {
+      tags: ['operations'],
+      summary: 'Liveness, and what the loaded index contains.',
+      response: { 200: HealthResponse },
+    },
+  }, async () => ({
+    status: 'ok' as const,
     version: artifact.manifest.version,
     built_at: artifact.manifest.built_at,
     countries: artifact.manifest.countries,
@@ -127,11 +150,31 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     bbox: reverseIndex.bbox,
   }));
 
-  app.get<{ Querystring: GeocodeQuery }>('/v1/geocode', async (req, reply) => {
-    const { q, country } = req.query;
-    const lat = num(req.query.lat);
-    const lon = num(req.query.lon);
-    const limit = num(req.query.limit) ?? undefined;
+  app.get('/openapi.json', {
+    schema: { tags: ['operations'], summary: 'The OpenAPI 3.1 document.' },
+  }, async () => app.swagger());
+
+  app.get('/v1/geocode', {
+    schema: {
+      tags: ['geocoding'],
+      summary: 'Forward or reverse geocode, depending on the parameters given.',
+      description:
+        'Supply `q` for forward geocoding, or `lat` and `lon` for reverse. They are ' +
+        'mutually exclusive; to bias a text search toward a point, use `proximity`.\n\n' +
+        'Note that GeoJSON `center` and `geometry.coordinates` are `[lon, lat]`, the ' +
+        'reverse of the `lat`/`lon` parameters.',
+      querystring: GeocodeQuery,
+      response: {
+        200: FeatureCollection,
+        400: ErrorResponse,
+        429: ErrorResponse,
+      },
+    },
+  }, async (req, reply) => {
+    const { q, country } = req.query as GeocodeQueryType;
+    const lat = req.query.lat ?? null;
+    const lon = req.query.lon ?? null;
+    const limit = req.query.limit;
     const started = process.hrtime.bigint();
 
     const hasText = typeof q === 'string' && q.trim() !== '';
@@ -149,14 +192,6 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         '/v1/geocode?q=Nadrazni&proximity=50.0755,14.4378',
       ));
     }
-    if (hasPoint) {
-      if (lat < -90 || lat > 90) {
-        return reply.code(400).send(badRequest(`lat ${lat} is out of range [-90, 90]`));
-      }
-      if (lon < -180 || lon > 180) {
-        return reply.code(400).send(badRequest(`lon ${lon} is out of range [-180, 180]`));
-      }
-    }
     if (country !== undefined && artifact.manifest.country_ids[country.toLowerCase()] === undefined) {
       return reply.code(400).send(badRequest(
         `unknown country "${country}"`,
@@ -165,10 +200,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     }
 
     let results;
-    let echo: Record<string, unknown>;
+    let echo: FeatureCollectionType['query'];
 
     if (hasPoint) {
-      const radius = num(req.query.radius) ?? undefined;
+      const radius = req.query.radius;
       results = reverse(artifact, reverseIndex, lat, lon, {
         ...(limit !== undefined ? { limit } : {}),
         ...(radius !== undefined ? { radius } : {}),
@@ -179,22 +214,17 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       // Outside coverage is not an error, so this stays a 200 — but if the
       // transposed point is inside, say so rather than leaving them guessing.
       if (results.length === 0 && looksTransposed(reverseIndex.bbox, lat, lon)) {
-        echo['hint'] =
+        echo.hint =
           `no results at lat=${lat}, lon=${lon}, but lat=${lon}, lon=${lat} is ` +
           `inside the indexed area — lat and lon may be transposed. Note that ` +
           `GeoJSON "center" and "coordinates" are [lon, lat], the reverse of ` +
           `these parameters.`;
       }
     } else {
+      // Shape is enforced by the schema's pattern, so this cannot be NaN.
       let proximity: { lat: number; lon: number } | undefined;
       if (req.query.proximity) {
-        const [pLat, pLon] = req.query.proximity.split(',').map(Number);
-        if (pLat === undefined || pLon === undefined ||
-            !Number.isFinite(pLat) || !Number.isFinite(pLon)) {
-          return reply.code(400).send(badRequest(
-            'proximity must be "lat,lon"', 'proximity=50.0755,14.4378',
-          ));
-        }
+        const [pLat, pLon] = req.query.proximity.split(',').map(Number) as [number, number];
         proximity = { lat: pLat, lon: pLon };
       }
       results = forward(artifact, q!, {
@@ -202,7 +232,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         ...(country !== undefined ? { country } : {}),
         ...(proximity !== undefined ? { proximity } : {}),
       });
-      echo = { type: 'forward', q, ...(proximity ? { proximity } : {}) };
+      echo = { type: 'forward', ...(q !== undefined ? { q } : {}), ...(proximity ? { proximity } : {}) };
     }
 
     const micros = Number(process.hrtime.bigint() - started) / 1000;

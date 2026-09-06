@@ -8,6 +8,8 @@ node_modules/
 dist/
 .vitest/
 server/dist/
+packages/*/dist/
+*.tsbuildinfo
 
 # editor detritus
 *.swp

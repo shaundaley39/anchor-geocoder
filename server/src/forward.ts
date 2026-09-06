@@ -11,7 +11,7 @@ import { type GeocodeResult, anchorResult, addressResult } from './result.js';
 
 export type { GeocodeResult } from './result.js';
 export { anchorBBox } from './result.js';
-import { tokens as foldTokens } from './normalize.js';
+import { tokens as foldTokens } from '@anchor-geocoder/core';
 
 export interface ForwardOptions {
   limit?: number;

@@ -55,7 +55,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: resolve the selection
         id: sel
@@ -88,13 +88,13 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           du -sh build/index >> "$GITHUB_STEP_SUMMARY"
 
-      - name: install server dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: server
+      - name: install and build the workspace
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r --filter "./packages/*" build
 
       - name: full suite against the real artifact
-        run: pnpm exec vitest run
-        working-directory: server
+        run: pnpm -r test
 
       - name: the server actually serves
         run: |

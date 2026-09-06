@@ -2,21 +2,10 @@
  * GeoJSON rendering, shaped after the conventional geocoding API so the endpoint
  * is a drop-in for anything already speaking that dialect.
  */
-import type { GeocodeResult } from './forward.js';
-
-export interface Feature {
-  type: 'Feature';
-  id: string;
-  /** [minLon, minLat, maxLon, maxLat]; absent for features with no extent. */
-  bbox?: [number, number, number, number];
-  place_type: string[];
-  text: string;
-  place_name: string;
-  center: [number, number];
-  geometry: { type: 'Point'; coordinates: [number, number] };
-  properties: Record<string, unknown>;
-  relevance: number;
-}
+import type { GeocodeResult } from './result.js';
+import type {
+  Feature, FeatureCollection, FeatureProperties,
+} from '@anchor-geocoder/core';
 
 /** One-line human-facing form, skipping absent components. */
 export function placeName(r: GeocodeResult): string {
@@ -36,19 +25,16 @@ export function toFeature(r: GeocodeResult): Feature {
     Math.round(r.lon * 1e7) / 1e7,
     Math.round(r.lat * 1e7) / 1e7,
   ];
-  const props: Record<string, unknown> = {
+  const props: FeatureProperties = {
     layer: r.layer,
     name: r.name,
     country: r.country,
+    ...(r.locality ? { locality: r.locality } : {}),
+    ...(r.category !== undefined ? { category: r.category } : {}),
+    ...(r.houseNumber !== undefined ? { house_number: r.houseNumber } : {}),
+    ...(r.distance !== undefined ? { distance_m: r.distance } : {}),
+    ...(r.containing ? { containing: true, area_m2: r.areaM2 ?? 0 } : {}),
   };
-  if (r.locality) props['locality'] = r.locality;
-  if (r.category !== undefined) props['category'] = r.category;
-  if (r.houseNumber !== undefined) props['house_number'] = r.houseNumber;
-  if (r.distance !== undefined) props['distance_m'] = r.distance;
-  if (r.containing) {
-    props['containing'] = true;
-    props['area_m2'] = r.areaM2;
-  }
 
   return {
     type: 'Feature',
@@ -67,8 +53,8 @@ export function toFeature(r: GeocodeResult): Feature {
 }
 
 export function toFeatureCollection(
-  results: GeocodeResult[], query: Record<string, unknown>,
-): Record<string, unknown> {
+  results: GeocodeResult[], query: FeatureCollection['query'],
+): FeatureCollection {
   return {
     type: 'FeatureCollection',
     query,

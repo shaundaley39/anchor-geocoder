@@ -38,7 +38,7 @@ var handPicked = []string{
 
 func main() {
 	in := flag.String("in", "../build/records.ndjson.gz", "record stream")
-	out := flag.String("out", "../server/test/fold-vectors.json", "fixture output")
+	out := flag.String("out", "../packages/core/src/fold-vectors.json", "fixture output")
 	n := flag.Int("n", 4000, "how many real names to sample")
 	flag.Parse()
 
