@@ -32,7 +32,7 @@
  * tested against its actual simplified outline — the refine. The box alone
  * would not do: a diagonal or crescent-shaped feature fills a fraction of it.
  */
-import KDBush from 'kdbush';
+import { PointIndex } from './pointindex.js';
 import { type Artifact, toDeg, anchorOfAddress, layerOf, LAYER_PLACE } from './artifact.js';
 import { type GeocodeResult, haversineMetres, anchorBBox } from './forward.js';
 import {
@@ -58,7 +58,7 @@ const EXTENT_CELL_DEG = 0.05;
 const MIN_EXTENT_M = 30;
 
 export interface ReverseIndex {
-  tree: KDBush;
+  tree: PointIndex;
   bbox: BBox;
   /** Number of address points; ids at or above this index anchors. */
   addressCount: number;
@@ -85,22 +85,24 @@ export function buildReverseIndex(a: Artifact): ReverseIndex {
   // One tree over addresses and anchors alike. Anchors have to be in it or a
   // click can never return a park, a station or a street — only the nearest
   // doorway, which is what the first version of this did.
-  const tree = new KDBush(nAddr + nAnchor, 64, Int32Array);
+  //
+  // Point ids below nAddr index the address arrays; at or above it, the anchor
+  // arrays. The tree reads coordinates through these accessors instead of
+  // copying them: kdbush kept its own copy, which on the four-country build was
+  // 128MB of duplicate — ~490MB at fourteen countries.
+  const getY = (id: number) => (id < nAddr ? a.addrLat[id]! : a.anchorLat[id - nAddr]!);
+  const getX = (id: number) => (id < nAddr ? a.addrLon[id]! : a.anchorLon[id - nAddr]!);
+  const tree = new PointIndex(nAddr + nAnchor, getX, getY, 64);
 
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
   for (let i = 0; i < nAddr; i++) {
     const lat = a.addrLat[i]!;
     const lon = a.addrLon[i]!;
-    tree.add(lon, lat);
     if (lat < minLat) minLat = lat;
     if (lat > maxLat) maxLat = lat;
     if (lon < minLon) minLon = lon;
     if (lon > maxLon) maxLon = lon;
   }
-  for (let id = 0; id < nAnchor; id++) {
-    tree.add(a.anchorLon[id]!, a.anchorLat[id]!);
-  }
-  tree.finish();
 
   // Containment grid, built as a counting sort so it is one flat array rather
   // than several million small ones.
@@ -240,23 +242,21 @@ export function reverse(
     near.length = overflow;
     const dLat = radius / M_PER_DEG_LAT;
     const dLon = dLat / scale;
-    const hits = idx.tree.range(
+    idx.tree.range(
       Math.round((lon - dLon) * 1e7), Math.round((lat - dLat) * 1e7),
       Math.round((lon + dLon) * 1e7), Math.round((lat + dLat) * 1e7),
-    );
-
-    for (const i of hits) {
+      (i) => {
       if (i < idx.addressCount) {
         const anchorID = anchorOfAddress(a, i);
-        if (!okCountry(anchorID)) continue;
+        if (!okCountry(anchorID)) return;
         const d = haversineMetres(lat, lon, toDeg(a.addrLat[i]!), toDeg(a.addrLon[i]!));
         if (d <= radius) {
           near.push({ anchorID, addrIdx: i, distance: d, area: 0, containing: false });
         }
-        continue;
+        return;
       }
       const id = i - idx.addressCount;
-      if (seenAnchor.has(id) || !okCountry(id)) continue;
+      if (seenAnchor.has(id) || !okCountry(id)) return;
       // Where a shape exists, measure to it rather than to the representative
       // point: a click at one end of a 2km street is not 1km from the street.
       const d = hasShape(a, id)
@@ -265,7 +265,7 @@ export function reverse(
       if (d <= radius) {
         near.push({ anchorID: id, addrIdx: -1, distance: d, area: 0, containing: false });
       }
-    }
+      });
     if (near.length + head.length >= limit) break;
     if (radius >= maxRadius) break;
     radius = Math.min(radius * 4, maxRadius);

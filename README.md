@@ -270,7 +270,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
 | extract + index | **3m33s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **398 MB**. Peak 11.5 GB RSS |
-| boot | **1.9 s** | **746 MB RSS** |
+| boot | **3.4 s** | **620 MB RSS** |
 
 **Full region** (all fourteen), for comparison:
 
@@ -279,7 +279,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | fetch | — | 14 GB of extracts |
 | extract | 24m39s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
 | index | 7m41s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms, 1,466,886 shapes — **1.8 GB**. Peak 13 GB RSS |
-| boot | **9.6 s** | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — **3.1 GB RSS** |
+| boot | ~15 s | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — ~**2.6 GB RSS** |
 
 Per country, as indexed:
 
@@ -604,7 +604,7 @@ tap the Siegessäule inside the Tiergarten, Berlin
 **Filter and refine.** The two tiers ask different questions, so there are two
 indexes.
 
-A k-d tree over every point — 61M addresses *plus* all 10.2M anchors — answers
+A k-d tree over every point — every address *plus* every anchor — answers
 "what is near". Anchors have to be in it: the first version indexed only
 addresses, so a click could never return a park, a station or a street, only the
 nearest doorway. That is why all three of the first test taps came back as house
@@ -690,6 +690,26 @@ Note this is data-limited, not code-limited: `Cracow` does *not* resolve to
 Kraków, because Polish OSM sets `name:en=Kraków` and no alias in the data spells
 it that way. GeoNames publishes an `alternateNames` table of historical and
 English exonyms that would close the gap; see Future improvements.
+
+### The k-d tree does not own its coordinates
+
+`kdbush` copies every coordinate into arrays of its own, and those coordinates
+are already in the artifact. Measured: the tree cost 209 MB, of which **128 MB
+was a verbatim second copy** of `addr_lat`/`addr_lon` and
+`anchor_lat`/`anchor_lon` — more than the entire render-only half of the
+artifact, and ~490 MB at the fourteen-country scale.
+
+So `PointIndex` keeps only the permutation, a `Uint32Array` of point ids in k-d
+order, and reads coordinates back through an accessor that indexes the artifact
+arrays that were resident anyway. Resident memory falls from 746 MB to
+**620 MB**, and query latency is unchanged at 16 microseconds — a range query
+touches only the nodes on its path, so it pays one indirect read per node.
+
+Building is the opposite pattern: it touches every point ~log n times, hundreds
+of millions of reads, and doing that indirectly is cache-hostile. A
+contiguous scratch copy makes the build 0.8 s faster but adds 127 MB to *peak*
+RSS, which is what a container limit watches — so the default trades boot time
+for headroom, and the scratch path is a constructor flag.
 
 ### Relevance measures the name, not its length
 

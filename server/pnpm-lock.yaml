@@ -17,9 +17,6 @@ importers:
       fastify:
         specifier: ^5.2.0
         version: 5.12.1
-      kdbush:
-        specifier: ^4.0.2
-        version: 4.1.0
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
@@ -671,9 +668,6 @@ packages:
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
-
-  kdbush@4.1.0:
-    resolution: {integrity: sha512-e9vurzrXJQrFX6ckpHP3bvj5l+9CnYzkxDNnNQ1h2QTqdWsUAJgXiKdGNcOa1EY85dU8KbQ+z/FdQdB7P+9yfQ==}
 
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
@@ -1384,8 +1378,6 @@ snapshots:
       dequal: 2.0.3
 
   json-schema-traverse@1.0.0: {}
-
-  kdbush@4.1.0: {}
 
   light-my-request@6.6.0:
     dependencies:
