@@ -130,7 +130,7 @@ export interface ReverseOptions {
 const M_PER_DEG_LAT = 111_320;
 
 /** How many containing regions may occupy the head of the list. */
-const MAX_CONTAINING = 4;
+const MAX_CONTAINING = 3;
 
 interface Candidate {
   /** Anchor id, or -1 when this is a bare address point. */

@@ -465,7 +465,7 @@ maybe('against the built index', () => {
 
     it('caps the containing tier so nearby points are never crowded out', () => {
       const rs = reverse(a, rev, 48.2082, 16.3738, { limit: 8 });
-      expect(rs.filter((r) => r.containing).length).toBeLessThanOrEqual(4);
+      expect(rs.filter((r) => r.containing).length).toBeLessThanOrEqual(3);
     });
 
     it('returns anchors, not just addresses', () => {
