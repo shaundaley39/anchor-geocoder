@@ -90,7 +90,8 @@ type Record struct {
 	Display string `json:"display"`
 }
 
-// The addressing anchor and its kind: the join key grouping address points into
+// Anchor returns the addressing anchor and its kind: the join key grouping address
+// points into
 // a searchable unit.
 func (r *Record) Anchor() (string, AnchorKind) {
 	if r.Street != "" {
@@ -102,7 +103,8 @@ func (r *Record) Anchor() (string, AnchorKind) {
 	return "", AnchorNone
 }
 
-// Renders the Czech two-number form: conscription and orientation give
+// ComposeCzechNumber renders the Czech two-number form: conscription and
+// orientation give
 // "729/37", either alone gives itself, neither falls back.
 func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	switch {
@@ -117,7 +119,8 @@ func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	}
 }
 
-// One-line rendering, skipping empty components: "Cerna Hora 42" for a village
+// BuildAddressDisplay is the one-line rendering, skipping empty components: "Cerna
+// Hora 42" for a village
 // address, "Dlouha 729/37, Praha" for a street one.
 func BuildAddressDisplay(r *Record) string {
 	var head string

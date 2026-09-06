@@ -43,7 +43,7 @@
 //	post.bin         uint32 anchor ids, ascending within each term
 package index
 
-// Bumped whenever the layout changes; the server refuses an artifact it does
+// Version is bumped whenever the layout changes; the server refuses an artifact it does
 // not recognise rather than misreading it.
 const Version = 8
 
@@ -54,7 +54,8 @@ const (
 	LayerPOI    uint8 = 2
 )
 
-// Fixed-point factor for coordinates: ~1.1cm resolution, and an int32 rather
+// CoordScale is the fixed-point factor for coordinates: ~1.1cm resolution, and an
+// int32 rather
 // than a float64 halves the largest arrays.
 const CoordScale = 1e7
 

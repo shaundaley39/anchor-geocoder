@@ -1,11 +1,10 @@
 /**
- * Splitting a raw query string into the parts that search differently: a name
- * to match against the index, and a house number to resolve inside whatever
- * that name turns out to be.
+ * Splitting a query into a name to match against the index and a house number
+ * to resolve inside whatever that name turns out to be.
  */
 import { tokens as foldTokens } from '@anchor-geocoder/core';
 
-/** A query split into the parts that search differently. */
+/** The two halves a query searches by. */
 export interface ParsedQuery {
   /** Tokens matched against the anchor index. */
   nameTokens: string[];
@@ -14,8 +13,8 @@ export interface ParsedQuery {
 }
 
 /**
- * Candidate readings of a query, best guess first; the caller takes the first
- * that finds anything.
+ * Candidate readings, best guess first. The caller takes the first that finds
+ * anything.
  *
  * A trailing or medial digit-leading token is a house number. Never a leading
  * one: "3 Maja" is a common Polish street name.
@@ -38,7 +37,7 @@ export function parseQuery(raw: string): ParsedQuery[] {
   }
 
   // Medial: "Via Roma 1 Torino". Much of the region writes the number between
-  // street and city, so a trailing-only rule fails those outright.
+  // street and city, which a trailing-only rule misses entirely.
   for (let i = 1; i < all.length - 1; i++) {
     const tok = all[i]!;
     if (!/^\d/.test(tok)) continue;

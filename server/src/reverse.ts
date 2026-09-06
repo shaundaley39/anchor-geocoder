@@ -1,16 +1,16 @@
 /**
  * Reverse geocoding: a click to the places at and around it.
  *
- * Two tiers. Features whose outline *contains* the click come first, smallest
- * area first — if you are inside something that is where you are, and the
- * smaller of two nested regions is the more specific answer. Everything else
- * follows by distance. A restaurant 25m away is somewhere the user is not.
+ * Two tiers. Features whose outline contains the click come first, smallest
+ * area first, since the smaller of two nested regions is the more specific
+ * answer. Everything else follows by distance: a restaurant 25m away is
+ * somewhere the user is not.
  *
  * Two indexes, because the tiers ask different questions. A k-d tree over every
- * point answers "what is near" but cannot answer "what am I inside": a large
- * park's centroid can be kilometres from where you clicked. So containment gets
- * a grid over bounding boxes — one cell lookup filters, the simplified outline
- * refines. The box alone will not do; a crescent fills a fraction of it.
+ * point answers "what is near" but not "what am I inside": a large park's
+ * centroid can be kilometres from the click. Containment gets a grid over
+ * bounding boxes instead, one cell lookup to filter and the simplified outline
+ * to refine. The box alone will not do, since a crescent fills a fraction of it.
  */
 import { PointIndex } from './pointindex.js';
 import { type Artifact, toDeg, anchorOfAddress } from './artifact.js';
@@ -68,17 +68,17 @@ function findCell(a: Artifact, key: number): number {
 }
 
 /**
- * Assembles the reverse index. Both spatial structures come precomputed, so
- * this is a scan for the coverage box and nothing else — building them here
- * cost ~5.4s of startup that every replica repeated on every deploy.
+ * Assembles the reverse index. Both spatial structures arrive precomputed, so
+ * this is a scan for the coverage box and nothing else. Building them here cost
+ * 5.4s of startup that every replica repeated on every deploy.
  */
 export function buildReverseIndex(a: Artifact): ReverseIndex {
   const nAddr = a.manifest.num_addresses;
 
-  // Addresses and anchors in one tree: without the anchors a click can only
-  // ever return the nearest doorway, never a park or a station. Ids below nAddr
-  // index the address arrays, at or above them the anchors. Coordinates are
-  // read through these accessors rather than copied — 128MB saved.
+  // Addresses and anchors in one tree. Without the anchors a click can only
+  // return the nearest doorway, never a park or a station. Ids below nAddr index
+  // the address arrays, at or above them the anchors. Coordinates are read
+  // through these accessors rather than copied, which saves 128MB.
   const getY = (id: number) => (id < nAddr ? a.addrLat[id]! : a.anchorLat[id - nAddr]!);
   const getX = (id: number) => (id < nAddr ? a.addrLon[id]! : a.anchorLon[id - nAddr]!);
   const tree = PointIndex.fromPermutation(

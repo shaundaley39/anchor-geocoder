@@ -1,18 +1,18 @@
 /**
  * Typed client for the geocoding API.
  *
- * Isomorphic: the same code runs in a browser and in Node, because it uses
- * `fetch` and nothing else. It exists because the interesting parts of talking
- * to a geocoder live on the caller's side — cancelling superseded keystrokes,
- * holding the last good results while the next request is in flight, folding a
- * query so equivalent spellings share a cache entry — and none of that belongs
- * in every consumer's application code.
+ * Isomorphic: it uses `fetch` and nothing else, so the same code runs in a
+ * browser and in Node. It exists because the interesting parts of talking to a
+ * geocoder live on the caller's side. Cancelling superseded keystrokes, holding
+ * the last good results while the next request is in flight, folding a query so
+ * equivalent spellings share a cache entry: none of that belongs in every
+ * consumer's application code.
  *
- * The folding in particular is why this is worth shipping rather than
- * documenting. `fold` here is the *same module* the index was built with, so
- * a query normalised on the client cannot disagree with the server. A geocoder
- * written in another language would need a third implementation of those rules
- * and a third contract test to keep it honest.
+ * The folding is why this is worth shipping rather than documenting. `fold` here
+ * is the same module the index was built with, so a query normalised on the
+ * client cannot disagree with the server. A geocoder written in another language
+ * would need a third implementation of those rules, and a third contract test to
+ * keep it honest.
  */
 import { fold, type FeatureCollection, type Feature, type Layer } from '@anchor-geocoder/core';
 
@@ -82,9 +82,9 @@ export class GeocodeClient {
   /**
    * Text to places.
    *
-   * The query is folded before it is sent. That is not cosmetic: "Praha",
-   * "praha" and "  PRAHA " become one URL rather than three, so a CDN in front
-   * of the API sees a far smaller key space on a workload where the same few
+   * The query is folded before it is sent, which is not cosmetic: "Praha",
+   * "praha" and "  PRAHA " become one URL rather than three. A CDN in front of
+   * the API then sees a much smaller key space, on a workload where the same few
    * thousand queries dominate.
    */
   async forward(query: string, opts: ForwardOptions = {}): Promise<FeatureCollection> {
@@ -111,10 +111,9 @@ export class GeocodeClient {
   /**
    * A search box, with the parts everyone otherwise reimplements.
    *
-   * Returns a function to call on every keystroke. It debounces, and it aborts
-   * the in-flight request when a newer keystroke arrives — without which
-   * responses can land out of order and a slow request for "Pra" overwrites the
-   * results for "Prague".
+   * Returns a function to call on every keystroke. It debounces, and aborts the
+   * in-flight request when a newer keystroke arrives. Without that, responses
+   * land out of order and a slow request for "Pra" overwrites "Prague".
    */
   autocomplete(opts: ForwardOptions & { debounceMs?: number } = {}) {
     const wait = opts.debounceMs ?? 150;

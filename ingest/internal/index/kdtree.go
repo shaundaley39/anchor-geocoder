@@ -8,7 +8,8 @@ import "sort"
 // minute at planet size — repeated by every replica on every deploy. Both are
 // pure functions of data the artifact already holds, so both belong here.
 
-// Leaf threshold, written to the manifest because the traversal is implicit:
+// KDNodeSize is the leaf threshold, written to the manifest because the traversal
+// is implicit:
 // a mismatch returns subtly wrong neighbours rather than an error.
 const KDNodeSize = 64
 
@@ -119,7 +120,7 @@ const (
 	CellStride = 16384
 )
 
-// Packs a cell coordinate pair into one integer; the server computes it
+// CellKey packs a cell coordinate pair into one integer; the server computes it
 // identically.
 func CellKey(lat, lon float64) int32 {
 	x := int32(floorDiv(lon, CellDeg)) + CellOrigin
@@ -135,7 +136,8 @@ func floorDiv(v, by float64) float64 {
 	return float64(int64(q))
 }
 
-// The containment index in flat form: ascending cell keys, each with a slice of
+// CellGrid is the containment index in flat form: ascending cell keys, each with a
+// slice of
 // the anchor ids whose box covers it.
 type CellGrid struct {
 	Keys   []int32

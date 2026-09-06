@@ -32,7 +32,7 @@ func Bounds(pts []Point) BBox {
 	return b
 }
 
-// Corner-to-corner size, for deciding whether a shape matters.
+// DiagonalMetres is corner-to-corner size, for deciding whether a shape matters.
 func (b BBox) DiagonalMetres() float64 {
 	if math.IsInf(b.MinLat, 1) {
 		return 0
@@ -43,7 +43,8 @@ func (b BBox) DiagonalMetres() float64 {
 	return math.Hypot(latM, lonM)
 }
 
-// Douglas-Peucker at a metre tolerance, then a hard cap so no single feature
+// Simplify runs Douglas-Peucker at a metre tolerance, then a hard cap so no single
+// feature
 // dominates the blob. Ten metres is far below map-click accuracy and takes a
 // typical park from hundreds of vertices to a few dozen.
 func Simplify(pts []Point, toleranceM float64, maxPoints int) []Point {

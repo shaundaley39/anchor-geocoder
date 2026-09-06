@@ -9,7 +9,8 @@ import (
 	"strings"
 )
 
-// The dedup key joining addresses to their anchor, computed identically for
+// AnchorKey is the dedup key joining addresses to their anchor, computed
+// identically for
 // street records, place records and addresses.
 //
 // Layer is part of it: without that a street named after the village it runs
@@ -23,11 +24,12 @@ func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string)
 		"|" + strings.Join(foldedLocality, " ")
 }
 
-// geoingest already collapsed node-and-way duplicates, so this only keeps
-// genuinely distinct POIs apart — hence the OSM id.
+// POIKey keeps genuinely distinct POIs apart, hence the OSM id. geoingest has
+// already collapsed the node-and-way duplicates.
 func POIKey(id string) string { return "poi|" + id }
 
-// Dedup key for a settlement. A place's locality is its own name, so AnchorKey
+// PlaceKey is the dedup key for a settlement. A place's locality is its own name,
+// so AnchorKey
 // alone merges every same-named village — and "Nowa Wies" names hundreds. A
 // ~28km cell keeps them apart while still collapsing node-and-area pairs.
 //

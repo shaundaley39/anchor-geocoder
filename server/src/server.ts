@@ -91,11 +91,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   // The exposure is one client saturating the single Node thread, not the
-  // per-request cost. Sized for autocomplete: one request per keystroke
-  // debounced at ~150ms is 6-7 req/s in bursts, and behind NAT many users share
-  // an address — throttling someone mid-word is the one thing this must not do.
-  // A blunt per-IP cap suits an unauthenticated endpoint; finer wants API keys
-  // and a shared store (the plugin takes Redis).
+  // per-request cost. Sized for autocomplete: a keystroke debounced at 150ms is
+  // 6-7 req/s in bursts, and behind NAT many users share an address. Throttling
+  // someone mid-word is the one thing this must not do. A blunt per-IP cap suits
+  // an unauthenticated endpoint; finer wants API keys and a shared store.
   const maxReq = options.rateLimitMax ?? Number(process.env['RATE_LIMIT_MAX'] ?? 600);
   if (maxReq > 0) {
     await app.register(rateLimit, {

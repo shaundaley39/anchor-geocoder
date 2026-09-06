@@ -79,7 +79,7 @@ type Extractor struct {
 	Progress func(string)
 }
 
-// Pre-normalization output: OSM tags plus a resolved point.
+// RawFeature is pre-normalization output: OSM tags plus a resolved point.
 type RawFeature struct {
 	OSMType byte // 'n' node, 'w' way, 'r' relation
 	OSMID   int64
@@ -174,7 +174,7 @@ func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
-// What extraction saw, for the build manifest.
+// Stats is what extraction saw, for the build manifest.
 type Stats struct {
 	NodesScanned   int64
 	WaysScanned    int64

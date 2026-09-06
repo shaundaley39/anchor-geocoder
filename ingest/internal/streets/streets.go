@@ -19,7 +19,7 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/spatial"
 )
 
-// One way of a named street, buffered until the places layer can say which
+// Segment is one way of a named street, buffered until the places layer can say which
 // settlement it is in.
 type Segment struct {
 	Rec      *model.Record
@@ -27,7 +27,7 @@ type Segment struct {
 	Country  string
 }
 
-// Accumulates the many way segments of one named street into a single record.
+// Aggregate accumulates the many way segments of one named street into a single record.
 //
 // A street is split at every junction and attribute change, so one result per
 // segment would bury everything else. Segments group by (name, locality) and
@@ -111,7 +111,7 @@ var catchmentKm = map[string]float64{
 // be discarded. Scanning 30km examined four times the area for no change.
 const searchRadiusKm = 15
 
-// Assigns each buffered segment to a settlement, then merges segments sharing a
+// Group assigns each buffered segment to a settlement, then merges segments sharing a
 // (country, name, locality) key.
 //
 // OSM tags localities on addresses but not roads — four of 241,815 named Czech
@@ -217,7 +217,8 @@ func rebuildTokens(r *model.Record) []string {
 	return out
 }
 
-// Attaches a locality to addresses carrying neither addr:city nor addr:place —
+// ResolveOrphanAddresses attaches a locality to addresses carrying neither
+// addr:city nor addr:place.
 // 3.6% of Czechia. Without it they render as a bare "Prazska 248/39", with no
 // way to tell which of 300-odd Prazska streets is meant.
 func ResolveOrphanAddresses(orphans []Segment, places map[string]*model.Record, counts map[string]int) {

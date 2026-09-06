@@ -8,7 +8,7 @@ import (
 	"sort"
 )
 
-// Assembles the artifact.
+// Builder assembles the artifact.
 type Builder struct {
 	Strings   *StringTable
 	Anchors   []Anchor
@@ -36,7 +36,8 @@ func (b *Builder) CountryID(cc string) uint8 {
 	return uint8(id)
 }
 
-// The id for an anchor key, creating a placeholder if unseen: 141,524 anchors
+// AnchorID returns the id for an anchor key, creating a placeholder if unseen:
+// 141,524 anchors
 // are referenced only by addresses, never mapped in their own right.
 func (b *Builder) AnchorID(key string) (uint32, bool) {
 	if id, ok := b.byKey[key]; ok {
@@ -48,7 +49,7 @@ func (b *Builder) AnchorID(key string) (uint32, bool) {
 	return id, true
 }
 
-// An anchor for a name referenced only by address points.
+// NewSynthetic makes an anchor for a name referenced only by address points.
 func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 	st *StringTable, tokens []string, lat, lon int32) uint32 {
 	id := uint32(len(b.Anchors))
@@ -65,7 +66,7 @@ func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 	return id
 }
 
-// Sorts address runs, links them to anchors, builds the inverted index, writes.
+// Finish sorts address runs, links them to anchors, builds the inverted index, writes.
 func (b *Builder) Finish(dir string, man *Manifest) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -335,10 +336,10 @@ func (b *Builder) writeIndex(dir string, man *Manifest) error {
 	}
 	man.Bytes["terms"] = n
 
-	// The same dictionary over reversed terms, which is what lets the server
-	// find a typo in the *first* half of a token: a single edit lies wholly in
-	// one half of the query, so either its prefix or its suffix survives intact,
-	// and a suffix search is a prefix search on reversed strings.
+	// The same dictionary over reversed terms, so the server can catch a typo in
+	// the first half of a token. A single edit lies wholly in one half of the
+	// query, so either its prefix or its suffix survives intact, and a suffix
+	// search is a prefix search on reversed strings.
 	revOrder := make([]uint32, len(terms))
 	for i := range revOrder {
 		revOrder[i] = uint32(i)

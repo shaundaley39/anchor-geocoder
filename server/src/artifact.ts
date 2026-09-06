@@ -1,7 +1,7 @@
 /**
  * Loads the binary index artifact produced by `ingest/cmd/geoindex`.
  *
- * Every file maps onto one typed array, so loading is a read plus a view — no
+ * Every file maps onto one typed array, so loading is a read plus a view: no
  * parsing, no per-record objects. The same data as JavaScript objects would
  * cost several GB and minutes of startup.
  */
@@ -40,9 +40,9 @@ export interface Manifest {
 }
 
 /**
- * One concatenated UTF-8 blob plus an offset array. Decoded lazily: a request
- * touches a handful of strings, and decoding all of them up front would undo
- * the point of the layout.
+ * One concatenated UTF-8 blob plus an offset array. Decoded lazily, since a
+ * request touches a handful of strings and decoding all of them up front would
+ * undo the point of the layout.
  */
 export class StringTable {
   private readonly decoder = new TextDecoder('utf-8');
@@ -70,8 +70,8 @@ export class StringTable {
 
   /**
    * The id range [lo, hi) of terms sharing `prefix`. Terms are sorted, so this
-   * is a binary search rather than a scan — which is what makes autocomplete on
-   * the final token cheap.
+   * is a binary search rather than a scan, which is what autocomplete on the
+   * final token rides on.
    */
   prefixRange(prefix: string): [number, number] {
     const lo = this.lowerBound(prefix);

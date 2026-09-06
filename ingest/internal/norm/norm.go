@@ -148,5 +148,5 @@ func Tokens(s string) []string {
 	return kept
 }
 
-// Deliberately the same code path as Tokens; the two must not drift.
+// QueryTokens is deliberately the same code path as Tokens; the two must not drift.
 func QueryTokens(q string) []string { return Tokens(q) }

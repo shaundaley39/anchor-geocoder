@@ -1,11 +1,10 @@
 /**
- * Scoring a candidate anchor against a query, and bounding what it could score.
+ * Scoring an anchor against a query.
  *
- * The split that matters here is cheap versus exact. `cheapScore` is array
- * reads only, so it can be applied to every candidate; `relevance` decodes and
- * folds an anchor's names, so it cannot. `maxRelevance` bridges them: a ceiling
- * on the exact score computable from the cheap data, which is what lets the
- * search stop early without ever discarding a candidate that could have won.
+ * `cheapScore` is array reads, so every candidate can afford it. `relevance`
+ * decodes and folds the anchor's names, so only a few hundred can.
+ * `maxRelevance` is the ceiling on `relevance` computable from cheap data
+ * alone, so the search can stop early without losing a winner.
  */
 import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
 import { tokens as foldTokens } from '@anchor-geocoder/core';
@@ -13,19 +12,19 @@ import { haversineMetres } from './geometry.js';
 import type { ParsedQuery } from './query.js';
 import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 
-/** The part of a request that changes a score rather than filtering results. */
+/** The request fields that change a score rather than filter results. */
 export interface RankingOptions {
   /** Bias results toward this point. */
   proximity?: { lat: number; lon: number };
 }
 
 /**
- * An anchor's name and locality as tokens. Computed lazily and memoized: only
- * the few hundred reranked candidates need it, so storing it would cost several
- * MB of index for nothing.
+ * An anchor's name and locality as tokens. Memoized rather than stored in the
+ * artifact: only reranked candidates need it, so shipping it would cost several
+ * MB for nothing.
  */
 interface AnchorTokens {
-  /** The canonical name first, then each alternate name, each folded separately. */
+  /** Canonical name first, then each alternate, folded separately. */
   names: string[][];
   locality: string[];
 }
@@ -49,12 +48,11 @@ function anchorTokens(a: Artifact, id: number): AnchorTokens {
 }
 
 /**
- * Index of the first token matching `q` that `used` has not already claimed, or
- * -1. Claiming matters: without it a query token matches the same name token
- * once per repetition, so "Praha Praha Praha" reported three matches against
- * the one-token name "Praha" and scored above "Praha" itself. Matching as
- * multisets keeps a genuinely doubled name working — "Baden Baden" still finds
- * both tokens of "Baden-Baden".
+ * First token matching `q` that `used` has not already claimed, or -1.
+ *
+ * Claiming makes this a multiset match. Without it "Praha Praha Praha" counted
+ * three matches against the one-token name "Praha" and outscored "Praha"
+ * itself. "Baden Baden" still finds both tokens of "Baden-Baden".
  */
 function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): number {
   for (let i = 0; i < tokens.length; i++) {
@@ -67,24 +65,22 @@ function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): n
 /**
  * How well an anchor's name and locality explain the query.
  *
- * Anchors are indexed on more than their name — a POI carries its street and
- * city too — so scoring on name *length* credits matches that never touched the
- * name: a station called "Lednice" at Nádražní 1 once beat every street named
- * Nádražní. Two quantities instead: how much of the query the name explains
- * (locality at partial credit, so adding a city helps rather than dilutes), and
- * how much of the name the query used.
+ * Anchors are indexed on more than their name: a POI carries its street and
+ * city too. Scoring on name length alone therefore credits matches that never
+ * touched the name, and a station called "Lednice" at Nádražní 1 beat every
+ * street named Nádražní. Two quantities instead: how much of the query the
+ * name explains (locality at partial credit, so adding a city helps rather
+ * than dilutes), and how much of the name the query used.
  */
 export function relevance(a: Artifact, id: number, queryTokens: string[]): number {
   const { names, locality } = anchorTokens(a, id);
   if (names.length === 0) return 0.05;
 
-  // Score every name the feature is known by and keep the best. Scoring the
-  // canonical name alone made exonyms unrankable: "Prague" is indexed as a term
-  // pointing at Praha, but "prague" is not a token of "Praha", so the query
-  // looked like it had matched nothing but incidental context and a POI called
-  // "Prague College" won. Merging the variants into one bag is also wrong — it
-  // would make every well-documented place appear to have a very long name and
-  // score worse the better it is described.
+  // Best variant wins. Scoring only the canonical name made exonyms unrankable:
+  // "prague" is not a token of "Praha", so the query looked like it had matched
+  // nothing but context and "Prague College" won. Merging the variants into one
+  // bag is also wrong: Kraków's 26 alternate names would read as one very long
+  // name, so the better documented a place is the worse it scores.
   let best = 0;
   for (const name of names) {
     if (name.length === 0) continue;
@@ -109,26 +105,23 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
       }
     }
 
-    // Never zero: a POI genuinely standing on the queried street is a weak but
-    // legitimate answer, and should rank last rather than vanish.
+    // Never zero: a POI standing on the queried street is a weak but legitimate
+    // answer, and should rank last rather than vanish.
     const explained = Math.max(
       (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
     );
-    // At most 1 by construction, since `claim` consumes each name token once,
-    // but stated explicitly because the bound below depends on it.
+    // At most 1 already, since `claim` consumes each name token once. Clamped
+    // anyway because maxRelevance depends on it.
     const nameUsed = Math.min(inName / name.length, 1);
     const base = explained * (0.1 + 0.9 * nameUsed);
 
-    // Squared, because a partial name match is a much weaker signal than the
-    // raw token overlap suggests, and the importance priors it competes against
-    // span an order of magnitude.
+    // Squared: a partial name match is a weaker signal than raw token overlap
+    // suggests, and the priors it competes against span an order of magnitude.
     let score = base * base;
 
-    // An exact full-name match — every query token in this name, every token of
-    // this name used — is the strongest signal available. Without it a
-    // perfectly matched street ("Nádražní", prior 1.0) loses to a partial match
-    // on a higher-prior feature: a school "ZŠ Nádražní" (1.8) or a suburb
-    // "Nádražní Předměstí" (2.5).
+    // Every query token in the name, every name token used. Without this bonus
+    // an exactly matched street ("Nádražní", prior 1.0) loses to a partial match
+    // on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní Předměstí" (2.5).
     if (inName === name.length && inName === queryTokens.length) score *= 2.5;
 
     if (score > best) best = score;
@@ -137,39 +130,33 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
 }
 
 /**
- * The most `relevance` can return for an anchor, without folding its name.
+ * The most `relevance` could return, without folding the name to find out.
  *
- * `relevance` is `explained * (0.1 + 0.9 * nameUsed)`, squared, times 2.5 for an
- * exact full-name match. `explained` is at most 1, because each query token
- * counts toward either the name or the locality and never both. `nameUsed` is
- * `min(inName / nameLength, 1)`.
+ * `relevance` is `explained * (0.1 + 0.9 * nameUsed)`, squared, times 2.5 when
+ * the name matches exactly. `explained` is at most 1, since a query token
+ * counts toward the name or the locality but never both. So a q-token query
+ * uses at most `min(q, n) / n` of an n-token name, and only n = q can match
+ * exactly. The artifact stores n for the shortest variant, which maximises both
+ * terms, so this is a true ceiling.
  *
- * So a query of q tokens can use at most `min(q, n) / n` of an n-token name,
- * and only a name of exactly q tokens can take the exact-match bonus. The
- * artifact stores n for the shortest variant, which is the one that maximises
- * both terms — so this is a true ceiling, and a far tighter one than the
- * blanket 2.5 it replaces.
- *
- * It matters: for a single-token query like "Praha", most candidates are
- * three-word POIs merely *located* in Praha. The blanket ceiling claimed each
- * might be an exact match and pruning never fired; this puts them at 0.16.
+ * Tightness matters more than soundness here. Bounding by the global 2.5 is
+ * sound and useless: for "Praha" it claims each of 9,496 candidates might be an
+ * exact match, when most are three-word POIs merely located in Praha. This puts
+ * them at 0.16, and pruning starts working.
  */
 export function maxRelevance(a: Artifact, id: number, queryLen: number): number {
   const n = a.anchorNameTokens[id]! || 1;
   const nameUsed = Math.min(queryLen / n, 1);
   const base = 0.1 + 0.9 * nameUsed;
-  // Only an equal-length name can match exactly; n is the shortest variant, so
-  // a longer one could still equal queryLen — hence >= rather than ===.
+  // >= not ===: n is the shortest variant, so a longer one could still be an
+  // exact-length match.
   return base * base * (queryLen >= n ? 2.5 : 1);
 }
 
-/** The ceiling when the anchor's name length is unknown. */
-const MAX_RELEVANCE = 2.5;
-
 /**
- * Distance decay for the `proximity` bias: ~2x at the query point, ~1.5x at
- * 50km, asymptotically 1x. Never zero, so proximity reorders results rather
- * than filtering them — a far-away exact match still beats a nearby poor one.
+ * Distance decay for `proximity`: ~2x at the point, ~1.5x at 50km, tending to
+ * 1x. Never zero, so proximity reorders rather than filters, and a distant
+ * exact match still beats a nearby poor one.
  */
 function proximityBoost(
   p: { lat: number; lon: number }, a: Artifact, id: number,
@@ -178,12 +165,7 @@ function proximityBoost(
   return 1 + 1 / (1 + d / 50_000);
 }
 
-/**
- * Everything the cheap pass can compute without decoding a single string.
- *
- * These are all array reads, so they cost the same for every candidate and can
- * be applied to all of them.
- */
+/** Everything scorable without decoding a string, so affordable on every candidate. */
 export function cheapScore(
   a: Artifact, id: number, text: number, opts: RankingOptions,
 ): number {
@@ -194,18 +176,15 @@ export function cheapScore(
   } else {
     // Everything else inherits the standing of the place it is in. Streets and
     // POIs share one flat prior, so without this "Unter den Linden" resolved to
-    // an Austrian hamlet. Damped hard: it breaks ties, it does not override a
-    // better match.
+    // an Austrian hamlet. Damped hard: it breaks ties, nothing more.
     s *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
   }
   if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
   return s;
 }
 
-/**
- * The ceiling a candidate is given in the search, exposed so tests can assert
- * admissibility: no candidate's final score may exceed its bound.
- */
+/** The ceiling the search gives a candidate. Exported so tests can assert
+ * that no candidate's real score exceeds it. */
 export function scoreBound(
   a: Artifact, id: number, text: number, hasHouseNumber: boolean,
   queryLen: number, opts: RankingOptions = {},

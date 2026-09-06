@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// A searchable street, place or POI: what text queries match against.
+// Anchor is a searchable street, place or POI: what text queries match against.
 type Anchor struct {
 	Key      string // country|folded name|folded locality — dedup key only
 	NameID   uint32
@@ -45,7 +45,7 @@ type Anchor struct {
 	NameTokens uint8
 }
 
-// One address point, in a run belonging to a single anchor.
+// Address is one address point, in a run belonging to a single anchor.
 type Address struct {
 	AnchorID uint32
 	NumID    uint32 // house number string id
@@ -55,7 +55,8 @@ type Address struct {
 	SortKey uint32
 }
 
-// The first run of digits: Czech numbers are "conscription/orientation" and
+// LeadingInt is the first run of digits: Czech numbers are
+// "conscription/orientation" and
 // Polish ones carry letter suffixes, so it is the only comparable part.
 func LeadingInt(s string) uint32 {
 	start := -1

@@ -1,9 +1,8 @@
 /**
  * The inverted index: name tokens to candidate anchors and their term weights.
  *
- * This is the coarse half of ranking. It decides *which* anchors are worth
- * looking at and how strong the textual evidence is, without decoding a single
- * string — everything here is posting lists and array arithmetic.
+ * The coarse half of ranking. It decides which anchors are worth looking at and
+ * how strong the textual evidence is, without decoding a string.
  */
 import type { Artifact } from './artifact.js';
 
@@ -28,7 +27,7 @@ function postings(a: Artifact, termID: number): Uint32Array {
 
 /**
  * Candidate anchors for the name tokens. All tokens but the last match exactly;
- * the last is a prefix, which is what makes autocomplete work.
+ * the last is a prefix, so a half-typed word still matches.
  */
 export function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): Map<number, number> {
   const scores = new Map<number, number>();
@@ -55,10 +54,10 @@ export function candidates(a: Artifact, nameTokens: string[], maxCandidates: num
   const [lo, hi] = a.terms.prefixRange(last);
   if (lo >= hi) return scores;
 
-  // What matters is the rarity of the *prefix the user typed*, not of whichever
-  // expansion an anchor happens to carry. Weighting per expansion made a
-  // one-posting term the most valuable thing in the index — "Warsz" put a shop
-  // branded "Warsz" above Warszawa. Summing the range is a walk over offsets.
+  // Rarity of the prefix as typed, not of whichever expansion an anchor happens
+  // to carry. Per-expansion weighting made a one-posting term the most valuable
+  // thing in the index, and "Warsz" put a shop branded "Warsz" above Warszawa.
+  // Summing the range is a walk over offsets.
   let prefixTotal = 0;
   for (let t = lo; t < hi; t++) prefixTotal += a.postOff[t + 1]! - a.postOff[t]!;
   const prefixIdf = idf(nAnchors, prefixTotal);
@@ -69,10 +68,10 @@ export function candidates(a: Artifact, nameTokens: string[], maxCandidates: num
     const term = a.terms.get(t);
     const p = postings(a, t);
 
-    // Completeness: how much of the matched term the user actually typed.
-    // Prefix expansion is a fallback, not an equal-weight alternative, so it is
-    // discounted — squared, so a term twice as long keeps a quarter of its
-    // weight. Without it "Prahatice" outscored "Praha".
+    // Completeness: how much of the matched term the user typed. Prefix
+    // expansion is a fallback, not an equal alternative, so it is discounted —
+    // squared, so a term twice as long keeps a quarter of its weight. Without
+    // it "Prahatice" outscored "Praha".
     //
     // No separate exact-term bonus: completeness is already 1 when the term
     // equals the query, and double-counting it penalised legitimate prefixes.

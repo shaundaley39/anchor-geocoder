@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// One ingestable extract.
+// Country is one ingestable extract.
 type Country struct {
 	Code string // ISO 3166-1 alpha-2 where one exists
 	Path string // Geofabrik path, relative to the download root
@@ -23,23 +23,23 @@ type Country struct {
 	Size int64 // indicative bytes, from the daily rebuild
 }
 
-// Local filename: the last path component.
+// Filename is the last path component of the URL.
 func (c Country) Filename() string {
 	return filepath.Base(c.Path) + "-latest.osm.pbf"
 }
 
-// Where the extract is fetched from.
+// URL is where the extract is fetched from.
 func (c Country) URL() string {
 	return "https://download.geofabrik.de/" + c.Path + "-latest.osm.pbf"
 }
 
-// The parsed configuration.
+// Catalog is the parsed configuration.
 type Catalog struct {
 	Countries map[string]Country
 	Groups    map[string][]string
 }
 
-// Reads countries.tsv and groups.tsv from dir.
+// Load reads countries.tsv and groups.tsv from dir.
 func Load(dir string) (*Catalog, error) {
 	c := &Catalog{Countries: map[string]Country{}, Groups: map[string][]string{}}
 
@@ -86,7 +86,7 @@ func eachRow(path string, want int, fn func([]string) error) error {
 	return sc.Err()
 }
 
-// Expands a selection into country codes, in order, deduplicated. An entry
+// Resolve expands a selection into country codes, in order, deduplicated. An entry
 // prefixed with @ names a group; groups do not nest, which keeps the file
 // readable and the errors obvious.
 func (c *Catalog) Resolve(selection string) ([]string, error) {

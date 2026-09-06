@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 )
 
-// Joins alternate names inside one interned string; U+001F cannot occur in an
+// AltSep joins alternate names inside one interned string; U+001F cannot occur in an
 // OSM name.
 const AltSep = "\x1f"
 
-// Interns strings, assigning each a stable id.
+// StringTable interns strings, assigning each a stable id.
 type StringTable struct {
 	ids  map[string]uint32
 	list []string
@@ -37,7 +37,7 @@ func (t *StringTable) Intern(s string) uint32 {
 
 func (t *StringTable) Len() int { return len(t.list) }
 
-// The interned string for an id.
+// Get returns the interned string for an id.
 func (t *StringTable) Get(id uint32) string {
 	if int(id) >= len(t.list) {
 		return ""
@@ -45,7 +45,7 @@ func (t *StringTable) Get(id uint32) string {
 	return t.list[id]
 }
 
-// Emits the blob and its offset table.
+// Write emits the blob and its offset table.
 func (t *StringTable) Write(dir, base string) (int, error) {
 	var blob []byte
 	offs := make([]uint32, len(t.list)+1)

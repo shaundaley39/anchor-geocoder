@@ -2,7 +2,7 @@
  * A static k-d tree that does not own its coordinates.
  *
  * `kdbush` copies every coordinate into arrays of its own, duplicating what the
- * artifact already holds — 128MB on the four-country build, ~490MB at fourteen.
+ * artifact already holds: 128MB on the four-country build, 490MB at fourteen.
  * This keeps only the permutation and reads coordinates through an accessor.
  *
  * Affordable because build and query have opposite access patterns: a range
@@ -23,10 +23,10 @@ export class PointIndex {
   private readonly getY!: CoordFn;
 
   /**
-   * Adopts a permutation computed at build time — the path the server takes.
-   * Partitioning in-process cost ~3.0s of startup, repeated by every replica on
-   * every deploy. `nodeSize` must match what produced the permutation, which is
-   * why the artifact records it.
+   * Adopts a permutation computed at build time, which is the path the server
+   * takes. Partitioning in-process cost 3.0s of startup, repeated by every
+   * replica on every deploy. `nodeSize` must match what produced the
+   * permutation, which is why the artifact records it.
    */
   static fromPermutation(
     ids: Uint32Array, getX: CoordFn, getY: CoordFn, nodeSize: number,
@@ -45,8 +45,8 @@ export class PointIndex {
    * Builds the permutation in-process; used by tests.
    *
    * @param scratch  Partition against temporary contiguous arrays. Faster, but
-   * costs 8 bytes per point on peak RSS, which is what an OOM killer watches —
-   * so the default trades boot time for headroom.
+   * costs 8 bytes per point on peak RSS, which is what an OOM killer watches, so
+   * the default trades boot time for headroom.
    */
   constructor(count: number, getX: CoordFn, getY: CoordFn, nodeSize = 64, scratch = false) {
     this.getX = getX;

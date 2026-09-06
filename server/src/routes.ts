@@ -1,8 +1,8 @@
 /**
- * The routes themselves, registered onto an app the caller has already
- * configured. Kept apart from `server.ts` so that what the API *does* is not
- * interleaved with how the process is wired up — and so a route can be
- * exercised against a bare Fastify instance, without the plugin stack.
+ * The routes, registered onto an app the caller has already configured. Kept
+ * apart from `server.ts` so what the API does is not interleaved with how the
+ * process is wired up, and so a route can be exercised against a bare Fastify
+ * instance without the plugin stack.
  */
 import type {
   FastifyInstance, RawServerDefault, FastifyBaseLogger,
@@ -24,8 +24,8 @@ function badRequest(message: string, hint?: string) {
 }
 
 /**
- * An app whose schemas are TypeBox, which is what makes `req.query` typed from
- * the same object that validates it and generates the OpenAPI document.
+ * An app whose schemas are TypeBox, so `req.query` is typed from the same
+ * object that validates it and generates the OpenAPI document.
  */
 export type TypedApp = FastifyInstance<
   RawServerDefault,
@@ -115,8 +115,8 @@ export function registerRoutes(
       });
       echo = { type: 'reverse', lat, lon, ...(radius !== undefined ? { radius } : {}) };
 
-      // Outside coverage is not an error, so this stays a 200 — but if the
-      // transposed point is inside, say so rather than leaving them guessing.
+      // Outside coverage is not an error, so this stays a 200. But if the
+      // transposed point is inside, say so rather than leave them guessing.
       if (results.length === 0 && looksTransposed(reverseIndex.bbox, lat, lon)) {
         echo.hint =
           `no results at lat=${lat}, lon=${lon}, but lat=${lon}, lon=${lat} is ` +
@@ -138,8 +138,8 @@ export function registerRoutes(
       });
       results = out.results;
       echo = { type: 'forward', ...(q !== undefined ? { q } : {}), ...(proximity ? { proximity } : {}) };
-      // The answer is for a different string than the one asked for, so say so
-      // rather than letting the caller assume their spelling was found.
+      // The answer is for a different string than the one asked for. Say so,
+      // rather than let the caller assume their spelling was found.
       if (out.corrected !== null) echo.corrected = out.corrected;
     }
 

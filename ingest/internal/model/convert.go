@@ -87,7 +87,7 @@ func collectAltNames(t map[string]string, isPOI bool) []string {
 	return out
 }
 
-// The records an extracted feature should produce.
+// FromTags returns the records an extracted feature should produce.
 //
 // Usually one, but a named POI carrying a house number yields two — 10.5% of
 // named Czech POIs. Collapsing them would lose either the POI from search or
@@ -249,7 +249,8 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// The indexed token list. Every component a user might type, deduplicated: a
+// SearchTokens is the indexed token list. Every component a user might type,
+// deduplicated: a
 // query mixes them freely — "Pražská 248 Poděbrady" spans three.
 // Exported so the build can re-tokenize after attaching a derived locality.
 func SearchTokens(r *Record) []string {

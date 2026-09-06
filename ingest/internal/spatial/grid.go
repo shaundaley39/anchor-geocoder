@@ -2,7 +2,7 @@
 // the build.
 //
 // It answers "which settlement is this street segment in?", because OSM
-// highways essentially never carry addr:city — four of 241,815 named Czech
+// highways almost never carry addr:city: four of 241,815 named Czech
 // street ways do. Without it every "Nadrazni" in the country collapses into one
 // record.
 //
@@ -25,7 +25,8 @@ type Grid struct {
 	lons    []float64
 }
 
-// Cell size in degrees of latitude; 0.05 (~5.5km) matches settlement spacing.
+// NewGrid takes a cell size in degrees of latitude; 0.05 (~5.5km) matches
+// settlement spacing.
 func NewGrid(cellDeg float64) *Grid {
 	return &Grid{cellDeg: cellDeg, buckets: map[cell][]int32{}}
 }
@@ -37,7 +38,7 @@ func (g *Grid) cellOf(lat, lon float64) cell {
 	}
 }
 
-// Inserts a point and returns its index.
+// Add inserts a point and returns its index.
 func (g *Grid) Add(lat, lon float64) int32 {
 	id := int32(len(g.lats))
 	g.lats = append(g.lats, lat)
@@ -49,7 +50,7 @@ func (g *Grid) Add(lat, lon float64) int32 {
 
 func (g *Grid) Len() int { return len(g.lats) }
 
-// Great-circle distance.
+// DistanceKm is the great-circle distance.
 func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 	const rad = math.Pi / 180
 	dLat := (lat2 - lat1) * rad
@@ -89,13 +90,13 @@ func max32(a, b int32) int32 {
 	return b
 }
 
-// A point found by Within, with its distance.
+// Neighbour is a point found by Within, with its distance.
 type Neighbour struct {
 	ID     int32
 	DistKm float64
 }
 
-// Appends points within maxKm to buf, in no particular order.
+// Within appends points within maxKm to buf, in no particular order.
 //
 // Not "nearest": picking the literally closest settlement puts streets on the
 // edge of Prague into whatever village sits just outside, so the caller weighs
@@ -125,5 +126,5 @@ func (g *Grid) Within(lat, lon, maxKm float64, buf []Neighbour) []Neighbour {
 	return buf
 }
 
-// Coordinates of an indexed point.
+// At returns the coordinates of an indexed point.
 func (g *Grid) At(id int32) (lat, lon float64) { return g.lats[id], g.lons[id] }
