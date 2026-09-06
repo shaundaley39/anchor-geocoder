@@ -895,8 +895,10 @@ one exactly. Regenerate with `make fold-vectors`.
 
 Java is a common choice for this stage. Go is a deliberate alternative, and the
 case for it is specific to what this stage actually is: a batch job that reads
-14 GB of binary input and writes a binary file. Not a service, not a request
-path — a compiler for map data.
+somewhere between 3.5 GB and 88 GB of binary input and writes a binary file.
+Not a service, not a request path — a compiler for map data. The default build
+reads 3.5 GB, the full European set 30 GB, and the planet 88 GB; the design
+target is the top of that range, not the bottom.
 
 **Memory layout is the dominant constraint, and Go gives direct control of it.**
 Two of the largest wins in this project were layout decisions that Go makes
@@ -1107,6 +1109,74 @@ expected bounding box (0).
   Kraków-Balice, mapped as ways, are present. Resolving multipolygon geometry
   needs member ways and then their nodes: two more extraction passes.
 
+## Scaling to the planet
+
+Projected from the per-record costs measured in the built artifact, with the
+global address count taken from taginfo rather than extrapolated:
+**183,264,232 addresses**, ~34M anchors, 88 GB of pbf.
+
+| | |
+|---|---|
+| addresses (183M × 16 B) | 2.93 GB |
+| anchors (~34M × 59 B) | 2.00 GB |
+| terms, postings, strings, geometry | 1.04 GB |
+| **artifact** | **5.98 GB** |
+| k-d tree permutation | 0.87 GB |
+| node + runtime | 0.40 GB |
+| **resident** | **~7.25 GB** |
+
+**The whole world fits on one ordinary machine.** Central Europe is unusually
+*well mapped* rather than unusually dense — the fourteen-country build holds a
+third of the world's mapped addresses in about 3% of its land — so the planet is
+only ~3× that corpus.
+
+Treat that as a snapshot of OSM in 2026 rather than a property of the design.
+Coverage elsewhere is improving, and if China or India reach parity the address
+count grows several-fold with no warning. Sharding is a question of when.
+
+### What actually forces sharding
+
+Not capacity. In order:
+
+1. **Throughput.** One Node thread at ~0.6 ms is around 1,600 queries a second
+   whatever the index holds. This is the real driver, and replicas fix it.
+2. **Blast radius.** One process holding the planet is one process to lose.
+3. **Build parallelism.** Extraction peaks at 5.5 GB for four countries and
+   around 11 for fourteen; the planet would want splitting regardless.
+
+Boot is no longer on that list — the spatial structures are precomputed, so a
+replica starts in 118 ms locally and would still be under a second at planet
+scale.
+
+### How sharding would work
+
+The boundaries already exist in the data source, so this needs almost no new
+code. Geofabrik publishes a continent → country → sub-region hierarchy, and
+sharding is choosing a cut of that tree that balances.
+
+- **The build mechanism exists.** `COUNTRIES=` already takes an arbitrary set
+  and emits one artifact, so a shard is one `config/groups.tsv` entry. The runs
+  are independent, which makes the build embarrassingly parallel.
+- **The halo comes free.** Geofabrik extracts already carry a cross-border
+  buffer — which is why the build deduplicates by OSM id, catching 221,709
+  duplicates across fourteen countries. That machinery *is* what a shard halo
+  needs, and the OSM id is already the merge key.
+- **Routing needs no new index.** Every artifact already computes a coverage
+  bounding box; promote it to the manifest and a router holds N manifests, a few
+  kilobytes, routing on a box test.
+
+Forward and reverse have opposite locality, which drives the shape. A click is
+one point, so reverse goes to the shard containing it plus a neighbour near an
+edge. Text is not local — someone looking at Prague may search for Lisbon — so a
+small **global tier** of settlements and major POIs is replicated to every node
+and answers those without fan-out, while geographic shards carry the long tail
+of streets and addresses.
+
+Replication and rebalancing are close to free, and that is the real payoff over
+a search cluster: artifacts are immutable and versioned, so replication is N
+nodes pulling the same file, and rebalancing is a different cut of the tree plus
+a rolling restart. No leader election, no consensus, no live shard migration.
+
 ## Future improvements
 
 - **Bosnia and Herzegovina.** Extract confirmed available (153 MB), but with
@@ -1132,14 +1202,8 @@ expected bounding box (0).
   or centreline would let reverse geocoding say "no. 12 side of the street".
 - **Address interpolation.** Deliberately skipped: `addr:interpolation` appears
   258 times in Czechia and 39 in Poland. Measured, not assumed.
-- **Scaling out.** The artifact is immutable and the server is stateless, so
-  horizontal scaling is replication: build once, ship the directory, run N
-  identical processes behind a load balancer. Past the point where 254 MB per
-  country pair stops fitting comfortably, the natural shard key is the country
-  (already a field in the artifact) or a geohash prefix, with a thin router.
-- **Cheaper artifact.** `addr_anchor` (46 MB) is derivable by binary-searching
-  `anchor_addr_start`, and posting lists would compress well as delta-varints.
-  Neither is worth doing until the size actually hurts.
-- **Rebuild cadence.** A full rebuild is ~6.5 minutes for both countries, so
-  nightly is comfortable. Incremental updates from Geofabrik `.osc.gz` diffs
-  would be the step after that.
+- **Scaling out.** See below — the numbers turn out better than the hedge that
+  used to be here.
+- **Rebuild cadence.** A full rebuild is ~3.5 minutes for the default four
+  countries and ~32 for all fourteen, so nightly is comfortable. Incremental
+  updates from Geofabrik `.osc.gz` diffs would be the step after that.
