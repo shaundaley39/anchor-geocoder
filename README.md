@@ -38,6 +38,41 @@ Built as three stages:
 | **Index** | Go | Turns the record stream into a binary artifact of flat typed arrays |
 | **Serve** | TypeScript | Loads the artifact at boot, serves one `/v1/geocode` endpoint for both directions |
 
+## A note on scope
+
+The brief suggested a day's work for a minimal service. This is more than that, deliberately,
+and the reason belongs here rather than being left to inference.
+
+Written with LLM assistance, which changes what a day buys: the cost of writing
+code drops far more than the cost of deciding what is worth writing. So the time
+went into the deciding — measuring the corpus before choosing a schema, chasing
+the ranking failures to their causes, and proving the claims rather than
+asserting them. Most of what follows is that reasoning, not the code.
+
+The endpoint itself is minimal, as asked: one route, two directions.
+
+**If you read one section**, read [Retrieve, then rerank, with a bound that
+makes pruning safe](#retrieve-then-rerank-with-a-bound-that-makes-pruning-safe).
+It is the piece I would most want to be questioned on. [The address schema is
+polymorphic](#the-address-schema-is-polymorphic-because-the-data-is) is the
+decision the whole design rests on, and [Known
+limitations](#known-limitations) is what I would fix next.
+
+## Contents
+
+- [Sixty-second demo](#sixty-second-demo) — three calls with real output
+- [Setup](#setup) — prerequisites, build, Docker, CI
+- [The endpoint](#the-endpoint) — parameters, response shape, OpenAPI
+- [Measured behaviour](#measured-behaviour) — build times, latency, memory
+- [Architectural decisions](#architectural-decisions) — the long section; the
+  data schema, the artifact format, ranking, reverse geocoding, and why each
+  stage is in the language it is
+- [Why the server is TypeScript](#why-the-server-is-typescript)
+- [Repository layout](#repository-layout) · [Testing](#testing)
+- [Known limitations](#known-limitations) — what is missing and why
+- [Scaling to the planet](#scaling-to-the-planet) · [Future
+  improvements](#future-improvements)
+
 ## Sixty-second demo
 
 Three calls against the default build, with their actual output.
@@ -223,9 +258,9 @@ cd server && INDEX_DIR=/srv/geo-index PORT=8080 HOST=0.0.0.0 pnpm exec tsx src/i
 
 ### Docker
 
-The index is a 1.6 GB build artifact, not source, and it is not in the
-repository — so there are two shapes, and which you want depends on whether you
-are iterating or deploying.
+The index is a 1.6 GB build artifact, not source, and is not in the repository.
+So there are two shapes, and which you want depends on whether you are iterating
+or deploying.
 
 ```bash
 make index                # produce build/index/ on the host first
@@ -272,7 +307,7 @@ Two GitHub Actions workflows:
   does not re-run the Go build. Formatting, `go vet`, golangci-lint, `go test
   -race`, `tsc --noEmit`, ESLint, `vitest`. No artifact needed: the integration
   tests skip without one, leaving the unit tests — folding, geometry, the k-d
-  tree — which are what a code change is most likely to break. Typically a
+  tree, which are what a code change is most likely to break. Typically a
   minute or two.
 - **`pipeline`** — end to end. Fetches Czechia, runs extract and index, runs the
   full suite against the artifact it produced, then boots the server and queries
@@ -283,7 +318,7 @@ Two GitHub Actions workflows:
 
 The integration tests declare which countries they need
 (`needs('cz','pl')(...)`), so the pipeline job can build Czechia alone — 0.9 GB
-rather than 30 — and the tests naming Polish places skip rather than fail. A
+rather than 30, and the tests naming Polish places skip rather than fail. A
 test that silently requires one dataset is testing the dataset.
 
 **Local hooks are static checks only, and deliberately do not run tests.**
@@ -365,7 +400,7 @@ lat 48.547–54.835, lon 12.090–24.160.
 
 Responses are a GeoJSON `FeatureCollection` shaped after the dialect the
 commercial geocoding APIs converged on — `center`, `bbox` and a `place_type`
-alongside the standard geometry — so the endpoint is a drop-in for anything
+alongside the standard geometry, so the endpoint is a drop-in for anything
 already speaking it. The **OpenAPI 3.1 document** is served at `/openapi.json` and rendered
 at **`/docs`**.
 
@@ -439,7 +474,7 @@ Query latency, 16-core M-series laptop, measured by `make bench`:
 | reverse, dense area, k=5 | 0.015 ms | 0.043 ms | 0.083 ms |
 | reverse, sparse (~5 km) | 0.018 ms | 0.206 ms | 0.558 ms |
 
-Latency is essentially flat against a 5x larger corpus: candidate lists grew,
+Latency is flat against a 5x larger corpus: candidate lists grew,
 but the search bound below terminates the rerank on evidence rather than on
 index size. The exact-city figure roughly doubled when that bound replaced a
 fixed cut, which is the cost of the guarantee it buys.
@@ -481,7 +516,7 @@ region, and quantifiably so. Measured over the full extracts (`make verify`):
 | `addr:conscriptionnumber` | 85.0% | 0.3% |
 
 **47% of Czech addresses have no street.** They hang off `addr:place` — the
-*část obce*, a municipality part — and are identified by a *číslo popisné*
+*část obce*, a municipality part, and are identified by a *číslo popisné*
 (conscription number, unique within that part) optionally plus a *číslo
 orientační* (sequential along a street), written together as `248/39`. A rural
 Czech address is `Velká Úpa 299`, not `<street> <number>`.
@@ -550,7 +585,7 @@ The fix is to derive locality from the places layer, which is the standard
 "precompute the hierarchy at build time" move: it turns what would be a
 point-in-polygon query per request into a field lookup. Nearest-settlement is
 too naive — it assigns streets on the edge of Prague to whichever village sits
-just outside — so candidates within 30 km are scored `distance / catchment`,
+just outside, so candidates within 30 km are scored `distance / catchment`,
 where catchment scales with settlement class (city 15 km, village 2.5 km, hamlet
 1.2 km). A large settlement's streets genuinely are far from its centroid; a
 hamlet's are not.
@@ -569,15 +604,14 @@ caught **35,457 duplicates** between just these two countries.
 
 ### Normalization is the single biggest quality lever
 
-Folding runs identically at index time and query time — that symmetry is the
-whole contract, and there is a test asserting the two code paths cannot drift.
+Folding runs identically at index time and query time. That symmetry is the
+contract, and a test asserts the two code paths cannot drift.
 
 - NFD decomposition plus combining-mark removal handles Czech háčky/čárky and
   Polish ogonki.
 - A **singleton table** handles what NFD cannot: `ł`, `đ`, `ø`, `ß` and friends
   have their own codepoints and do not decompose. Without it `Łódź` folds to
-  `łodz` and never matches a typed `Lodz` — and that is one of Poland's largest
-  cities.
+  `łodz` and never matches a typed `Lodz`, one of Poland's largest cities.
 - **Serbian Cyrillic → Latin** transliteration, so `Бања Лука` and `Banja Luka`
   reach the same tokens. Bosnia carries 52,348 `name:sr` values; this is cheap
   and ships now even though Bosnia is last.
@@ -633,7 +667,7 @@ into a search box. That yields **663,724 POIs** across both countries.
 A POI that also carries a house number produces **two** records, not one: the
 POI and the address point beneath it. 10.5% of named Czech POIs are tagged this
 way, and collapsing them would mean either losing "Restaurace U Fleků" from
-search or losing "Křemencova 11" from the address layer — and with it from
+search or losing "Křemencova 11" from the address layer, and with it from
 reverse geocoding, which only searches addresses.
 
 ### The index is built over anchors, not addresses
@@ -700,7 +734,7 @@ The rerank adds two things the coarse pass cannot afford:
   is boosted 6x over one that merely shares the street name, and 18x when the
   written number matches exactly rather than just numerically. Czech addresses
   carry two numbers, so `248/39` matches dozens of streets numerically but
-  usually only one exactly — and that one should come first. Resolution has to
+  usually only one exactly, and that one should come first. Resolution has to
   happen before truncating to `limit`, because the right street can sit well
   down the coarse ranking; that was the bug that made `Pražská 248/39` return
   streets instead of the address.
@@ -722,7 +756,7 @@ retained set, and the scan stops — **provably**, not heuristically.
 
 Making the ceiling true meant fixing the factors that had no ceiling. Relevance
 is `(explained × (0.1 + 0.9 × nameUsed))²`, at most 1 before the 2.5x
-exact-match bonus — but only once a query token cannot be spent twice on the
+exact-match bonus, but only once a query token cannot be spent twice on the
 same name token, which is what the multiset matching above guarantees.
 
 A ceiling that is *true* is easy; one that is *tight* is the work. Bounding
@@ -744,7 +778,7 @@ instead of 2.5. One byte, 2 MB over the whole index:
 
 `Warszawa` is worth keeping in view. Over half its candidates have short names
 the term matches, and a sound bound cannot tell `Warszawa` from `Warszawska`
-without folding the name — so 8,639 full scorings is what correctness costs
+without folding the name, so 8,639 full scorings is what correctness costs
 there, not a defect to tune away. A hard ceiling of 10,000 still backstops the
 scan, and `SearchStats.cappedByLimit` records whether the guarantee held; no
 query in the benchmark set reaches it.
@@ -768,8 +802,7 @@ a fallback for autocomplete, not an equal-weight alternative to matching what
 was typed, so evidence is discounted by `(typed length / term length)²` and an
 exact term match takes a further 1.6x.
 
-This one is worth dwelling on: the bug was invisible on the cz+pl index and only
-appeared on a cz-only build, because the IDF numbers happened to fall the other
+The bug was invisible on the cz+pl index and appeared only on a cz-only build, because the IDF numbers happened to fall the other
 way. There is a regression test asserting the invariant — an exact name beats a
 longer prefix sibling — rather than one index's happened-to-work ordering.
 
@@ -795,7 +828,7 @@ term and look up deletions of the query. It works, but at 496,534 terms the
 delete table is roughly 40 MB, and it is a whole index to build and ship.
 
 **Pigeonhole instead.** If a term is one edit from the query, that single edit
-lies wholly in one half of the query — so either the query's first half is an
+lies wholly in one half of the query, so either the query's first half is an
 exact prefix of the term, or its second half is an exact suffix. Both are
 *prefix* searches, and a suffix search is a prefix search on reversed strings.
 The term dictionary is already a sorted table with binary-search `prefixRange`,
@@ -834,7 +867,7 @@ second-nearest thing. So results come back in two tiers.
 2. **Everything else, by distance.**
 
 Containment beats proximity outright — a restaurant 25 m away is somewhere the
-user is *not* — but sits directly above it, ahead of anything further off. The
+user is *not*, but sits directly above it, ahead of anything further off. The
 containing tier is capped at four so a stack of nested regions cannot crowd the
 nearby points off a short list.
 
@@ -955,13 +988,13 @@ They are now built once, in Go, and shipped:
   reader must partition exactly as the writer did; `kd_node_size` is recorded in
   the manifest rather than assumed. The reader depends only on the *invariant*
   at each node, not on a particular tie-break, so the Go and TypeScript builders
-  can differ in permutation and both be correct — which the brute-force reverse
+  can differ in permutation and both be correct, which the brute-force reverse
   test confirms.
 - `cell_key` / `cell_start` / `cell_count` / `cell_items` — the containment grid
   as sorted cell keys with a CSR of anchor ids, replacing a `Map` built at boot
   with a binary search.
 
-**Boot falls from 3.4 s to 118 ms**, for 61 MB of artifact — which is the same
+**Boot falls from 3.4 s to 118 ms**, for 61 MB of artifact, which is the same
 `Uint32Array` that was resident anyway, so resident memory is unchanged. Cheap
 startup is what makes horizontal scaling and instant rollback practical: a
 replica is a process that reads a file.
@@ -983,7 +1016,7 @@ touches only the nodes on its path, so it pays one indirect read per node.
 Building is the opposite pattern: it touches every point ~log n times, hundreds
 of millions of reads, and doing that indirectly is cache-hostile. A
 contiguous scratch copy makes the build 0.8 s faster but adds 127 MB to *peak*
-RSS, which is what a container limit watches — so the default trades boot time
+RSS, which is what a container limit watches, so the default trades boot time
 for headroom, and the scratch path is a constructor flag.
 
 ### Relevance measures the name, not its length
@@ -1035,7 +1068,7 @@ Three things that are not core geocoding but are the difference between a demo
 and a service:
 
 - **CORS** (`@fastify/cors`). A geocoding endpoint is called from browsers by
-  definition — an autocomplete box in someone else's page — so it is useless
+  definition — an autocomplete box in someone else's page, so it is useless
   without this. Open by default because the data is public and there is no auth;
   `CORS_ORIGIN` narrows it to a comma-separated allowlist.
 - **Rate limiting** (`@fastify/rate-limit`). Every request touches an in-memory
@@ -1163,7 +1196,7 @@ the API can share code with it rather than just data.
 
 `packages/core` is dependency-free and browser-buildable. A consumer importing
 it gets the response types **and the exact query normalizer the index was built
-with** — so a client can fold a query before sending it, and filter cached
+with**, so a client can fold a query before sending it, and filter cached
 results locally, without a second implementation of the folding rules.
 
 That last point is load-bearing. There is already a Go↔TypeScript folding
@@ -1198,7 +1231,7 @@ input.addEventListener('input', async (e) => {
 
 What TypeScript costs, for honesty: one thread (~1,600 qps per process), no
 `mmap`, and GC. All of which is mitigated by the server doing almost nothing at
-request time — which is itself part of why the choice works out.
+request time, which is itself part of why the choice works out.
 
 ## Repository layout
 
@@ -1302,7 +1335,7 @@ expected bounding box (0).
   no ring for this reason, so a click on open water falls through to the
   proximity tier. Multipolygon-mapped features are missing entirely.
   Measured on Czechia and Poland: 36,703 named POI-tagged relations against
-  663,724 indexed POIs, so 5.2% by count — but they skew large. Prague's
+  663,724 indexed POIs, so 5.2% by count, but they skew large. Prague's
   Letiště Václava Havla is a multipolygon and is absent, while Warsaw Chopin and
   Kraków-Balice, mapped as ways, are present. Resolving multipolygon geometry
   needs member ways and then their nodes: two more extraction passes.
@@ -1325,7 +1358,7 @@ global address count taken from taginfo rather than extrapolated:
 
 **The whole world fits on one ordinary machine.** Central Europe is unusually
 *well mapped* rather than unusually dense — the fourteen-country build holds a
-third of the world's mapped addresses in about 3% of its land — so the planet is
+third of the world's mapped addresses in about 3% of its land, so the planet is
 only ~3× that corpus.
 
 Treat that as a snapshot of OSM in 2026 rather than a property of the design.
@@ -1356,7 +1389,7 @@ sharding is choosing a cut of that tree that balances.
   and emits one artifact, so a shard is one `config/groups.tsv` entry. The runs
   are independent, which makes the build embarrassingly parallel.
 - **The halo comes free.** Geofabrik extracts already carry a cross-border
-  buffer — which is why the build deduplicates by OSM id, catching 221,709
+  buffer, which is why the build deduplicates by OSM id, catching 221,709
   duplicates across fourteen countries. That machinery *is* what a shard halo
   needs, and the OSM id is already the merge key.
 - **Routing needs no new index.** Every artifact already computes a coverage
@@ -1365,7 +1398,7 @@ sharding is choosing a cut of that tree that balances.
 
 Forward and reverse have opposite locality, which drives the shape. A click is
 one point, so reverse goes to the shard containing it plus a neighbour near an
-edge. Text is not local — someone looking at Prague may search for Lisbon — so a
+edge. Text is not local — someone looking at Prague may search for Lisbon, so a
 small **global tier** of settlements and major POIs is replicated to every node
 and answers those without fan-out, while geographic shards carry the long tail
 of streets and addresses.
@@ -1393,7 +1426,7 @@ a rolling restart. No leader election, no consensus, no live shard migration.
 - **Conflating authoritative national data.** Poland's GUGiK PRG address points
   (~7M, ~20 GB of GML) would materially improve coverage; 20 GB of GML is itself
   a good argument for the compiled ingest stage. Czechia gains less — OSM there
-  is already largely RÚIAN-derived — so RÚIAN is better used as a validation set.
+  is already largely RÚIAN-derived, so RÚIAN is better used as a validation set.
 - **Incremental updates.** Geofabrik publishes daily `.osc.gz` diffs; the build
   currently does a full rebuild every time.
 - **Better street geometry.** Streets are reduced to one point; a bounding box
