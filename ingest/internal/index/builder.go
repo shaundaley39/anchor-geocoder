@@ -1,135 +1,12 @@
 package index
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 )
-
-// Interns strings, assigning each a stable id.
-type StringTable struct {
-	ids  map[string]uint32
-	list []string
-}
-
-func NewStringTable() *StringTable {
-	t := &StringTable{ids: map[string]uint32{}}
-	t.Intern("") // id 0 is always the empty string, so 0 reads as "absent"
-	return t
-}
-
-func (t *StringTable) Intern(s string) uint32 {
-	if id, ok := t.ids[s]; ok {
-		return id
-	}
-	id := uint32(len(t.list))
-	t.ids[s] = id
-	t.list = append(t.list, s)
-	return id
-}
-
-func (t *StringTable) Len() int { return len(t.list) }
-
-// Emits the blob and its offset table.
-func (t *StringTable) Write(dir, base string) (int, error) {
-	var blob []byte
-	offs := make([]uint32, len(t.list)+1)
-	for i, s := range t.list {
-		offs[i] = uint32(len(blob))
-		blob = append(blob, s...)
-	}
-	offs[len(t.list)] = uint32(len(blob))
-
-	if err := os.WriteFile(filepath.Join(dir, base+".bin"), blob, 0o644); err != nil {
-		return 0, err
-	}
-	if err := writeU32(dir, base+".idx", offs); err != nil {
-		return 0, err
-	}
-	return len(blob) + 4*len(offs), nil
-}
-
-// A searchable street, place or POI: what text queries match against.
-type Anchor struct {
-	Key      string // country|folded name|folded locality — dedup key only
-	NameID   uint32
-	LocalID  uint32 // locality (city) string id
-	Lat, Lon int32
-	Layer    uint8
-	Country  uint8
-	Score    float32 // importance prior, pre-multiplied at build time
-	CatID    uint32  // POI category string id; 0 for non-POI anchors
-	// AltID is a string id whose value is the anchor's alternate names joined
-	// by AltSep. Stored rather than discarded after tokenizing because ranking
-	// has to know that "Prague" is a *name* of Praha, not incidental context.
-	AltID     uint32
-	Tokens    []string
-	AddrStart uint32
-	AddrCount uint32
-	// Real distinguishes an anchor built from an actual street or place record
-	// from a placeholder synthesised because an address referenced a name that
-	// was never mapped in its own right.
-	Real bool
-
-	// BBox in fixed point. Degenerate to the representative point when the
-	// feature has no extent, so every anchor can live in one spatial index.
-	MinLat, MinLon, MaxLat, MaxLon int32
-	// Shape is the simplified outline as fixed-point lat/lon pairs, empty when
-	// the feature is small enough that its representative point suffices.
-	Shape []int32
-	// Closed marks a ring, which can contain a click, as against a street's
-	// sampled points, which can only be measured to.
-	Closed bool
-	// NameTokens is the token count of the *shortest* name this anchor is known
-	// by. The server bounds relevance with it: a query of q tokens can use at
-	// most min(q, n)/n of an n-token name, and only an equal-length name can be
-	// an exact match. Shortest, because relevance takes the best variant.
-	NameTokens uint8
-}
-
-// One address point, in a run belonging to a single anchor.
-type Address struct {
-	AnchorID uint32
-	NumID    uint32 // house number string id
-	Lat, Lon int32
-	// Leading integer of the house number. Runs sort by it, so a numeric lookup
-	// is a binary search and results come back in street order.
-	SortKey uint32
-}
-
-// The first run of digits: Czech numbers are "conscription/orientation" and
-// Polish ones carry letter suffixes, so it is the only comparable part.
-func LeadingInt(s string) uint32 {
-	start := -1
-	for i := 0; i < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
-		return 0
-	}
-	end := start
-	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
-		end++
-	}
-	// Capped, so an absurd OSM value cannot wrap and sort first.
-	n, err := strconv.ParseUint(s[start:end], 10, 32)
-	if err != nil {
-		return 0
-	}
-	if n > 1<<31 {
-		return 1 << 31
-	}
-	return uint32(n)
-}
 
 // Assembles the artifact.
 type Builder struct {
@@ -169,6 +46,23 @@ func (b *Builder) AnchorID(key string) (uint32, bool) {
 	b.byKey[key] = id
 	b.Anchors = append(b.Anchors, Anchor{Key: key})
 	return id, true
+}
+
+// An anchor for a name referenced only by address points.
+func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
+	st *StringTable, tokens []string, lat, lon int32) uint32 {
+	id := uint32(len(b.Anchors))
+	b.Anchors = append(b.Anchors, Anchor{
+		NameID:  st.Intern(name),
+		LocalID: st.Intern(locality),
+		Country: country,
+		Layer:   layer,
+		Score:   1,
+		Tokens:  tokens,
+		MinLat:  lat, MaxLat: lat, MinLon: lon, MaxLon: lon,
+		NameTokens: 1,
+	})
+	return id
 }
 
 // Sorts address runs, links them to anchors, builds the inverted index, writes.
@@ -483,113 +377,4 @@ func reverseRunes(s string) string {
 		r[i], r[j] = r[j], r[i]
 	}
 	return string(r)
-}
-
-func writeAll(dir string, files map[string]any, man *Manifest) error {
-	names := make([]string, 0, len(files))
-	for k := range files {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		var err error
-		var n int
-		switch v := files[name].(type) {
-		case []uint32:
-			n, err = 4*len(v), writeU32(dir, name+".bin", v)
-		case []int32:
-			n, err = 4*len(v), writeI32(dir, name+".bin", v)
-		case []float32:
-			n, err = 4*len(v), writeF32(dir, name+".bin", v)
-		case []byte:
-			n, err = len(v), os.WriteFile(filepath.Join(dir, name+".bin"), v, 0o644)
-		}
-		if err != nil {
-			return err
-		}
-		man.Bytes[name] = n
-	}
-	return nil
-}
-
-func writeU32(dir, name string, v []uint32) error {
-	buf := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(buf[4*i:], x)
-	}
-	return os.WriteFile(filepath.Join(dir, name), buf, 0o644)
-}
-func writeI32(dir, name string, v []int32) error {
-	buf := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(buf[4*i:], uint32(x))
-	}
-	return os.WriteFile(filepath.Join(dir, name), buf, 0o644)
-}
-func writeF32(dir, name string, v []float32) error {
-	buf := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(buf[4*i:], math.Float32bits(x))
-	}
-	return os.WriteFile(filepath.Join(dir, name), buf, 0o644)
-}
-
-// The dedup key joining addresses to their anchor, computed identically for
-// street records, place records and addresses.
-//
-// Layer is part of it: without that a street named after the village it runs
-// through collides with the village, and one silently overwrites the other.
-func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string) string {
-	l := "s"
-	if layer == LayerPlace {
-		l = "p"
-	}
-	return country + "|" + l + "|" + strings.Join(foldedName, " ") +
-		"|" + strings.Join(foldedLocality, " ")
-}
-
-// geoingest already collapsed node-and-way duplicates, so this only keeps
-// genuinely distinct POIs apart — hence the OSM id.
-func POIKey(id string) string { return "poi|" + id }
-
-// Dedup key for a settlement. A place's locality is its own name, so AnchorKey
-// alone merges every same-named village — and "Nowa Wies" names hundreds. A
-// ~28km cell keeps them apart while still collapsing node-and-area pairs.
-//
-// Addresses bind by nearest matching name instead, so a village near a cell
-// boundary still gathers its own.
-func PlaceKey(country string, foldedName []string, lat, lon float64) string {
-	const cellDeg = 0.25
-	return country + "|p|" + strings.Join(foldedName, " ") + "|" +
-		strconv.Itoa(int(math.Floor(lat/cellDeg))) + "," +
-		strconv.Itoa(int(math.Floor(lon/cellDeg)))
-}
-
-// Joins alternate names inside one interned string; U+001F cannot occur in an
-// OSM name.
-const AltSep = "\x1f"
-
-// The interned string for an id.
-func (t *StringTable) Get(id uint32) string {
-	if int(id) >= len(t.list) {
-		return ""
-	}
-	return t.list[id]
-}
-
-// An anchor for a name referenced only by address points.
-func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
-	st *StringTable, tokens []string, lat, lon int32) uint32 {
-	id := uint32(len(b.Anchors))
-	b.Anchors = append(b.Anchors, Anchor{
-		NameID:  st.Intern(name),
-		LocalID: st.Intern(locality),
-		Country: country,
-		Layer:   layer,
-		Score:   1,
-		Tokens:  tokens,
-		MinLat:  lat, MaxLat: lat, MinLon: lon, MaxLon: lon,
-		NameTokens: 1,
-	})
-	return id
 }

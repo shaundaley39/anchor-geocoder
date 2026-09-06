@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,10 +21,10 @@ import (
 	"time"
 
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/catalog"
-	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/pbf"
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/streets"
 )
 
 // A four-country default anyone can build: ~3.5GB against ~30GB for Europe,
@@ -84,77 +83,6 @@ func main() {
 	}
 }
 
-// One way of a named street, buffered until the places layer can say which
-// settlement it is in.
-type streetSeg struct {
-	rec      *model.Record
-	lat, lon float64
-	country  string
-}
-
-// Accumulates the many way segments of one named street into a single record.
-//
-// A street is split at every junction and attribute change, so one result per
-// segment would bury everything else. Segments group by (name, locality) and
-// reduce to the sampled midpoint nearest their mean — the mean itself can fall
-// off an L-shaped street, a midpoint cannot.
-type streetAgg struct {
-	rec     *model.Record
-	sumLat  float64
-	sumLon  float64
-	n       int
-	samples [][2]float64
-}
-
-const maxStreetSamples = 16
-
-func (s *streetAgg) add(lat, lon float64) {
-	s.sumLat += lat
-	s.sumLon += lon
-	s.n++
-	if len(s.samples) < maxStreetSamples {
-		s.samples = append(s.samples, [2]float64{lat, lon})
-	}
-}
-
-func (s *streetAgg) finalize() {
-	if s.n == 0 {
-		return
-	}
-	mLat, mLon := s.sumLat/float64(s.n), s.sumLon/float64(s.n)
-	best, bestD := s.samples[0], math.MaxFloat64
-	for _, p := range s.samples {
-		// Planar distance is ample for choosing between points on one street.
-		dy := p[0] - mLat
-		dx := (p[1] - mLon) * math.Cos(mLat*math.Pi/180)
-		if d := dy*dy + dx*dx; d < bestD {
-			best, bestD = p, d
-		}
-	}
-	s.rec.Lat, s.rec.Lon = best[0], best[1]
-
-	// A street is linear, so one point misdescribes it. Keep the sampled
-	// midpoints as an open shape; an unordered set suffices, since only the
-	// minimum distance to any of them is needed.
-	if len(s.samples) > 1 {
-		pts := make([]geom.Point, len(s.samples))
-		for i, p := range s.samples {
-			pts[i] = geom.Point{Lat: p[0], Lon: p[1]}
-		}
-		if geom.Bounds(pts).DiagonalMetres() >= minStreetShapeM {
-			s.rec.Shape = make([]float64, 0, 2*len(pts))
-			for _, p := range pts {
-				s.rec.Shape = append(s.rec.Shape, p.Lat, p.Lon)
-			}
-			s.rec.Closed = false
-		}
-	}
-}
-
-// Below this a street's single point is within clicking tolerance. Most
-// residential streets fall under it.
-const minStreetShapeM = 150
-
 type manifest struct {
 	BuiltAt   time.Time         `json:"built_at"`
 	Countries []string          `json:"countries"`
@@ -187,8 +115,8 @@ func run(sources []source, outDir string) error {
 		// Packed int64 keys, not "osm:n123" strings: ~70M entries at fourteen
 		// countries, where string keys cost ~90 bytes each against 16.
 		seenOSM = make(map[int64]struct{}, 16_000_000)
-		segs    []streetSeg
-		orphans []streetSeg // addresses with no locality tag of any kind
+		segs    []streets.Segment
+		orphans []streets.Segment // addresses with no locality tag of any kind
 		places  = map[string]*model.Record{}
 		pois    = map[string]*model.Record{}
 		counts  = map[string]int{}
@@ -247,8 +175,8 @@ func run(sources []source, outDir string) error {
 				// Buffered: grouping needs a locality, and OSM highways almost
 				// never carry one. It is derived spatially once every place in
 				// every extract has been seen.
-				segs = append(segs, streetSeg{rec: r, lat: r.Lat, lon: r.Lon,
-					country: country})
+				segs = append(segs, streets.Segment{Rec: r, Lat: r.Lat, Lon: r.Lon,
+					Country: country})
 				return nil
 
 			case model.LayerPlace:
@@ -257,7 +185,7 @@ func run(sources []source, outDir string) error {
 				k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := places[k]; ok {
-					if placeScore(r) <= placeScore(prev) {
+					if settlementRank(r) <= settlementRank(prev) {
 						counts["dedup_place"]++
 						return nil
 					}
@@ -270,8 +198,8 @@ func run(sources []source, outDir string) error {
 			// nothing to render or search on. Buffered and resolved spatially
 			// alongside the streets; only the orphans, so memory stays bounded.
 			if r.Layer == model.LayerAddress && r.City == "" && r.Place == "" {
-				orphans = append(orphans, streetSeg{rec: r, lat: r.Lat, lon: r.Lon,
-					country: src.country})
+				orphans = append(orphans, streets.Segment{Rec: r, Lat: r.Lat, Lon: r.Lon,
+					Country: src.country})
 				return nil
 			}
 			return writeRec(r)
@@ -286,34 +214,34 @@ func run(sources []source, outDir string) error {
 	}
 
 	// Assign a locality to every street segment, then group.
-	streets := groupStreets(segs, places, counts)
+	grouped := streets.Group(segs, places, counts)
 
 	// Same treatment for locality-less addresses, minus the grouping: each is
 	// still its own result, it just gains a city for display and search.
-	resolveOrphanAddresses(orphans, places, counts)
+	streets.ResolveOrphanAddresses(orphans, places, counts)
 	for i := range orphans {
-		if err := writeRec(orphans[i].rec); err != nil {
+		if err := writeRec(orphans[i].Rec); err != nil {
 			return err
 		}
 	}
 
 	// Stable order, so builds are reproducible.
 	log.Printf("grouping %d street segments -> %d streets, %d places",
-		len(segs), len(streets), len(places))
-	for _, k := range sortedKeys(streets) {
-		agg := streets[k]
-		agg.finalize()
-		counts["street_segments_merged"] += agg.n - 1
-		if err := writeRec(agg.rec); err != nil {
+		len(segs), len(grouped), len(places))
+	for _, k := range streets.SortedKeys(grouped) {
+		agg := grouped[k]
+		agg.Finalize()
+		counts["street_segments_merged"] += agg.Segments() - 1
+		if err := writeRec(agg.Rec); err != nil {
 			return err
 		}
 	}
-	for _, k := range sortedKeysRec(places) {
+	for _, k := range streets.SortedKeysRec(places) {
 		if err := writeRec(places[k]); err != nil {
 			return err
 		}
 	}
-	for _, k := range sortedKeysRec(pois) {
+	for _, k := range streets.SortedKeysRec(pois) {
 		if err := writeRec(pois[k]); err != nil {
 			return err
 		}
@@ -369,7 +297,11 @@ func packOSMKey(osmType byte, id int64) int64 {
 }
 
 // Ranks duplicate place features so the better mapping survives.
-func placeScore(r *model.Record) float64 {
+// Ranks settlement classes so deduplication can keep the better of two records
+// for the same place. Not the ranking prior — that is anchor.placePrior, which
+// is a different curve for a different job. This one only has to order two
+// candidates that are already known to be the same settlement.
+func settlementRank(r *model.Record) float64 {
 	s := float64(r.Population) / 1e6
 	switch r.PlaceType {
 	case "city":
@@ -388,22 +320,6 @@ func placeScore(r *model.Record) float64 {
 	return s
 }
 
-func sortedKeys(m map[string]*streetAgg) []string {
-	k := make([]string, 0, len(m))
-	for key := range m {
-		k = append(k, key)
-	}
-	sort.Strings(k)
-	return k
-}
-func sortedKeysRec(m map[string]*model.Record) []string {
-	k := make([]string, 0, len(m))
-	for key := range m {
-		k = append(k, key)
-	}
-	sort.Strings(k)
-	return k
-}
 func sortedStrKeys(m map[string]int) []string {
 	k := make([]string, 0, len(m))
 	for key := range m {
