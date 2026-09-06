@@ -49,7 +49,7 @@ peaks around 2 GB.
 ### Full build
 
 ```bash
-make fetch       # 3.5 GB from Geofabrik, md5-verified
+make fetch       # 3.5 GB from Geofabrik, md5-verified per file
 make records     # 3m33s -> build/records.ndjson.gz     (16M records)
 make index       #   36s -> build/index/                (398 MB artifact)
 make install     # server dependencies
@@ -71,8 +71,33 @@ make index                       # 22 s
 make install && make serve
 ```
 
-`COUNTRIES` takes any comma-separated subset of
-`de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu`, and defaults to `pl,cz,ch,ba`.
+`COUNTRIES` takes any comma-separated set of country codes, or `@group` names,
+and defaults to `@default` (`pl,cz,ch,ba`).
+
+```bash
+make countries                    # everything available, and the named groups
+make all COUNTRIES=cz             # one country, ~90 seconds
+make all COUNTRIES=@nordics       # a named group
+make all COUNTRIES=@baltics,fr    # mix groups and codes
+make all COUNTRIES=@europe        # all 41, ~30 GB of extracts
+```
+
+**41 European countries** are configured: Albania, Austria, Belarus, Belgium,
+Bosnia and Herzegovina, Bulgaria, Croatia, Cyprus, Czechia, Denmark, Estonia,
+Finland, France, Germany, Great Britain, Greece, Hungary, Iceland, Ireland and
+Northern Ireland, Italy, Kosovo, Latvia, Lithuania, Luxembourg, Malta, Moldova,
+Montenegro, Netherlands, North Macedonia, Norway, Poland, Portugal, Romania,
+Serbia, Slovakia, Slovenia, Spain, Sweden, Switzerland, Turkey, Ukraine.
+
+Adding another is **one line in `config/countries.tsv`** — the same file the Go
+build and the Makefile both read, so a country can never be fetchable but not
+ingestable. `config/groups.tsv` names reusable sets, which is also how a sharded
+build is expressed: one group per shard, built independently and in parallel.
+
+Two naming notes carried in the config: Geofabrik's `great-britain` excludes
+Northern Ireland and `ireland-and-northern-ireland` includes it, so `gb`+`ie` is
+the British Isles with no overlap and no gap; and `xk` is the conventional
+user-assigned code for Kosovo.
 
 ### Verify it works
 

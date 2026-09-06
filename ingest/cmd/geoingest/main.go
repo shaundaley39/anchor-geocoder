@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/catalog"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
@@ -31,7 +32,7 @@ import (
 
 // defaultCountries is a four-country default chosen so the whole pipeline can
 // be built and run by someone evaluating it: ~3.5GB of extracts and ~14M
-// addresses, against 14GB and 61M for the full region.
+// addresses, against ~30GB for the whole of Europe.
 //
 // It still spans the interesting cases. Czechia exercises the polymorphic
 // address anchor, where 47% of addresses have no street. Poland is the
@@ -39,10 +40,12 @@ import (
 // and dense alpine POIs. Bosnia is the sparse-coverage case, ~10% addressed,
 // with Cyrillic and Latin names for the same places.
 //
-// All fourteen countries remain available:
+// Any subset of config/countries.tsv works, and config/groups.tsv names the
+// useful sets:
 //
-//	make fetch records index COUNTRIES=de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
-const defaultCountries = "pl,cz,ch,ba"
+//	make all COUNTRIES=@europe
+//	make all COUNTRIES=@nordics,@baltics
+const defaultCountries = "@default"
 
 // source pairs an extract file with the country it is authoritative for.
 type source struct {
@@ -55,49 +58,38 @@ func main() {
 		rawDir = flag.String("raw", "../data/raw", "directory holding .osm.pbf extracts")
 		outDir = flag.String("out", "../build", "directory for the index artifact")
 		list   = flag.String("countries", defaultCountries,
-			"comma-separated country codes to ingest")
+			"comma-separated country codes, or @group names, to ingest")
+		configDir = flag.String("config", "../config", "directory holding countries.tsv")
 	)
 	flag.Parse()
 
-	// Extraction order matters for cross-extract deduplication: the first
-	// extract to claim an OSM id wins, and Geofabrik country files overlap at
-	// the borders. Ordering by descending data quality and size means a shared
-	// border feature is kept from the country that maps it best.
-	files := map[string]string{
-		"de": "germany-latest.osm.pbf",
-		"pl": "poland-latest.osm.pbf",
-		"it": "italy-latest.osm.pbf",
-		"nl": "netherlands-latest.osm.pbf",
-		"cz": "czech-republic-latest.osm.pbf",
-		"at": "austria-latest.osm.pbf",
-		"be": "belgium-latest.osm.pbf",
-		"ch": "switzerland-latest.osm.pbf",
-		"dk": "denmark-latest.osm.pbf",
-		"sk": "slovakia-latest.osm.pbf",
-		"hu": "hungary-latest.osm.pbf",
-		"hr": "croatia-latest.osm.pbf",
-		"ba": "bosnia-herzegovina-latest.osm.pbf",
-		"lu": "luxembourg-latest.osm.pbf",
+	cat, err := catalog.Load(*configDir)
+	if err != nil {
+		log.Fatalf("reading the country catalog: %v", err)
+	}
+	codes, err := cat.Resolve(*list)
+	if err != nil {
+		log.Fatal(err)
 	}
 
+	// Extraction order matters for cross-extract deduplication: the first
+	// extract to claim an OSM id wins, and Geofabrik country files overlap at
+	// the borders. Largest first, so a shared border feature is kept from
+	// whichever side maps more of the region around it.
+	sort.SliceStable(codes, func(i, j int) bool {
+		return cat.Countries[codes[i]].Size > cat.Countries[codes[j]].Size
+	})
+
 	var sources []source
-	for _, c := range strings.Split(*list, ",") {
-		c = strings.TrimSpace(c)
-		f, ok := files[c]
-		if !ok {
-			known := make([]string, 0, len(files))
-			for k := range files {
-				known = append(known, k)
-			}
-			sort.Strings(known)
-			log.Fatalf("unknown country %q (known: %s)", c, strings.Join(known, ", "))
-		}
-		p := filepath.Join(*rawDir, f)
+	for _, c := range codes {
+		p := filepath.Join(*rawDir, cat.Countries[c].Filename())
 		if _, err := os.Stat(p); err != nil {
-			log.Fatalf("missing extract for %s: %v", c, err)
+			log.Fatalf("missing extract for %s (%s): run `make fetch COUNTRIES=%s`",
+				c, cat.Countries[c].Name, *list)
 		}
 		sources = append(sources, source{country: c, path: p})
 	}
+	log.Printf("ingesting %d countries: %s", len(codes), strings.Join(codes, ", "))
 
 	if err := run(sources, *outDir); err != nil {
 		log.Fatal(err)

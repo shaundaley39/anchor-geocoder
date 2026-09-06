@@ -4,17 +4,18 @@
 RAW      := data/raw
 BUILD    := build
 # A four-country default that anyone can build: ~3.5GB of extracts, ~14M
-# addresses, under ten minutes. Override for the full region:
-#   make all COUNTRIES=de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
-# ...or for a single country in ~90 seconds:
-#   make all COUNTRIES=cz
-COUNTRIES ?= pl,cz,ch,ba
+# addresses, under four minutes.
+#
+#   make countries                     list everything available
+#   make all COUNTRIES=cz              one country, ~90 seconds
+#   make all COUNTRIES=@nordics        a named group
+#   make all COUNTRIES=@europe         all 41, ~30GB of extracts
+COUNTRIES ?= @default
 GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
-GEOFABRIK := https://download.geofabrik.de/europe
 
-.PHONY: all fetch records index test test-go test-server clean verify \
+.PHONY: all fetch records index test test-go test-server clean verify countries \
         fold-vectors serve bench install docker docker-bundled docker-run \
         docker-run-bundled
 
@@ -24,28 +25,25 @@ comma := ,
 
 # Map the COUNTRIES list onto extract filenames so `make fetch COUNTRIES=cz`
 # downloads only what that build will actually read.
-slug-cz := czech-republic
-slug-pl := poland
-slug-ba := bosnia-herzegovina
-slug-de := germany
-slug-it := italy
-slug-nl := netherlands
-slug-at := austria
-slug-be := belgium
-slug-ch := switzerland
-slug-dk := denmark
-slug-sk := slovakia
-slug-hu := hungary
-slug-hr := croatia
-slug-lu := luxembourg
-cc-file = $(RAW)/$(slug-$(strip $1))-latest.osm.pbf
-## fetch: download and checksum the extracts named by COUNTRIES (default cz,pl)
-fetch: $(foreach c,$(subst $(comma), ,$(COUNTRIES)),$(call cc-file,$c))
+# Country definitions come from config/countries.tsv, the same file the Go build
+# reads. There is deliberately no second list here: a country fetchable but not
+# ingestable, or the reverse, is exactly what duplication produces.
+CATALOG := config/countries.tsv
+RESOLVE := scripts/resolve-countries.sh
 
+PBFS := $(addprefix $(RAW)/,$(shell $(RESOLVE) files "$(COUNTRIES)"))
+
+## fetch: download and checksum the extracts named by COUNTRIES (default cz,pl)
+fetch: $(PBFS)
+
+# The download path may sit in a subdirectory (europe/great-britain) while the
+# local file is flat, so the URL is looked up rather than derived from the name.
 $(RAW)/%-latest.osm.pbf:
 	@mkdir -p $(RAW)
-	curl -fSL --retry 3 -C - -o $@ $(GEOFABRIK)/$*-latest.osm.pbf
-	curl -fsSL -o $@.md5 $(GEOFABRIK)/$*-latest.osm.pbf.md5
+	@url=$$($(RESOLVE) url "$*"); \
+	 test -n "$$url" || { echo "no catalog entry for $*"; exit 1; }; \
+	 curl -fSL --retry 3 -C - -o $@ "$$url"; \
+	 curl -fsSL -o $@.md5 "$$url.md5"
 	@cd $(RAW) && test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
 	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)" \
 	   && echo "  checksum OK: $*" || (echo "  CHECKSUM MISMATCH: $*" && exit 1)
@@ -114,6 +112,13 @@ docker-run-bundled: docker-bundled
 clean:
 	rm -rf $(BUILD)
 
-## show-fetch: print which extracts COUNTRIES resolves to (debugging the Makefile)
+## countries: list everything the pipeline can ingest, and the named groups
+countries:
+	@awk -F'\t' '!/^#/ && NF>=4 {printf "  %-4s %-34s %6.2f GB\n", $$1, $$4, $$3/1073741824}' $(CATALOG)
+	@echo ""
+	@awk -F'\t' '!/^#/ && NF>=2 {printf "  @%-14s %s\n", $$1, $$2}' config/groups.tsv
+
+## show-fetch: print what COUNTRIES resolves to, without downloading anything
 show-fetch:
-	@echo $(foreach c,$(subst $(comma), ,$(COUNTRIES)),$(call cc-file,$c))
+	@echo "  codes: $$($(RESOLVE) codes "$(COUNTRIES)")"
+	@echo "  size:  $$($(RESOLVE) size "$(COUNTRIES)") GB of extracts"

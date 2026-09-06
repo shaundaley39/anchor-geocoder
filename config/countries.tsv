@@ -1,0 +1,55 @@
+# Countries the pipeline can ingest: one source of truth, read by both the Go
+# build and the Makefile, so adding a country means editing one line here.
+#
+# code  geofabrik-path  approx-size-bytes  name
+#
+# The path is relative to https://download.geofabrik.de/ and the local filename
+# is its last component plus -latest.osm.pbf. Sizes are indicative only; they
+# come from the daily rebuild and drift.
+#
+# Codes are ISO 3166-1 alpha-2 where one exists. Two are not exactly countries:
+# gb is Geofabrik's great-britain, which excludes Northern Ireland, and ie is
+# ireland-and-northern-ireland, which includes it — so gb+ie is the British
+# Isles with no overlap and no gap. xk is the conventional user-assigned code
+# for Kosovo.
+al	europe/albania	53963766	Albania
+at	europe/austria	809164710	Austria
+ba	europe/bosnia-herzegovina	160666211	Bosnia and Herzegovina
+be	europe/belgium	693705806	Belgium
+bg	europe/bulgaria	172989287	Bulgaria
+by	europe/belarus	348686686	Belarus
+ch	europe/switzerland	544999779	Switzerland
+cy	europe/cyprus	37222742	Cyprus
+cz	europe/czech-republic	945522044	Czechia
+de	europe/germany	4833032297	Germany
+dk	europe/denmark	493834894	Denmark
+ee	europe/estonia	122823933	Estonia
+es	europe/spain	1478648881	Spain
+fi	europe/finland	765257117	Finland
+fr	europe/france	5075198227	France
+gb	europe/great-britain	2169086306	United Kingdom (Great Britain)
+gr	europe/greece	340303345	Greece
+hr	europe/croatia	199269994	Croatia
+hu	europe/hungary	323804321	Hungary
+ie	europe/ireland-and-northern-ireland	411898695	Ireland and Northern Ireland
+is	europe/iceland	64729720	Iceland
+it	europe/italy	2226262095	Italy
+lt	europe/lithuania	222519015	Lithuania
+lu	europe/luxembourg	47448676	Luxembourg
+lv	europe/latvia	139982316	Latvia
+md	europe/moldova	101087543	Moldova
+me	europe/montenegro	34367242	Montenegro
+mk	europe/macedonia	29662739	North Macedonia
+mt	europe/malta	8907969	Malta
+nl	europe/netherlands	1400381384	Netherlands
+no	europe/norway	1374279363	Norway
+pl	europe/poland	2092996067	Poland
+pt	europe/portugal	422078695	Portugal
+ro	europe/romania	327450212	Romania
+rs	europe/serbia	239255977	Serbia
+se	europe/sweden	815981133	Sweden
+si	europe/slovenia	312416450	Slovenia
+sk	europe/slovakia	343719181	Slovakia
+tr	europe/turkey	644955033	Turkey
+ua	europe/ukraine	876115930	Ukraine
+xk	europe/kosovo	30731946	Kosovo

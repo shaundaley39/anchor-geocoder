@@ -1,0 +1,21 @@
+# Named country sets. Use with COUNTRIES=@name, e.g.
+#   make all COUNTRIES=@nordics
+#
+# Groups exist mainly for sharded builds: each shard is one group, built
+# independently and in parallel, producing one artifact. Sizes are the sum of
+# the extracts, not of the resulting index.
+#
+# name	members
+default	pl,cz,ch,ba
+central	de,pl,it,nl,cz,at,be,ch,dk,sk,hu,hr,ba,lu
+dach	de,at,ch
+nordics	se,no,fi,dk,is
+baltics	ee,lv,lt
+iberia	es,pt
+britain	gb,ie
+france	fr
+italy	it
+balkans	hr,si,rs,ba,me,mk,xk,al,bg,ro,gr
+eastern	ua,by,md,pl,sk,hu,ro
+mediterranean	it,gr,mt,cy,tr
+europe	al,at,ba,be,bg,by,ch,cy,cz,de,dk,ee,es,fi,fr,gb,gr,hr,hu,ie,is,it,lt,lu,lv,md,me,mk,mt,nl,no,pl,pt,ro,rs,se,si,sk,tr,ua,xk
