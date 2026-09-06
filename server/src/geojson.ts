@@ -1,7 +1,5 @@
-/**
- * GeoJSON rendering, shaped after the conventional geocoding API so the endpoint
- * is a drop-in for anything already speaking that dialect.
- */
+/** Shaped after the conventional geocoding API, so the endpoint is a drop-in for
+ * anything already speaking that dialect. */
 import type { GeocodeResult } from './result.js';
 import type {
   Feature, FeatureCollection, FeatureProperties,
@@ -11,7 +9,7 @@ import type {
 export function placeName(r: GeocodeResult): string {
   const head = r.houseNumber ? `${r.name} ${r.houseNumber}` : r.name;
   const parts = [head];
-  // Suppressed when identical to the name, or a village address renders as
+  // Suppressed when it repeats the name, or a village address renders as
   // "Velká Úpa 42, Velká Úpa".
   if (r.locality && r.locality.toLowerCase() !== r.name.toLowerCase()) {
     parts.push(r.locality);
@@ -39,8 +37,7 @@ export function toFeature(r: GeocodeResult): Feature {
   return {
     type: 'Feature',
     id: r.id,
-    // A UI needs the extent to zoom to, not just a point. The conventional
-    // response carries center and bbox alongside a Point geometry.
+    // A UI needs the extent to zoom to, not just a point.
     ...(r.bbox ? { bbox: r.bbox } : {}),
     place_type: [r.layer],
     text: r.houseNumber ? `${r.name} ${r.houseNumber}` : r.name,

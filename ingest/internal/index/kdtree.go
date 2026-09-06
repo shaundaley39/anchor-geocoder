@@ -8,9 +8,9 @@ import "sort"
 // minute at planet size — repeated by every replica on every deploy. Both are
 // pure functions of data the artifact already holds, so both belong here.
 
-// KDNodeSize is the leaf threshold, written to the manifest because the traversal
-// is implicit:
-// a mismatch returns subtly wrong neighbours rather than an error.
+// KDNodeSize is the leaf threshold, written to the manifest because the
+// traversal is implicit: a mismatch returns subtly wrong neighbours rather than
+// an error.
 const KDNodeSize = 64
 
 // BuildKDPermutation returns point ids as an implicit k-d tree: median splits
@@ -109,9 +109,9 @@ func (k *kdSorter) selectNth(n, left, right, axis int) {
 // Containment grid parameters. Part of the format — the server recomputes the
 // same key — so a change needs a version bump.
 const (
-	// ~5.5km. A feature is listed in every cell its box touches, so smaller
-	// cells multiply large features while larger ones return too many
-	// candidates per lookup.
+	// ~5.5km. A feature is listed in every cell its box touches, so smaller cells
+	// multiply large features while larger ones return too many candidates per
+	// lookup.
 	CellDeg = 0.05
 	// Below this a feature is found by the k-d tree anyway.
 	MinExtentM = 30
@@ -136,9 +136,8 @@ func floorDiv(v, by float64) float64 {
 	return float64(int64(q))
 }
 
-// CellGrid is the containment index in flat form: ascending cell keys, each with a
-// slice of
-// the anchor ids whose box covers it.
+// CellGrid is the containment index in flat form: ascending cell keys, each
+// with a slice of the anchor ids whose box covers it.
 type CellGrid struct {
 	Keys   []int32
 	Starts []uint32

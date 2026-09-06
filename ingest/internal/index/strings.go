@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 )
 
-// AltSep joins alternate names inside one interned string; U+001F cannot occur in an
-// OSM name.
+// AltSep joins alternate names inside one interned string; U+001F cannot occur
+// in an OSM name.
 const AltSep = "\x1f"
 
 // StringTable interns strings, assigning each a stable id.

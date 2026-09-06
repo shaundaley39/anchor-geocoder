@@ -1,7 +1,5 @@
-/**
- * Process wiring: the Fastify instance, its plugin stack (OpenAPI, CORS, rate
- * limiting) and request logging. The routes are in `routes.ts`.
- */
+/** Process wiring: the Fastify instance, its plugins and request logging. The
+ * routes are in `routes.ts`. */
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -36,8 +34,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   const { artifact, reverseIndex, options = {} } = deps;
 
   const app = Fastify({
-    // Structured JSON with a request id. Health checks are excluded below:
-    // they fire every 30s and would otherwise dominate the log.
+    // Health checks are excluded below: they fire every 30s and would otherwise
+    // dominate the log.
     logger: options.logger ?? {
       level: process.env['LOG_LEVEL'] ?? 'info',
       redact: ['req.headers.authorization', 'req.headers.cookie'],
@@ -53,8 +51,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     trustProxy: true, // honour X-Forwarded-For behind a load balancer
   }).withTypeProvider<TypeBoxTypeProvider>();
 
-  // The shared schemas are registered once and referenced by $id, so the
-  // OpenAPI document and the validators are the same objects.
+  // Registered once and referenced by $id, so the OpenAPI document and the
+  // validators are the same objects.
   for (const schema of SHARED_SCHEMAS) app.addSchema(schema);
 
   await app.register(swagger, {
@@ -70,8 +68,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       servers: [{ url: '/' }],
       tags: [{ name: 'geocoding' }, { name: 'operations' }],
     },
-    // Without this the components come out as def-0, def-1 … which is useless
-    // to anyone generating a client from the document.
+    // Without this the components come out as def-0, def-1, which is useless to
+    // anyone generating a client from the document.
     refResolver: {
       buildLocalReference: (json, _base, _fragment, i) =>
         (json.$id as string | undefined) ?? `def-${String(i)}`,
@@ -79,9 +77,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
   await app.register(scalar, { routePrefix: '/docs' });
 
-  // A geocoding endpoint is called from browsers by definition, so it is
-  // useless without this. Open by default because the data is public and there
-  // is no auth; CORS_ORIGIN narrows it.
+  // A geocoding endpoint is called from browsers by definition. Open by default
+  // because the data is public and there is no auth; CORS_ORIGIN narrows it.
   const originEnv = process.env['CORS_ORIGIN'];
   await app.register(cors, {
     origin: options.corsOrigin ??
@@ -93,18 +90,16 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // The exposure is one client saturating the single Node thread, not the
   // per-request cost. Sized for autocomplete: a keystroke debounced at 150ms is
   // 6-7 req/s in bursts, and behind NAT many users share an address. Throttling
-  // someone mid-word is the one thing this must not do. A blunt per-IP cap suits
-  // an unauthenticated endpoint; finer wants API keys and a shared store.
+  // someone mid-word is the one thing this must not do.
   const maxReq = options.rateLimitMax ?? Number(process.env['RATE_LIMIT_MAX'] ?? 600);
   if (maxReq > 0) {
     await app.register(rateLimit, {
       max: maxReq,
       timeWindow: options.rateLimitWindow ?? process.env['RATE_LIMIT_WINDOW'] ?? '1 minute',
-      // Never throttle health checks, or the runtime kills the service under
-      // exactly the load it should survive.
+      // Or the runtime kills the service under exactly the load it should survive.
       allowList: (req) => req.url.startsWith('/health'),
-      // statusCode must be in the payload: the plugin raises this as an error,
-      // and without it Fastify reports 500 rather than 429.
+      // statusCode must be in the payload: the plugin raises this as an error, and
+      // without it Fastify reports 500 rather than 429.
       errorResponseBuilder: (_req, ctx) => ({
         statusCode: 429,
         error: 'rate_limited',
@@ -114,7 +109,6 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     });
   }
 
-  // One structured line per request, with the timing the handler measured.
   app.addHook('onResponse', async (req, reply) => {
     if (req.url.startsWith('/health')) return;
     req.log.info({

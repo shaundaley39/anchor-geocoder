@@ -10,8 +10,7 @@ import (
 )
 
 // AnchorKey is the dedup key joining addresses to their anchor, computed
-// identically for
-// street records, place records and addresses.
+// identically for street records, place records and addresses.
 //
 // Layer is part of it: without that a street named after the village it runs
 // through collides with the village, and one silently overwrites the other.
@@ -28,10 +27,10 @@ func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string)
 // already collapsed the node-and-way duplicates.
 func POIKey(id string) string { return "poi|" + id }
 
-// PlaceKey is the dedup key for a settlement. A place's locality is its own name,
-// so AnchorKey
-// alone merges every same-named village — and "Nowa Wies" names hundreds. A
-// ~28km cell keeps them apart while still collapsing node-and-area pairs.
+// PlaceKey is the dedup key for a settlement. A place's locality is its own
+// name, so AnchorKey alone merges every same-named village — and "Nowa Wies"
+// names hundreds. A ~28km cell keeps them apart while still collapsing node-
+// and-area pairs.
 //
 // Addresses bind by nearest matching name instead, so a village near a cell
 // boundary still gathers its own.

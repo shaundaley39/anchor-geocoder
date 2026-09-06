@@ -32,7 +32,8 @@ func Bounds(pts []Point) BBox {
 	return b
 }
 
-// DiagonalMetres is corner-to-corner size, for deciding whether a shape matters.
+// DiagonalMetres is corner-to-corner size, for deciding whether a shape
+// matters.
 func (b BBox) DiagonalMetres() float64 {
 	if math.IsInf(b.MinLat, 1) {
 		return 0
@@ -43,17 +44,16 @@ func (b BBox) DiagonalMetres() float64 {
 	return math.Hypot(latM, lonM)
 }
 
-// Simplify runs Douglas-Peucker at a metre tolerance, then a hard cap so no single
-// feature
-// dominates the blob. Ten metres is far below map-click accuracy and takes a
-// typical park from hundreds of vertices to a few dozen.
+// Simplify runs Douglas-Peucker at a metre tolerance, then a hard cap so no
+// single feature dominates the blob. Ten metres is far below map-click accuracy
+// and takes a typical park from hundreds of vertices to a few dozen.
 func Simplify(pts []Point, toleranceM float64, maxPoints int) []Point {
 	if len(pts) <= 2 {
 		return pts
 	}
 	out := douglasPeucker(pts, toleranceM)
-	// Douglas-Peucker has no upper bound: a coastline can still return
-	// thousands. Drop evenly spaced points until it fits.
+	// Douglas-Peucker has no upper bound: a coastline can still return thousands.
+	// Drop evenly spaced points until it fits.
 	for len(out) > maxPoints {
 		stride := float64(len(out)) / float64(maxPoints)
 		thinned := make([]Point, 0, maxPoints)
@@ -69,8 +69,8 @@ func douglasPeucker(pts []Point, toleranceM float64) []Point {
 	if len(pts) < 3 {
 		return pts
 	}
-	// Local metric frame, so distances are metres and do not skew with
-	// longitude convergence.
+	// Local metric frame, so distances are metres and do not skew with longitude
+	// convergence.
 	scale := math.Cos(pts[0].Lat * math.Pi / 180)
 	x := func(p Point) float64 { return p.Lon * scale * 111_320 }
 	y := func(p Point) float64 { return p.Lat * 111_320 }

@@ -2,8 +2,8 @@
 // the build.
 //
 // It answers "which settlement is this street segment in?", because OSM
-// highways almost never carry addr:city: four of 241,815 named Czech
-// street ways do. Without it every "Nadrazni" in the country collapses into one
+// highways almost never carry addr:city: four of 241,815 named Czech street
+// ways do. Without it every "Nadrazni" in the country collapses into one
 // record.
 //
 // A grid rather than a k-d tree: bounded-radius queries against a small static

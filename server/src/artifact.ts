@@ -1,9 +1,7 @@
 /**
- * Loads the binary index artifact produced by `ingest/cmd/geoindex`.
- *
- * Every file maps onto one typed array, so loading is a read plus a view: no
- * parsing, no per-record objects. The same data as JavaScript objects would
- * cost several GB and minutes of startup.
+ * Loads the binary artifact produced by `ingest/cmd/geoindex`. Every file maps
+ * onto one typed array, so loading is a read plus a view. The same data as
+ * JavaScript objects would cost several GB and minutes of startup.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -39,11 +37,8 @@ export interface Manifest {
   duration: string;
 }
 
-/**
- * One concatenated UTF-8 blob plus an offset array. Decoded lazily, since a
- * request touches a handful of strings and decoding all of them up front would
- * undo the point of the layout.
- */
+/** One concatenated UTF-8 blob plus offsets. Decoded lazily, since a request
+ * touches a handful of strings and decoding all of them would undo the layout. */
 export class StringTable {
   private readonly decoder = new TextDecoder('utf-8');
   private readonly cache: (string | undefined)[];
@@ -68,11 +63,7 @@ export class StringTable {
     return s;
   }
 
-  /**
-   * The id range [lo, hi) of terms sharing `prefix`. Terms are sorted, so this
-   * is a binary search rather than a scan, which is what autocomplete on the
-   * final token rides on.
-   */
+  /** Terms are sorted, so this is a binary search rather than a scan. */
   prefixRange(prefix: string): [number, number] {
     const lo = this.lowerBound(prefix);
     // The upper bound is the first term that does not start with `prefix`.

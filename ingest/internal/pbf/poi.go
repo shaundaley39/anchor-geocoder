@@ -82,9 +82,9 @@ var excluded = map[string]map[string]bool{
 		"windsock": true, "gate": true,
 	},
 	"shop": {"vacant": true, "no": true},
-	// Named natural features are destinations, and the region is alpine —
-	// leaving them out made "Matterhorn" a tram stop in the Netherlands. What
-	// is excluded is ground cover, which is named only incidentally.
+	// Named natural features are destinations, and the region is alpine — leaving
+	// them out made "Matterhorn" a tram stop in the Netherlands. What is excluded
+	// is ground cover, which is named only incidentally.
 	"natural": {
 		"tree": true, "tree_row": true, "scrub": true, "grassland": true,
 		"heath": true, "wetland": true, "rock": true, "stone": true,

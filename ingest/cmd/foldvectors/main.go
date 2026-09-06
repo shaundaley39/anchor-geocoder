@@ -105,8 +105,8 @@ func main() {
 		_ = of.Close() // already failing; this error adds nothing
 		log.Fatal(err)
 	}
-	// Checked, not deferred: a failed Close on a writer means unflushed data,
-	// and silently reporting a truncated file as success is worse than a crash.
+	// Checked, not deferred: a failed Close on a writer means unflushed data, and
+	// silently reporting a truncated file as success is worse than a crash.
 	if err := of.Close(); err != nil {
 		log.Fatal(err)
 	}

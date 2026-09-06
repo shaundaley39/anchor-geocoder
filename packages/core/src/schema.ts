@@ -1,10 +1,8 @@
 /**
- * The API contract, as TypeBox schemas.
- *
- * One definition per shape, from which three things derive: the runtime
- * validation Fastify applies to every request, the TypeScript types the server
- * and client both import, and the OpenAPI document. They cannot drift, because
- * there is nothing to keep in step.
+ * One definition per shape, from which three things derive: the validation
+ * Fastify applies to every request, the types the server and client import, and
+ * the OpenAPI document. They cannot drift, because there is nothing to keep in
+ * step.
  */
 import { Type, type Static } from '@sinclair/typebox';
 

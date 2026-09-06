@@ -24,8 +24,8 @@ func TestSimplifyKeepsEndpointsAndShape(t *testing.T) {
 }
 
 func TestSimplifyRespectsMaxPoints(t *testing.T) {
-	// A circle: Douglas-Peucker cannot drop anything at a tight tolerance, so
-	// only the hard cap bounds it.
+	// A circle: Douglas-Peucker cannot drop anything at a tight tolerance, so only
+	// the hard cap bounds it.
 	var ring []Point
 	for i := 0; i < 2000; i++ {
 		a := 2 * math.Pi * float64(i) / 2000

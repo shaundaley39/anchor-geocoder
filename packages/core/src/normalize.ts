@@ -1,10 +1,8 @@
 /**
- * Query-time text folding: a port of `ingest/internal/norm` that must stay
- * byte-for-byte identical to it. Index terms were folded by the Go code, so any
- * drift makes queries silently return nothing.
- *
- * `test/normalize.contract.test.ts` asserts this against fixtures Go emits from
- * several thousand real corpus names.
+ * A port of `ingest/internal/norm` that must stay byte-for-byte identical to it:
+ * index terms were folded by the Go code, so any drift makes queries silently
+ * return nothing. `normalize.contract.test.ts` asserts that against fixtures Go
+ * emits from several thousand real corpus names.
  */
 
 /**
@@ -60,9 +58,9 @@ const GENERIC = new Set([
 const COMBINING_MARKS = /\p{Mn}/gu;
 const ALNUM = /[\p{L}\p{N}]/u;
 
-/** Lowercase ASCII-ish letters and digits, space-separated. */
+/** Lowercase ASCII letters and digits, space-separated. */
 export function fold(s: string): string {
-  // 1: expand what NFD cannot handle, and transliterate.
+  // Expand what NFD cannot handle, and transliterate.
   let out = '';
   for (const ch of s.toLowerCase()) {
     const single = SINGLETONS.get(ch);
@@ -72,10 +70,10 @@ export function fold(s: string): string {
     out += ch;
   }
 
-  // 2: decompose and drop combining marks (háčky, čárky, ogonki).
+  // Drop combining marks: háčky, čárky, ogonki.
   const folded = out.normalize('NFD').replace(COMBINING_MARKS, '').normalize('NFC');
 
-  // 3: anything that is not a letter or digit becomes a separator.
+  // Anything that is not a letter or digit becomes a separator.
   let result = '';
   let prevSep = true;
   for (const ch of folded) {
@@ -90,7 +88,6 @@ export function fold(s: string): string {
   return result.trim();
 }
 
-/** Folds `s` and returns its indexable tokens. */
 export function tokens(s: string): string[] {
   const folded = fold(s);
   if (folded === '') return [];

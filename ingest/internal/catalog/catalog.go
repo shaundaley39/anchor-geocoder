@@ -86,8 +86,8 @@ func eachRow(path string, want int, fn func([]string) error) error {
 	return sc.Err()
 }
 
-// Resolve expands a selection into country codes, in order, deduplicated. An entry
-// prefixed with @ names a group; groups do not nest, which keeps the file
+// Resolve expands a selection into country codes, in order, deduplicated. An
+// entry prefixed with @ names a group; groups do not nest, which keeps the file
 // readable and the errors obvious.
 func (c *Catalog) Resolve(selection string) ([]string, error) {
 	var out []string

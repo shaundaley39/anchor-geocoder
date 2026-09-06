@@ -1,9 +1,7 @@
 /**
- * Turning an index row into an API result, shared by forward and reverse.
- *
- * They used to do it separately, and the copies had drifted: one tested
- * `layerOf(flags) === 2` against a literal rather than the constant — the line
- * that breaks silently if layer codes move.
+ * Shared by forward and reverse. They used to do this separately and the copies
+ * had drifted: one tested `layerOf(flags) === 2` against a literal rather than
+ * the constant, the sort of line that breaks silently if layer codes move.
  */
 import {
   type Artifact, layerOf, toDeg, LAYER_STREET, LAYER_PLACE, LAYER_POI,
@@ -33,7 +31,6 @@ export interface GeocodeResult {
   bbox?: [number, number, number, number];
 }
 
-/** Layer code to the name the API uses. */
 export function layerName(code: number): Exclude<Layer, 'address'> {
   switch (code) {
     case LAYER_PLACE: return 'place';
@@ -43,11 +40,8 @@ export function layerName(code: number): Exclude<Layer, 'address'> {
   }
 }
 
-/**
- * The anchor's extent as a GeoJSON bbox. Degenerate boxes are suppressed: an
- * anchor without a shape stores its own point twice, and a zero-area bbox would
- * make a UI zoom to a pinpoint.
- */
+/** Degenerate boxes are suppressed: an anchor with no shape stores its own point
+ * twice, and a zero-area bbox makes a UI zoom to a pinpoint. */
 export function anchorBBox(
   a: Artifact, id: number,
 ): [number, number, number, number] | undefined {
@@ -59,10 +53,8 @@ export function anchorBBox(
   return [toDeg(minLon), toDeg(minLat), toDeg(maxLon), toDeg(maxLat)];
 }
 
-/**
- * Fields every result carries. `withExtent` is false for address points: the
- * anchor's box describes the whole street, not the address.
- */
+/** `withExtent` is false for address points, since the anchor's box describes
+ * the whole street rather than the address. */
 function common(a: Artifact, anchorID: number, withExtent: boolean) {
   const bbox = withExtent ? anchorBBox(a, anchorID) : undefined;
   return {
@@ -73,7 +65,6 @@ function common(a: Artifact, anchorID: number, withExtent: boolean) {
   };
 }
 
-/** A street, place or POI in its own right. */
 export function anchorResult(
   a: Artifact, id: number, score: number,
   extra: Partial<GeocodeResult> = {},
@@ -92,7 +83,6 @@ export function anchorResult(
   };
 }
 
-/** One address point, named by the anchor it hangs off. */
 export function addressResult(
   a: Artifact, addrIdx: number, anchorID: number, score: number,
   extra: Partial<GeocodeResult> = {},

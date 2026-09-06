@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	// Below this size a feature's centroid is already within the accuracy of a
-	// map click, so its outline cannot change a ranking.
+	// Below this size a feature's centroid is already within the accuracy of a map
+	// click, so its outline cannot change a ranking.
 	minRingDiagonalM = 60
 	// Ten metres is far finer than anyone clicks, and takes a typical OSM park
 	// from hundreds of vertices to a few dozen.
@@ -21,8 +21,8 @@ const (
 	maxRingPoints = 48
 )
 
-// scanWays is pass 1. It decodes only ways, selects the ones we want, and
-// records the node IDs needed to give each of them a point.
+// scanWays is pass 1: select the ways worth keeping and record the node ids
+// needed to give each one a point.
 func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, error) {
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
@@ -57,8 +57,8 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, 
 			continue
 		}
 
-		// A building or place polygon needs every vertex for its centroid; a
-		// street needs only a point that lies on the line. See package doc.
+		// A building or place polygon needs every vertex for its centroid; a street
+		// needs only a point that lies on the line. See package doc.
 		wantAll := addressed || place || poi
 		ways = append(ways, packWay(int64(w.ID), wantAll))
 
@@ -88,8 +88,8 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, 
 	return ways, needed, s.Err()
 }
 
-// scanNodes is pass 2. It emits standalone address and place nodes directly and
-// fills locs for the node IDs pass 1 asked for.
+// scanNodes is pass 2: emit standalone address and place nodes, and retain the
+// locations pass 1 asked for.
 func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, locs []coord) (int, error) {
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
@@ -108,13 +108,11 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 		}
 		st.NodesScanned++
 
-		// Retain the location if a way needs it.
 		if i := search(needed, int64(n.ID)); i >= 0 {
 			locs[i] = coord{lat: packLat(n.Lat), lon: packLat(n.Lon)}
 			found++
 		}
 
-		// Emit the node in its own right if it is a feature.
 		if len(n.Tags) == 0 {
 			continue
 		}
@@ -148,12 +146,12 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 	return found, s.Err()
 }
 
-// emitWays is pass 3. It re-reads ways, rebuilds geometry from the retained
-// locations, and emits a point per selected way.
+// emitWays is pass 3: rebuild each selected way's geometry from the retained
+// locations.
 func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, needed []int64, locs []coord) error {
-	// `ways` is sorted, so membership is a binary search — ~25 comparisons
-	// against a flat int64 slice, rather than a map of tens of millions of
-	// entries that would itself cost gigabytes.
+	// `ways` is sorted, so membership is a binary search — ~25 comparisons against
+	// a flat int64 slice, rather than a map of tens of millions of entries that
+	// would itself cost gigabytes.
 	sort.Slice(ways, func(i, j int) bool { return ways[i]>>1 < ways[j]>>1 })
 
 	f, s, err := e.openScanner(ctx)
@@ -175,7 +173,8 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 		if !want {
 			continue
 		}
-		// Tags come from this scan, not from a copy kept since pass 1.
+		// Re-read rather than carried since pass 1: retaining tag maps for every
+		// selected way took peak build memory from 5.5GB to 11.5GB.
 		tags := tagsOf(w.Tags)
 
 		pts := make([][2]float64, 0, len(w.Nodes))
@@ -205,10 +204,9 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 		lat, lon := representativePoint(pts, isBuild)
 		poiCat, _ := isPOI(tags)
 
-		// Keep the outline only where it can change an answer. A building is a
-		// few metres across, so its centroid is already inside clicking
-		// tolerance and a ring would cost 32M rings for nothing; a park or a
-		// lake is not.
+		// Keep the outline only where it can change an answer. A building is a few
+		// metres across, so its centroid is already inside clicking tolerance and a
+		// ring would cost 32M rings for nothing; a park or a lake is not.
 		var ring []geom.Point
 		if isBuild && !isAddressed(tags) && len(pts) >= 4 {
 			gp := make([]geom.Point, len(pts))
@@ -234,8 +232,8 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, neede
 	return s.Err()
 }
 
-// representativePoint reduces a way's vertices to the single point the
-// geocoder will return.
+// representativePoint reduces a way's vertices to the single point the geocoder
+// will return.
 //
 // For a closed building outline this is the polygon area centroid (the shoelace
 // formula), not the mean of the vertices: OSM buildings often have many nodes
@@ -248,8 +246,8 @@ func representativePoint(pts [][2]float64, polygon bool) (lat, lon float64) {
 		return pts[0][0], pts[0][1]
 	}
 
-	// Work in a local planar frame so the shoelace terms are metric-ish and do
-	// not skew with longitude convergence.
+	// Work in a local planar frame so the shoelace terms are metric-ish and do not
+	// skew with longitude convergence.
 	latScale := math.Cos(pts[0][0] * math.Pi / 180)
 
 	var area, cx, cy float64
@@ -265,8 +263,8 @@ func representativePoint(pts [][2]float64, polygon bool) (lat, lon float64) {
 	}
 	area /= 2
 
-	// Degenerate ring (unclosed, collinear, or zero area): fall back to the
-	// vertex mean, which is always defined.
+	// Degenerate ring (unclosed, collinear, or zero area): fall back to the vertex
+	// mean, which is always defined.
 	if math.Abs(area) < 1e-12 {
 		var sx, sy float64
 		for _, p := range pts {

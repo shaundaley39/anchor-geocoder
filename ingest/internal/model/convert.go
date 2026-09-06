@@ -185,8 +185,8 @@ func hasAddress(t map[string]string) bool {
 func buildAddress(r *Record, t map[string]string) {
 	r.Layer = LayerAddress
 	r.Conscription = t["addr:conscriptionnumber"]
-	// In Czech tagging this is the cislo orientacni, sequential along the
-	// street, not a second house number.
+	// In Czech tagging this is the cislo orientacni, sequential along the street,
+	// not a second house number.
 	r.Orientation = t["addr:streetnumber"]
 
 	// Present on 100% of addressed features and already composed, so preferred;
@@ -250,9 +250,9 @@ func firstNonEmpty(vals ...string) string {
 }
 
 // SearchTokens is the indexed token list. Every component a user might type,
-// deduplicated: a
-// query mixes them freely — "Pražská 248 Poděbrady" spans three.
-// Exported so the build can re-tokenize after attaching a derived locality.
+// deduplicated: a query mixes them freely — "Pražská 248 Poděbrady" spans
+// three. Exported so the build can re-tokenize after attaching a derived
+// locality.
 func SearchTokens(r *Record) []string {
 	seen := map[string]bool{}
 	var out []string

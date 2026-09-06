@@ -62,9 +62,9 @@ func run(inPath, outDir string) error {
 	countries := map[string]bool{}
 
 	// Two passes, because geoingest emits addresses while streaming the pbf but
-	// can only emit streets and places after grouping — so anchors arrive last.
-	// A single pass would create a placeholder for every address anchor and
-	// then discard the real record behind it.
+	// can only emit streets and places after grouping — so anchors arrive last. A
+	// single pass would create a placeholder for every address anchor and then
+	// discard the real record behind it.
 	nAnchor := 0
 	if err := scan(inPath, func(r *model.Record) error {
 		countries[r.Country] = true
@@ -79,9 +79,9 @@ func run(inPath, outDir string) error {
 	}
 	log.Printf("pass 1: %d anchor records -> %d anchors", nAnchor, len(b.Anchors))
 
-	// Lets a place-anchored address find its village. Keying on the address's
-	// own addr:city would miss: a village is keyed on its name, while an
-	// address in it may carry the surrounding municipality.
+	// Lets a place-anchored address find its village. Keying on the address's own
+	// addr:city would miss: a village is keyed on its name, while an address in it
+	// may carry the surrounding municipality.
 	placesByName := map[string][]uint32{}
 	for id := range b.Anchors {
 		a := &b.Anchors[id]

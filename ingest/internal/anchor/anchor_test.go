@@ -83,8 +83,8 @@ func TestUncategorisedPoiSitsBetweenStreetAndSettlement(t *testing.T) {
 }
 
 func TestShortestNameTokensPicksTheShortestVariant(t *testing.T) {
-	// The server bounds relevance with this, so it must be the shortest: a
-	// longer one would claim more of the query can be matched than really can.
+	// The server bounds relevance with this, so it must be the shortest: a longer
+	// one would claim more of the query can be matched than really can.
 	got := shortestNameTokens("Hlavní nádraží Praha", []string{"Praha", "Prague Main Station"})
 	if got != 1 {
 		t.Errorf("want 1 (from the alias %q), got %d", "Praha", got)

@@ -71,9 +71,9 @@ func findWay(wanted []int64, id int64) (needsAllVertices, ok bool) {
 type Extractor struct {
 	Path    string
 	Country string
-	// Emit is called for every extracted raw feature. It must be safe to call
-	// from a single goroutine only; extraction is parallel internally but
-	// emission is serialized.
+	// Emit is called for every extracted raw feature. It must be safe to call from
+	// a single goroutine only; extraction is parallel internally but emission is
+	// serialized.
 	Emit func(RawFeature) error
 	// Progress, if set, is called periodically with a human-readable status.
 	Progress func(string)

@@ -1,14 +1,12 @@
 /**
  * Forward geocoding: text to ranked points.
  *
- * Searches anchors (streets and places), not addresses. That is 17x fewer
- * documents, because a house number is a lookup within a street rather than a
- * searchable name of its own.
+ * Searches anchors, not addresses. That is 17x fewer documents, because a house
+ * number is a lookup within a street rather than a searchable name of its own.
  *
- * The pieces live next door: `query.ts` parses, `terms.ts` retrieves,
- * `ranking.ts` scores, `housenumber.ts` resolves the number, `fuzzy.ts` handles
- * the zero-result path. What is left here is the search loop and the bound that
- * lets it stop early.
+ * `query.ts` parses, `terms.ts` retrieves, `ranking.ts` scores,
+ * `housenumber.ts` resolves the number, `fuzzy.ts` handles the zero-result
+ * path. What is left here is the search loop and the bound that stops it early.
  */
 import { type Artifact } from './artifact.js';
 import { type GeocodeResult, anchorResult, addressResult } from './result.js';
@@ -31,21 +29,16 @@ export interface ForwardOptions extends RankingOptions {
 }
 
 /**
- * Hard ceiling on full scorings, so a pathological query cannot run unbounded.
- *
- * The bound normally stops the scan long before this. It binds only where
- * thousands of candidates share a short name the query matches: "Warszawa"
- * needs 8,639 of its 16,253, because no sound bound can tell it from
- * "Warszawska" without folding the name. `SearchStats.cappedByLimit` records
- * when the guarantee lapsed.
+ * Hard ceiling, so a pathological query cannot run unbounded. The bound normally
+ * stops the scan long before it: this binds only where thousands of candidates
+ * share a short name, and "Warszawa" needs 8,639 of its 16,253 because no sound
+ * bound tells it from "Warszawska" without folding the name.
  */
 const MAX_RERANK = 10_000;
 
 /**
- * Extra results retained beyond `limit` to absorb the deduplication below.
- *
- * Fixed rather than proportional to the limit. The cutoff is the keep-th best
- * score, so every extra slot lowers it and prunes less: limit*4 to limit+4 took
+ * Fixed rather than proportional to the limit: the cutoff is the keep-th best
+ * score, so every extra slot lowers it and prunes less. limit*4 to limit+4 took
  * "Praha" from 3,635 full scorings to 971. Dedup dropped at most 3 over a
  * 96-query sweep, and `SearchStats.dropped` reports the live figure.
  */
@@ -55,7 +48,7 @@ const DEDUP_HEADROOM = 4;
 export interface SearchStats {
   candidates: number;
   reranked: number;
-  /** True when MAX_RERANK stopped the scan before the bound did. */
+  /** MAX_RERANK stopped the scan before the bound did, so the guarantee lapsed. */
   cappedByLimit: boolean;
   dropped: number;
 }
@@ -70,18 +63,13 @@ interface SearchOutcome {
 }
 
 /**
- * A forward search and what it took.
- *
- * Returned rather than stashed in module state. The diagnostics belong to one
- * call, and reading them from a shared variable stays correct only until
- * somebody puts an `await` between the search and the read.
+ * Returned rather than stashed in module state: reading diagnostics from a
+ * shared variable stays correct only until somebody puts an `await` between the
+ * search and the read.
  */
 export interface ForwardResult extends SearchOutcome {
-  /**
-   * The spelling actually searched, when it differed from what was typed, so
-   * the response can say "showing results for ...". Null when the query was
-   * used as given.
-   */
+  /** The spelling actually searched, for "showing results for ...". Null when
+   * the query was used as given. */
   corrected: string | null;
 }
 
@@ -121,20 +109,17 @@ export function forward(
  * Ranks candidates without ever discarding one that could have won.
  *
  * Two stages, forced by cost: `relevance` folds an anchor's name and every
- * alias, which is far too expensive to run on every posting of a common term.
- * A cheap pass scores what array reads allow, an expensive pass refines the
- * survivors.
+ * alias, far too expensive to run on every posting of a common term. Which
+ * survivors to refine is the hard part. Cutting at a fixed depth is unsound —
+ * the omitted factors multiply by up to 45, so a candidate ranked 400th on
+ * cheap score can finish first, and the Nádražní in Brno came 427th of 1,136
+ * and was dropped from every query.
  *
- * Which survivors is the hard part. Cutting at a fixed depth is unsound: the
- * omitted factors multiply by up to 45, so a candidate ranked 400th on cheap
- * score can finish first. The Nádražní in Brno came 427th of 1,136 and was
- * dropped from every query.
- *
- * So the cheap score becomes an upper bound on the final score, and candidates
- * are visited in bound order. Once the k-th best final score exceeds the next
- * candidate's bound, nothing further can enter the result and the scan stops.
- * This is A*'s admissibility argument. It also prunes harder than a fixed depth
- * on selective queries, because a strong first result raises the cutoff at once.
+ * So the cheap score becomes an upper bound and candidates are visited in bound
+ * order. Once the k-th best final score exceeds the next candidate's bound,
+ * nothing further can enter the result. This is A*'s admissibility argument,
+ * and it prunes harder than a fixed depth on selective queries, because a
+ * strong first result raises the cutoff at once.
  */
 function search(
   a: Artifact, parsed: ParsedQuery, limit: number, opts: ForwardOptions,
@@ -148,14 +133,12 @@ function search(
     return { results: [], stats: EMPTY_STATS };
   }
 
-  // A house number can only multiply the score where the query supplies one.
   const houseCeiling = parsed.houseNumber !== null ? HOUSE_EXACT : 1;
   const qLen = parsed.nameTokens.length;
 
-  // Parallel arrays rather than objects, and a heap rather than a sort. The
-  // scan usually stops after a few hundred, so ordering all of them is waste:
-  // heapify is O(n), each pop O(log n), and a 3-character prefix over 23,251
-  // candidates went from 3.91ms to 1.38ms.
+  // Parallel arrays rather than objects, and a heap rather than a sort. The scan
+  // usually stops after a few hundred, so fully ordering 23,251 candidates to
+  // consume 79 is waste: a 3-character prefix went from 3.91ms to 1.38ms.
   let n = 0;
   const ids = new Int32Array(scored.size);
   const cheaps = new Float64Array(scored.size);
@@ -169,7 +152,6 @@ function search(
     n++;
   }
 
-  // Max-heap of slot indices, ordered by bound.
   const heap = new Int32Array(n);
   for (let i = 0; i < n; i++) heap[i] = i;
   let size = n;
@@ -197,8 +179,7 @@ function search(
   while (size > 0) {
     const slot = heap[0]!;
     const id = ids[slot]!;
-    // Safe: this is the highest bound left, so if it cannot reach the cutoff,
-    // nothing still in the heap can.
+    // The highest bound left, so if it cannot reach the cutoff nothing can.
     if (ranked.length >= keep && bounds[slot]! <= ranked[keep - 1]!.score) break;
     if (reranked >= MAX_RERANK) { cappedByLimit = true; break; }
     heap[0] = heap[--size]!;
@@ -207,8 +188,6 @@ function search(
 
     let score = cheaps[slot]! * relevance(a, id, parsed.nameTokens);
 
-    // Exact beats numeric: "248/39" matches dozens of streets numerically but
-    // usually only one exactly.
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {
       const h = resolveHouseNumber(a, id, parsed.houseNumber);
@@ -216,10 +195,10 @@ function search(
       addrIdx = h.addrIdx;
     }
 
-    // Insertion sort: `keep` is small, and this keeps the cutoff current so the
-    // bound prunes as early as possible. Ties break on anchor id rather than on
-    // the heap's internal order — Wenceslas Square is mapped as two ways with
-    // identical scores, and the API should not vary run to run.
+    // Insertion sort keeps the cutoff current, so the bound prunes as early as
+    // possible. Ties break on anchor id rather than heap order: Wenceslas Square
+    // is mapped as two ways with identical scores, and the API must not vary run
+    // to run.
     let i = ranked.length;
     while (i > 0 && (ranked[i - 1]!.score < score
       || (ranked[i - 1]!.score === score && ranked[i - 1]!.id > id))) i--;
@@ -241,15 +220,13 @@ function search(
   return { results: out, stats };
 }
 
-/** Two results this close with the same name describe the same place. */
 const DUPLICATE_RADIUS_M = 600;
 
 /**
- * Collapses results naming the same real place. Karlův most is mapped as an
- * attraction several times along its length, a tram stop once per direction.
- *
- * Not fixable at build time: the features are hundreds of metres apart, and a
- * merge radius that wide would fold together distinct branches of a chain.
+ * Karlův most is mapped as an attraction several times along its length, a tram
+ * stop once per direction. Not fixable at build time: those features are
+ * hundreds of metres apart, and a merge radius that wide would fold together
+ * distinct branches of a chain.
  */
 function isDuplicateOf(accepted: GeocodeResult[], r: GeocodeResult): boolean {
   for (const prev of accepted) {

@@ -3,20 +3,15 @@
  *
  * `kdbush` copies every coordinate into arrays of its own, duplicating what the
  * artifact already holds: 128MB on the four-country build, 490MB at fourteen.
- * This keeps only the permutation and reads coordinates through an accessor.
- *
- * Affordable because build and query have opposite access patterns: a range
- * query touches only the nodes on its path, so indirection costs nothing, while
- * building touches every point ~log n times and is cache-hostile indirectly.
- * Coordinates stay raw fixed-point integers throughout, so comparisons are
- * exact and no conversion happens during the build.
+ * This keeps only the permutation and reads through an accessor, which is
+ * affordable because a range query touches only the nodes on its path.
+ * Coordinates stay raw fixed-point integers, so comparisons are exact.
  */
 
-/** Reads the fixed-point coordinate of a point id. */
 export type CoordFn = (id: number) => number;
 
 export class PointIndex {
-  /** Point ids in k-d tree order. The only thing this structure retains. */
+  /** Point ids in k-d tree order, and the only thing this retains. */
   private readonly ids!: Uint32Array;
   private readonly nodeSize!: number;
   private readonly getX!: CoordFn;
@@ -24,9 +19,9 @@ export class PointIndex {
 
   /**
    * Adopts a permutation computed at build time, which is the path the server
-   * takes. Partitioning in-process cost 3.0s of startup, repeated by every
-   * replica on every deploy. `nodeSize` must match what produced the
-   * permutation, which is why the artifact records it.
+   * takes: partitioning in-process cost 3.0s of startup, on every replica on
+   * every deploy. `nodeSize` must match what produced the permutation, which is
+   * why the artifact records it.
    */
   static fromPermutation(
     ids: Uint32Array, getX: CoordFn, getY: CoordFn, nodeSize: number,
@@ -79,10 +74,7 @@ export class PointIndex {
 
   get length(): number { return this.ids.length; }
 
-  /**
-   * Partitions about the median on alternating axes, stopping at leaves of
-   * `nodeSize`. The tree structure ends up encoded entirely by position.
-   */
+  /** The tree structure ends up encoded entirely by position. */
   private sortKD(xs: Int32Array | null, ys: Int32Array | null, left: number, right: number, axis: number): void {
     if (right - left <= this.nodeSize) return;
     const mid = (left + right) >> 1;
@@ -91,10 +83,8 @@ export class PointIndex {
     this.sortKD(xs, ys, mid + 1, right, 1 - axis);
   }
 
-  /**
-   * Floyd–Rivest quickselect: places the k-th element at k in expected linear
-   * time. Only the median position matters, so sorting would be wasteful.
-   */
+  /** Floyd–Rivest quickselect. Only the median position matters, so sorting
+   * would be wasteful. */
   private select(
     xs: Int32Array | null, ys: Int32Array | null,
     k: number, left: number, right: number, axis: number,
@@ -153,8 +143,7 @@ export class PointIndex {
     minX: number, minY: number, maxX: number, maxY: number, visit: (id: number) => void,
   ): void {
     if (this.ids.length === 0) return;
-    // Explicit stack of [left, right, axis] triples, to keep the hot loop
-    // allocation-free.
+    // Explicit stack, to keep the hot loop allocation-free.
     const stack: number[] = [0, this.ids.length - 1, 0];
 
     while (stack.length > 0) {

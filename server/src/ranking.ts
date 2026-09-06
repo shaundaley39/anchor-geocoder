@@ -2,9 +2,9 @@
  * Scoring an anchor against a query.
  *
  * `cheapScore` is array reads, so every candidate can afford it. `relevance`
- * decodes and folds the anchor's names, so only a few hundred can.
- * `maxRelevance` is the ceiling on `relevance` computable from cheap data
- * alone, so the search can stop early without losing a winner.
+ * folds the anchor's names, so only a few hundred can. `maxRelevance` is the
+ * ceiling on `relevance` computable from cheap data alone, which is how the
+ * search stops early without losing a winner.
  */
 import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
 import { tokens as foldTokens } from '@anchor-geocoder/core';
@@ -14,15 +14,11 @@ import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 
 /** The request fields that change a score rather than filter results. */
 export interface RankingOptions {
-  /** Bias results toward this point. */
   proximity?: { lat: number; lon: number };
 }
 
-/**
- * An anchor's name and locality as tokens. Memoized rather than stored in the
- * artifact: only reranked candidates need it, so shipping it would cost several
- * MB for nothing.
- */
+/** Memoized rather than stored in the artifact: only reranked candidates need
+ * it, so shipping it would cost several MB for nothing. */
 interface AnchorTokens {
   /** Canonical name first, then each alternate, folded separately. */
   names: string[][];
@@ -48,8 +44,6 @@ function anchorTokens(a: Artifact, id: number): AnchorTokens {
 }
 
 /**
- * First token matching `q` that `used` has not already claimed, or -1.
- *
  * Claiming makes this a multiset match. Without it "Praha Praha Praha" counted
  * three matches against the one-token name "Praha" and outscored "Praha"
  * itself. "Baden Baden" still finds both tokens of "Baden-Baden".
@@ -65,22 +59,21 @@ function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): n
 /**
  * How well an anchor's name and locality explain the query.
  *
- * Anchors are indexed on more than their name: a POI carries its street and
- * city too. Scoring on name length alone therefore credits matches that never
- * touched the name, and a station called "Lednice" at Nádražní 1 beat every
- * street named Nádražní. Two quantities instead: how much of the query the
- * name explains (locality at partial credit, so adding a city helps rather
- * than dilutes), and how much of the name the query used.
+ * Anchors are indexed on more than their name — a POI carries its street and
+ * city too — so scoring on name length alone credits matches that never touched
+ * the name, and a station called "Lednice" at Nádražní 1 beat every street
+ * named Nádražní. Two quantities instead: how much of the query the name
+ * explains, locality at partial credit so adding a city helps rather than
+ * dilutes; and how much of the name the query used.
  */
 export function relevance(a: Artifact, id: number, queryTokens: string[]): number {
   const { names, locality } = anchorTokens(a, id);
   if (names.length === 0) return 0.05;
 
-  // Best variant wins. Scoring only the canonical name made exonyms unrankable:
-  // "prague" is not a token of "Praha", so the query looked like it had matched
-  // nothing but context and "Prague College" won. Merging the variants into one
-  // bag is also wrong: Kraków's 26 alternate names would read as one very long
-  // name, so the better documented a place is the worse it scores.
+  // Best variant, not the canonical one and not all of them merged. Canonical
+  // alone makes exonyms unrankable, since "prague" is not a token of "Praha" and
+  // "Prague College" won. Merged, Kraków's 26 alternate names read as one very
+  // long name, so the better documented a place is the worse it scores.
   let best = 0;
   for (const name of names) {
     if (name.length === 0) continue;
@@ -110,8 +103,8 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     const explained = Math.max(
       (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
     );
-    // At most 1 already, since `claim` consumes each name token once. Clamped
-    // anyway because maxRelevance depends on it.
+    // Already at most 1, since `claim` consumes each name token once. Clamped
+    // anyway, because maxRelevance is only sound if it is.
     const nameUsed = Math.min(inName / name.length, 1);
     const base = explained * (0.1 + 0.9 * nameUsed);
 
@@ -119,9 +112,9 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     // suggests, and the priors it competes against span an order of magnitude.
     let score = base * base;
 
-    // Every query token in the name, every name token used. Without this bonus
-    // an exactly matched street ("Nádražní", prior 1.0) loses to a partial match
-    // on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní Předměstí" (2.5).
+    // Without this bonus an exactly matched street ("Nádražní", prior 1.0) loses
+    // to a partial match on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní
+    // Předměstí" (2.5).
     if (inName === name.length && inName === queryTokens.length) score *= 2.5;
 
     if (score > best) best = score;
@@ -132,24 +125,22 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
 /**
  * The most `relevance` could return, without folding the name to find out.
  *
- * `relevance` is `explained * (0.1 + 0.9 * nameUsed)`, squared, times 2.5 when
- * the name matches exactly. `explained` is at most 1, since a query token
- * counts toward the name or the locality but never both. So a q-token query
- * uses at most `min(q, n) / n` of an n-token name, and only n = q can match
- * exactly. The artifact stores n for the shortest variant, which maximises both
- * terms, so this is a true ceiling.
+ * `explained` is at most 1, since a query token counts toward the name or the
+ * locality but never both. So a q-token query uses at most `min(q, n) / n` of an
+ * n-token name, and only n = q can match exactly. The artifact stores n for the
+ * shortest variant, which maximises both terms, so this is a true ceiling.
  *
- * Tightness matters more than soundness here. Bounding by the global 2.5 is
- * sound and useless: for "Praha" it claims each of 9,496 candidates might be an
- * exact match, when most are three-word POIs merely located in Praha. This puts
- * them at 0.16, and pruning starts working.
+ * A sound bound is easy; a tight one is the work. The global 2.5 is sound and
+ * useless: for "Praha" it claims each of 9,496 candidates might be an exact
+ * match, when most are three-word POIs merely located there. This puts them at
+ * 0.16, and pruning starts working.
  */
 export function maxRelevance(a: Artifact, id: number, queryLen: number): number {
   const n = a.anchorNameTokens[id]! || 1;
   const nameUsed = Math.min(queryLen / n, 1);
   const base = 0.1 + 0.9 * nameUsed;
-  // >= not ===: n is the shortest variant, so a longer one could still be an
-  // exact-length match.
+  // >= not ===: n is the shortest variant, so a longer one could still be
+  // exactly queryLen tokens.
   return base * base * (queryLen >= n ? 2.5 : 1);
 }
 
@@ -165,7 +156,7 @@ function proximityBoost(
   return 1 + 1 / (1 + d / 50_000);
 }
 
-/** Everything scorable without decoding a string, so affordable on every candidate. */
+/** Scorable without decoding a string, so affordable on every candidate. */
 export function cheapScore(
   a: Artifact, id: number, text: number, opts: RankingOptions,
 ): number {
@@ -176,15 +167,14 @@ export function cheapScore(
   } else {
     // Everything else inherits the standing of the place it is in. Streets and
     // POIs share one flat prior, so without this "Unter den Linden" resolved to
-    // an Austrian hamlet. Damped hard: it breaks ties, nothing more.
+    // an Austrian hamlet. Damped hard, so it breaks ties and nothing more.
     s *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
   }
   if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
   return s;
 }
 
-/** The ceiling the search gives a candidate. Exported so tests can assert
- * that no candidate's real score exceeds it. */
+/** Exported so tests can assert no candidate's real score exceeds its ceiling. */
 export function scoreBound(
   a: Artifact, id: number, text: number, hasHouseNumber: boolean,
   queryLen: number, opts: RankingOptions = {},
@@ -193,7 +183,7 @@ export function scoreBound(
     maxRelevance(a, id, queryLen) * (hasHouseNumber ? HOUSE_EXACT : 1);
 }
 
-/** The exact final score, as the search would compute it. */
+/** The final score, as the search would compute it. The bound's test oracle. */
 export function scoreExact(
   a: Artifact, id: number, text: number, parsed: ParsedQuery,
   opts: RankingOptions = {},

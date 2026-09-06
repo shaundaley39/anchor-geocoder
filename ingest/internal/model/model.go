@@ -32,14 +32,14 @@ type Record struct {
 	ID    string `json:"id"` // stable across rebuilds, e.g. "osm:n1234"
 	Layer Layer  `json:"layer"`
 
-	// Name is the feature's own display name: the street name for a street,
-	// the settlement name for a place, empty for most address points.
+	// Name is the feature's own display name: the street name for a street, the
+	// settlement name for a place, empty for most address points.
 	Name string `json:"name,omitempty"`
 	// Every other name the feature is known by: name:<lang> exonyms, alt_name,
 	// short_name, official_name, old_name, and for POIs brand and operator.
 	//
-	// Scored per variant, not merged: merging would make a well-documented
-	// place look like it has a very long name and rank worse for it.
+	// Scored per variant, not merged: merging would make a well-documented place
+	// look like it has a very long name and rank worse for it.
 	AltNames []string `json:"alt_names,omitempty"`
 
 	// --- address components -------------------------------------------------
@@ -65,9 +65,9 @@ type Record struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
 
-	// The feature's outline, flattened as [lat,lon,lat,lon,...]. Present for
-	// area features large enough for their shape to matter, and for long
-	// streets, where it is sampled points rather than a ring.
+	// The feature's outline, flattened as [lat,lon,lat,lon,...]. Present for area
+	// features large enough for their shape to matter, and for long streets, where
+	// it is sampled points rather than a ring.
 	//
 	// Reverse needs it: a click inside a park is inside it however far the
 	// centroid is, and a bounding box is a poor stand-in for a crescent.
@@ -90,9 +90,8 @@ type Record struct {
 	Display string `json:"display"`
 }
 
-// Anchor returns the addressing anchor and its kind: the join key grouping address
-// points into
-// a searchable unit.
+// Anchor returns the addressing anchor and its kind: the join key grouping
+// address points into a searchable unit.
 func (r *Record) Anchor() (string, AnchorKind) {
 	if r.Street != "" {
 		return r.Street, AnchorStreet
@@ -104,8 +103,7 @@ func (r *Record) Anchor() (string, AnchorKind) {
 }
 
 // ComposeCzechNumber renders the Czech two-number form: conscription and
-// orientation give
-// "729/37", either alone gives itself, neither falls back.
+// orientation give "729/37", either alone gives itself, neither falls back.
 func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	switch {
 	case conscription != "" && orientation != "":
@@ -119,9 +117,9 @@ func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	}
 }
 
-// BuildAddressDisplay is the one-line rendering, skipping empty components: "Cerna
-// Hora 42" for a village
-// address, "Dlouha 729/37, Praha" for a street one.
+// BuildAddressDisplay is the one-line rendering, skipping empty components:
+// "Cerna Hora 42" for a village address, "Dlouha 729/37, Praha" for a street
+// one.
 func BuildAddressDisplay(r *Record) string {
 	var head string
 	anchor, _ := r.Anchor()
@@ -135,8 +133,8 @@ func BuildAddressDisplay(r *Record) string {
 	}
 
 	parts := []string{head}
-	// Skipped when it equals the anchor, or a village address renders as
-	// "Cerna Hora 42, Cerna Hora".
+	// Skipped when it equals the anchor, or a village address renders as "Cerna
+	// Hora 42, Cerna Hora".
 	if r.City != "" && !strings.EqualFold(r.City, anchor) {
 		parts = append(parts, r.City)
 	}

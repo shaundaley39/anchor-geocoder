@@ -1,10 +1,7 @@
 /**
- * The refine half of a filter-and-refine spatial query: containment and
- * distance against the simplified shapes in the artifact.
- *
- * The bounding box narrows a click to a few candidates; these decide exactly.
- * A box alone cannot — a crescent occupies a fraction of its box, so "inside
- * the box" is not "inside the park".
+ * The refine half of a filter-and-refine spatial query. The bounding box narrows
+ * a click to a few candidates; these decide. A box alone cannot, since a
+ * crescent occupies a fraction of its box.
  */
 import { type Artifact, toDeg } from './artifact.js';
 
@@ -15,12 +12,11 @@ export function lonMetres(lat: number): number {
   return M_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180);
 }
 
-/** Does an anchor have a stored outline? */
 export function hasShape(a: Artifact, id: number): boolean {
   return a.geomOff[id + 1]! > a.geomOff[id]!;
 }
 
-/** Is the anchor's outline a closed ring (containment applies) or a point set? */
+/** A closed ring, so containment applies, rather than a set of sample points. */
 export function isClosed(a: Artifact, id: number): boolean {
   return a.geomClosed[id] === 1;
 }
@@ -72,17 +68,12 @@ function segDistSq(
 }
 
 /**
- * Distance in metres from a click to an anchor's outline.
- *
- * A ring is measured edge by edge. An open shape is measured to its nearest
- * *vertex*, and that distinction is load-bearing: a street's stored points are
- * way midpoints in extract order — a sample, not a traversal — so joining them
- * draws segments the road does not follow. Measuring along those changed the
- * answer for 26.6% of streets and under-reported by up to 300m.
- *
- * Vertex distance errs by about half the sample spacing, and over-estimates,
- * which is the safe direction. Computed in a local planar frame, accurate to
- * well under a metre here and cheaper than a haversine per edge.
+ * A ring is measured edge by edge; an open shape only to its nearest vertex.
+ * That distinction is load-bearing. A street's stored points are way midpoints
+ * in extract order — a sample, not a traversal — so joining them draws segments
+ * the road does not follow: measuring along those changed the answer for 26.6%
+ * of streets and under-reported by up to 300m. Vertex distance errs by about
+ * half the sample spacing, and over-estimates, which is the safe direction.
  */
 export function distanceToShape(
   a: Artifact, id: number, lat: number, lon: number,
@@ -106,7 +97,7 @@ export function distanceToShape(
   let best = Infinity;
 
   if (!isClosed(a, id)) {
-    // Unordered sample points: nearest vertex, no segments. See above.
+    // Unordered sample points, so nearest vertex and no segments.
     for (let i = 0; i < n; i++) {
       const y = a.geom[2 * (start + i)]! * ky;
       const x = a.geom[2 * (start + i) + 1]! * kx;
@@ -130,9 +121,9 @@ export function distanceToShape(
 }
 
 /**
- * Ring area in m², by the shoelace formula. Orders the regions a click falls
- * inside, smallest first — the theatre in the corner of the park before the
- * park. Computed on demand: only the few containing regions need it.
+ * Orders the regions a click falls inside, smallest first: the theatre in the
+ * corner of the park before the park. On demand, since only the few containing
+ * regions need it.
  */
 const areaCache = new Map<number, number>();
 

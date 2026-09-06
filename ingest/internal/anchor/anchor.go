@@ -18,10 +18,14 @@ import (
 
 func coord(v float64) int32 { return int32(math.Round(v * index.CoordScale)) }
 
+// PlaceNameKey identifies a settlement by country and folded name, for binding
+// an address to the nearest place of that name.
 func PlaceNameKey(country uint8, name string) string {
 	return string(rune('0'+country)) + "|" + strings.Join(norm.Tokens(name), " ")
 }
 
+// Add records a searchable feature, merging it into an existing anchor when one
+// already carries the same name in the same place.
 func Add(b *index.Builder, r *model.Record) {
 	name := r.Name
 	if name == "" {
@@ -49,7 +53,7 @@ func Add(b *index.Builder, r *model.Record) {
 	id, _ := b.AnchorID(key)
 	a := &b.Anchors[id]
 
-	// Rare: geoingest already deduplicates within a layer. Keep the better one.
+	// Rare: geoingest already deduplicates within a layer.
 	if a.Real {
 		b.Counts["anchor_duplicate_key"]++
 		if placePrior(r) <= a.Score {
@@ -83,10 +87,9 @@ func Add(b *index.Builder, r *model.Record) {
 	}
 }
 
-// Importance prior for a POI, same scale. Ordered by what people search for:
-// a station or airport is a navigation landmark and outranks a village, a
+// Importance prior for a POI, same scale. Ordered by what people search for: a
+// station or airport is a navigation landmark and outranks a village, a
 // hairdresser does not, chain retail sits in between.
-
 func poiPrior(r *model.Record) float32 {
 	switch r.Category {
 	case "aeroway=aerodrome":
@@ -97,8 +100,8 @@ func poiPrior(r *model.Record) float32 {
 		return 5
 	case "natural=peak", "natural=volcano", "natural=glacier",
 		"natural=bay", "waterway=river", "natural=water":
-		// A named mountain or lake is a landmark of the same standing as a
-		// station, and rather more permanent.
+		// A named mountain or lake is a landmark of the same standing as a station,
+		// and rather more permanent.
 		return 5
 	case "historic=castle", "tourism=museum", "tourism=zoo", "tourism=theme_park":
 		return 4.5
@@ -124,13 +127,9 @@ func poiPrior(r *model.Record) float32 {
 	return 1.8
 }
 
-// Importance prior for a settlement, on a scale where a street is 1.
-// Population dominates when tagged, class is the fallback, and both are
-// compressed so Warsaw does not outscore every street by six orders.
-// The token count of the shortest name an anchor is known by, which is what
-// bounds relevance server-side. Clamped into a byte; anything longer than 255
-// tokens is not a name anyone types.
-
+// The shortest name an anchor is known by, in tokens, which is what bounds
+// relevance server-side. Clamped into a byte; anything longer than 255 tokens is
+// not a name anyone types.
 func shortestNameTokens(name string, alts []string) uint8 {
 	shortest := len(norm.Tokens(name))
 	for _, alt := range alts {
@@ -148,7 +147,6 @@ func shortestNameTokens(name string, alts []string) uint8 {
 }
 
 // Copies a record's outline and box onto its anchor, in fixed point.
-
 func setGeometry(a *index.Anchor, r *model.Record) {
 	a.Closed = r.Closed
 	if len(r.Shape) < 4 {
@@ -170,6 +168,9 @@ func setGeometry(a *index.Anchor, r *model.Record) {
 	a.MaxLat, a.MaxLon = coord(maxLat), coord(maxLon)
 }
 
+// Importance prior for a settlement, on a scale where a street is 1. Population
+// dominates when tagged, class is the fallback, and both are compressed so
+// Warsaw does not outscore every street by six orders.
 func placePrior(r *model.Record) float32 {
 	if r.Layer != model.LayerPlace {
 		return 1
@@ -188,6 +189,8 @@ func placePrior(r *model.Record) float32 {
 	return float32(base)
 }
 
+// AddAddress hangs a house number off the anchor its street or place names,
+// creating a placeholder anchor when that name was never mapped in its own right.
 func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uint32) {
 	anchorName, kind := r.Anchor()
 	if anchorName == "" {
@@ -200,8 +203,8 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 
 	var id uint32
 	if kind == model.AnchorPlace {
-		// Nearest real place of that name. Candidate lists are tiny, so a linear
-		// scan beats a spatial index.
+		// Nearest real place of that name. Candidate lists are tiny, so a linear scan
+		// beats a spatial index.
 		cands := placesByName[PlaceNameKey(cc, anchorName)]
 		best, bestD := uint32(0), math.MaxFloat64
 		found := false

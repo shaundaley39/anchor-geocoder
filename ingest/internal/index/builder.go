@@ -37,8 +37,8 @@ func (b *Builder) CountryID(cc string) uint8 {
 }
 
 // AnchorID returns the id for an anchor key, creating a placeholder if unseen:
-// 141,524 anchors
-// are referenced only by addresses, never mapped in their own right.
+// 141,524 anchors are referenced only by addresses, never mapped in their own
+// right.
 func (b *Builder) AnchorID(key string) (uint32, bool) {
 	if id, ok := b.byKey[key]; ok {
 		return id, false
@@ -66,7 +66,8 @@ func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 	return id
 }
 
-// Finish sorts address runs, links them to anchors, builds the inverted index, writes.
+// Finish sorts address runs, links them to anchors, builds the inverted index,
+// writes.
 func (b *Builder) Finish(dir string, man *Manifest) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -85,10 +86,10 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		return b.Strings.list[a.NumID] < b.Strings.list[c.NumID]
 	})
 
-	// A proper CSR offset array: an anchor with no addresses takes the offset
-	// of the next run, not zero. The server recovers an address's anchor by
-	// binary-searching this (244MB saved), which needs it non-decreasing —
-	// zeroes would break it for every POI, and POIs are most anchors.
+	// A proper CSR offset array: an anchor with no addresses takes the offset of
+	// the next run, not zero. The server recovers an address's anchor by binary-
+	// searching this (244MB saved), which needs it non-decreasing — zeroes would
+	// break it for every POI, and POIs are most anchors.
 	counts := make([]uint32, len(b.Anchors))
 	for _, ad := range b.Addrs {
 		counts[ad.AnchorID]++
@@ -167,9 +168,9 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		_ = mf.Close() // already failing; this error adds nothing
 		return err
 	}
-	// Checked, not deferred: a failed Close on a writer means unflushed data,
-	// and reporting a truncated manifest as a successful build is worse than
-	// failing loudly.
+	// Checked, not deferred: a failed Close on a writer means unflushed data, and
+	// reporting a truncated manifest as a successful build is worse than failing
+	// loudly.
 	return mf.Close()
 }
 
@@ -281,9 +282,9 @@ func (b *Builder) writeAddrs(dir string, man *Manifest) error {
 	for i, a := range b.Addrs {
 		num[i], lat[i], lon[i], key[i] = a.NumID, a.Lat, a.Lon, a.SortKey
 	}
-	// No addr_anchor: addresses are stored grouped by anchor, so the owning
-	// anchor is a binary search over anchor_addr_start. 4 bytes per address is
-	// 244MB across fourteen countries, for ~23 comparisons on the reverse path.
+	// No addr_anchor: addresses are stored grouped by anchor, so the owning anchor
+	// is a binary search over anchor_addr_start. 4 bytes per address is 244MB
+	// across fourteen countries, for ~23 comparisons on the reverse path.
 	w := map[string]any{
 		"addr_num": num, "addr_lat": lat, "addr_lon": lon,
 		"addr_sortkey": key,

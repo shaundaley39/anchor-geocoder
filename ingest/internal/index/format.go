@@ -43,8 +43,8 @@
 //	post.bin         uint32 anchor ids, ascending within each term
 package index
 
-// Version is bumped whenever the layout changes; the server refuses an artifact it does
-// not recognise rather than misreading it.
+// Version is bumped whenever the layout changes; the server refuses an artifact
+// it does not recognise rather than misreading it.
 const Version = 8
 
 // Layer codes, packed into the low nibble of anchor_flags.
@@ -54,9 +54,8 @@ const (
 	LayerPOI    uint8 = 2
 )
 
-// CoordScale is the fixed-point factor for coordinates: ~1.1cm resolution, and an
-// int32 rather
-// than a float64 halves the largest arrays.
+// CoordScale is the fixed-point factor for coordinates: ~1.1cm resolution, and
+// an int32 rather than a float64 halves the largest arrays.
 const CoordScale = 1e7
 
 // Manifest describes an artifact. It is written as manifest.json.

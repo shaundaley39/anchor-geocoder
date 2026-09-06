@@ -42,8 +42,8 @@ var cyrillic = map[rune]string{
 	'џ': "dz", 'ш': "s",
 }
 
-// Street-type abbreviations, expanded before stopword removal so "ul.",
-// "ulica" and an omitted prefix converge.
+// Street-type abbreviations, expanded before stopword removal so "ul.", "ulica"
+// and an omitted prefix converge.
 var abbrev = map[string]string{
 	// Czech
 	"nam": "namesti", "nám": "namesti", "namesti": "namesti",
@@ -148,5 +148,6 @@ func Tokens(s string) []string {
 	return kept
 }
 
-// QueryTokens is deliberately the same code path as Tokens; the two must not drift.
+// QueryTokens is deliberately the same code path as Tokens; the two must not
+// drift.
 func QueryTokens(q string) []string { return Tokens(q) }

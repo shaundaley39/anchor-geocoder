@@ -1,21 +1,18 @@
-/** Finding a house number in an anchor's address run, and what the match is worth. */
+/** Finding a house number in an anchor's address run, and what it is worth. */
 import type { Artifact } from './artifact.js';
 import { tokens as foldTokens } from '@anchor-geocoder/core';
 
-/** Where a house number was found, and how good the match was. */
 export interface HouseNumberMatch {
   index: number;
-  /** True when the stored number folds identically to what the user typed. */
+  /** The stored number folds identically to what was typed, not merely to the
+   * same integer. */
   exact: boolean;
 }
 
 /**
- * Binary search over an address run, which is sorted by the number's leading
- * integer.
- *
- * An exact string match wins, but a numeric one is accepted: Czech addresses
- * carry two numbers ("248/39") and users type either. The caller needs to know
- * which it got, since an exact match should outrank the dozens sharing a 248.
+ * A numeric match is accepted as well as an exact one, because Czech addresses
+ * carry two numbers ("248/39") and users type either. The caller is told which
+ * it got: an exact match should outrank the dozens merely sharing a 248.
  */
 export function findHouseNumber(
   a: Artifact, anchorID: number, wanted: string,
@@ -46,22 +43,19 @@ export function findHouseNumber(
   return numericMatch === null ? null : { index: numericMatch, exact: false };
 }
 
-/**
- * Score multipliers by grade of match. HOUSE_EXACT is the largest single
- * multiplier in the whole score, so it is the ceiling the search bound allows for.
- */
+/** The largest single multiplier in the whole score, so also the ceiling the
+ * search bound has to allow for. */
 export const HOUSE_EXACT = 18;
 export const HOUSE_NUMERIC = 6;
-/** The street exists, the number does not. Demoted, not discarded. */
+/** The street exists, the number does not. Demoted rather than discarded. */
 export const HOUSE_MISSING = 0.4;
 
-/** Where the number landed, and the factor its grade of match earns. */
 export interface HouseResolution {
   addrIdx: number | null;
   factor: number;
 }
 
-/** The one place a house number becomes a score factor, so the search loop and
+/** The only place a house number becomes a score factor, so the search loop and
  * the bound's test oracle cannot drift apart. */
 export function resolveHouseNumber(
   a: Artifact, anchorID: number, wanted: string,

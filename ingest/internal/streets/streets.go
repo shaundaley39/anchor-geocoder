@@ -3,8 +3,8 @@
 //
 // It lives here rather than in the command because it is the most consequential
 // guess the pipeline makes: OSM tags localities on addresses but not on roads,
-// so the settlement has to be inferred spatially, and getting it wrong collapses
-// every same-named street in a country into one result.
+// so the settlement has to be inferred spatially, and getting it wrong
+// collapses every same-named street in a country into one result.
 package streets
 
 import (
@@ -19,15 +19,16 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/spatial"
 )
 
-// Segment is one way of a named street, buffered until the places layer can say which
-// settlement it is in.
+// Segment is one way of a named street, buffered until the places layer can say
+// which settlement it is in.
 type Segment struct {
 	Rec      *model.Record
 	Lat, Lon float64
 	Country  string
 }
 
-// Aggregate accumulates the many way segments of one named street into a single record.
+// Aggregate accumulates the many way segments of one named street into a single
+// record.
 //
 // A street is split at every junction and attribute change, so one result per
 // segment would bury everything else. Segments group by (name, locality) and
@@ -71,9 +72,9 @@ func (s *Aggregate) Finalize() {
 	}
 	s.Rec.Lat, s.Rec.Lon = best[0], best[1]
 
-	// A street is linear, so one point misdescribes it. Keep the sampled
-	// midpoints as an open shape; an unordered set suffices, since only the
-	// minimum distance to any of them is needed.
+	// A street is linear, so one point misdescribes it. Keep the sampled midpoints
+	// as an open shape; an unordered set suffices, since only the minimum distance
+	// to any of them is needed.
 	if len(s.samples) > 1 {
 		pts := make([]geom.Point, len(s.samples))
 		for i, p := range s.samples {
@@ -99,8 +100,8 @@ const minShapeMetres = 150
 //
 // Candidates are scored distance / catchment, so a city wins out to ~15km while
 // a hamlet only wins within ~1.2km — the intuition being that a large
-// settlement's streets genuinely are far from its centroid, and a hamlet's
-// are not.
+// settlement's streets genuinely are far from its centroid, and a hamlet's are
+// not.
 var catchmentKm = map[string]float64{
 	"city": 15, "borough": 10, "municipality": 8, "town": 6,
 	"village": 2.5, "suburb": 2.5, "quarter": 1.5,
@@ -111,8 +112,8 @@ var catchmentKm = map[string]float64{
 // be discarded. Scanning 30km examined four times the area for no change.
 const searchRadiusKm = 15
 
-// Group assigns each buffered segment to a settlement, then merges segments sharing a
-// (country, name, locality) key.
+// Group assigns each buffered segment to a settlement, then merges segments
+// sharing a (country, name, locality) key.
 //
 // OSM tags localities on addresses but not roads — four of 241,815 named Czech
 // street ways carry addr:city — so grouping on the tag alone collapsed every
@@ -218,9 +219,9 @@ func rebuildTokens(r *model.Record) []string {
 }
 
 // ResolveOrphanAddresses attaches a locality to addresses carrying neither
-// addr:city nor addr:place.
-// 3.6% of Czechia. Without it they render as a bare "Prazska 248/39", with no
-// way to tell which of 300-odd Prazska streets is meant.
+// addr:city nor addr:place. 3.6% of Czechia. Without it they render as a bare
+// "Prazska 248/39", with no way to tell which of 300-odd Prazska streets is
+// meant.
 func ResolveOrphanAddresses(orphans []Segment, places map[string]*model.Record, counts map[string]int) {
 	if len(orphans) == 0 {
 		return

@@ -108,9 +108,9 @@ func run(sources []source, outDir string) error {
 	enc := json.NewEncoder(gz)
 
 	var (
-		// Deduplicates across extracts: Geofabrik files carry a cross-border
-		// buffer, so the Poland extract contains Czech and German villages and
-		// every border settlement would be indexed twice. First claim wins.
+		// Deduplicates across extracts: Geofabrik files carry a cross-border buffer,
+		// so the Poland extract contains Czech and German villages and every border
+		// settlement would be indexed twice. First claim wins.
 		//
 		// Packed int64 keys, not "osm:n123" strings: ~70M entries at fourteen
 		// countries, where string keys cost ~90 bytes each against 16.
@@ -135,7 +135,6 @@ func run(sources []source, outDir string) error {
 			Country:  src.country,
 			Progress: func(s string) { log.Printf("[%s] %s", src.country, s) },
 		}
-		// Declared up front: Emit calls it, and it is defined below.
 		var route func(*model.Record, string) error
 
 		ex.Emit = func(rf pbf.RawFeature) error {
@@ -158,8 +157,8 @@ func run(sources []source, outDir string) error {
 		route = func(r *model.Record, country string) error {
 			switch r.Layer {
 			case model.LayerPOI:
-				// Often mapped twice, as a node inside its own building way.
-				// Collapse on name plus a ~500m cell, keeping the fuller one.
+				// Often mapped twice, as a node inside its own building way. Collapse on
+				// name plus a ~500m cell, keeping the fuller one.
 				k := fmt.Sprintf("%s|%s|%s|%.3f|%.3f", country, r.Category,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := pois[k]; ok {
@@ -172,16 +171,16 @@ func run(sources []source, outDir string) error {
 				return nil
 
 			case model.LayerStreet:
-				// Buffered: grouping needs a locality, and OSM highways almost
-				// never carry one. It is derived spatially once every place in
-				// every extract has been seen.
+				// Buffered: grouping needs a locality, and OSM highways almost never carry
+				// one. It is derived spatially once every place in every extract has been
+				// seen.
 				segs = append(segs, streets.Segment{Rec: r, Lat: r.Lat, Lon: r.Lon,
 					Country: country})
 				return nil
 
 			case model.LayerPlace:
-				// Often mapped as both node and area; collapse on name plus a
-				// ~1km cell, keeping the higher-ranked class.
+				// Often mapped as both node and area; collapse on name plus a ~1km cell,
+				// keeping the higher-ranked class.
 				k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := places[k]; ok {
@@ -194,9 +193,9 @@ func run(sources []source, outDir string) error {
 				places[k] = r
 				return nil
 			}
-			// 3.6% of Czech addresses have neither addr:city nor addr:place, so
-			// nothing to render or search on. Buffered and resolved spatially
-			// alongside the streets; only the orphans, so memory stays bounded.
+			// 3.6% of Czech addresses have neither addr:city nor addr:place, so nothing
+			// to render or search on. Buffered and resolved spatially alongside the
+			// streets; only the orphans, so memory stays bounded.
 			if r.Layer == model.LayerAddress && r.City == "" && r.Place == "" {
 				orphans = append(orphans, streets.Segment{Rec: r, Lat: r.Lat, Lon: r.Lon,
 					Country: src.country})
@@ -213,7 +212,6 @@ func run(sources []source, outDir string) error {
 		log.Printf("[%s] extract stats: %+v", src.country, st)
 	}
 
-	// Assign a locality to every street segment, then group.
 	grouped := streets.Group(segs, places, counts)
 
 	// Same treatment for locality-less addresses, minus the grouping: each is
@@ -296,10 +294,10 @@ func packOSMKey(osmType byte, id int64) int64 {
 	return id<<2 | t
 }
 
-// Ranks duplicate place features so the better mapping survives.
-// Ranks settlement classes so deduplication can keep the better of two records
-// for the same place. Not the ranking prior — that is anchor.placePrior, which
-// is a different curve for a different job. This one only has to order two
+// Ranks duplicate place features so the better mapping survives. Ranks
+// settlement classes so deduplication can keep the better of two records for
+// the same place. Not the ranking prior — that is anchor.placePrior, which is a
+// different curve for a different job. This one only has to order two
 // candidates that are already known to be the same settlement.
 func settlementRank(r *model.Record) float64 {
 	s := float64(r.Population) / 1e6
