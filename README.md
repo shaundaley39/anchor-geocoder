@@ -50,10 +50,10 @@ peaks around 2 GB.
 
 ```bash
 make fetch       # 3.5 GB from Geofabrik, md5-verified per file
-make records     # 3m33s -> build/records.ndjson.gz     (16M records)
-make index       #   36s -> build/index/                (398 MB artifact)
+make records     # 3m27s -> build/records.ndjson.gz     (16M records)
+make index       # 1m42s -> build/index/                (459 MB artifact)
 make install     # server dependencies
-make serve       # boots in 1.9 s, listens on 127.0.0.1:3000
+make serve       # boots in 118 ms, listens on 127.0.0.1:3000
 ```
 
 Or `make all` for the first three. `make serve` runs in the foreground, so open
