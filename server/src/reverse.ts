@@ -14,10 +14,10 @@
  */
 import { PointIndex } from './pointindex.js';
 import { type Artifact, toDeg, anchorOfAddress } from './artifact.js';
-import { haversineMetres } from './forward.js';
 import { type GeocodeResult, anchorResult, addressResult } from './result.js';
 import {
   containsPoint, distanceToShape, distanceToBBox, hasShape, ringAreaM2,
+  haversineMetres,
 } from './geometry.js';
 
 /** Geographic extent of the indexed data, in degrees. */

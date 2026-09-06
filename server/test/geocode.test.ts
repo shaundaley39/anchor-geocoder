@@ -10,12 +10,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
-import {
-  forward, parseQuery, findHouseNumber, haversineMetres,
-  scoreBound, scoreExact, candidatesFor, lastSearchStats, lastCorrection,
-} from '../src/forward.js';
+import { forward } from '../src/forward.js';
+import { parseQuery } from '../src/query.js';
+import { candidates } from '../src/terms.js';
+import { scoreBound, scoreExact } from '../src/ranking.js';
+import { findHouseNumber } from '../src/housenumber.js';
 import { correctToken, withinOneEdit } from '../src/fuzzy.js';
-import { hasShape, ringAreaM2, containsPoint } from '../src/geometry.js';
+import { hasShape, ringAreaM2, containsPoint, haversineMetres } from '../src/geometry.js';
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
@@ -191,7 +192,8 @@ maybe('against the built index', () => {
   });
 
   describe('forward geocoding', () => {
-    const top = (q: string, opts = {}) => forward(a, q, { limit: 5, ...opts })[0];
+    const top = (q: string, opts = {}) => forward(a, q, { limit: 5, ...opts }).results[0];
+    const forwardTop = (q: string, opts = {}) => forward(a, q, opts).results;
 
     needs('cz', 'pl')('finds a major city by exact name', () => {
       expect(top('Praha')?.name).toBe('Praha');
@@ -241,7 +243,7 @@ maybe('against the built index', () => {
     needs('cz')('ranks the city above POIs that merely mention the exonym', () => {
       // 338 anchors carry the term "prague"; almost all are POIs with it in
       // their name, and one of them is literally "Prague College".
-      const r = forward(a, 'Prague', { limit: 3 })[0]!;
+      const r = forward(a, 'Prague', { limit: 3 }).results[0]!;
       expect(r.layer).toBe('place');
       expect(r.name).toBe('Praha');
     });
@@ -291,14 +293,14 @@ maybe('against the built index', () => {
     });
 
     needs('cz', 'pl')('honours the country filter', () => {
-      const pl = forward(a, 'Nowa Wies', { limit: 5, country: 'pl' });
+      const pl = forward(a, 'Nowa Wies', { limit: 5, country: 'pl' }).results;
       expect(pl.length).toBeGreaterThan(0);
       expect(pl.every((r) => r.country === 'pl')).toBe(true);
     });
 
     needs('cz')('biases toward the proximity point', () => {
       // One of the commonest Czech street names: 575 of them.
-      const nearBrno = forward(a, 'Nadrazni', {
+      const nearBrno = forwardTop('Nadrazni', {
         limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
       })[0]!;
       const d = haversineMetres(49.1951, 16.6068, nearBrno.lat, nearBrno.lon);
@@ -319,7 +321,7 @@ maybe('against the built index', () => {
      * once outranked all 651 streets of that name.
      */
     needs('cz')('ranks a street above a POI that merely sits on it', () => {
-      const r = forward(a, 'Nadrazni', {
+      const r = forwardTop('Nadrazni', {
         limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
       })[0]!;
       expect(r.layer).toBe('street');
@@ -329,32 +331,32 @@ maybe('against the built index', () => {
 
     /** The coarse cut is per layer, or the lowest-prior layer is deleted whole. */
     needs('cz')('never lets one layer crowd another out of the candidate set', () => {
-      const layers = new Set(forward(a, 'Nadrazni', { limit: 20 }).map((r) => r.layer));
+      const layers = new Set(forward(a, 'Nadrazni', { limit: 20 }).results.map((r) => r.layer));
       expect(layers.has('street')).toBe(true);
     });
 
     needs('cz')('collapses duplicate mappings of one place', () => {
       // Karlův most is mapped as an attraction more than once along its length.
-      const rs = forward(a, 'Karluv most', { limit: 5 })
+      const rs = forward(a, 'Karluv most', { limit: 5 }).results
         .filter((r) => r.layer === 'poi' && r.name === 'Karlův most');
       expect(rs.length).toBe(1);
     });
 
     needs('cz', 'pl')('keeps genuinely distinct branches of a chain', () => {
-      const rs = forward(a, 'Biedronka', { limit: 5 }).filter((r) => r.layer === 'poi');
+      const rs = forward(a, 'Biedronka', { limit: 5 }).results.filter((r) => r.layer === 'poi');
       expect(rs.length).toBeGreaterThan(1);
     });
 
     it('returns nothing rather than nonsense for gibberish', () => {
-      expect(forward(a, 'zzzqqqxxvv', { limit: 5 })).toEqual([]);
+      expect(forward(a, 'zzzqqqxxvv', { limit: 5 }).results).toEqual([]);
     });
 
     it('never returns more than the requested limit', () => {
-      expect(forward(a, 'Praha', { limit: 3 }).length).toBeLessThanOrEqual(3);
+      expect(forward(a, 'Praha', { limit: 3 }).results.length).toBeLessThanOrEqual(3);
     });
 
     it('returns results in non-increasing score order', () => {
-      const rs = forward(a, 'Nowa', { limit: 10 });
+      const rs = forward(a, 'Nowa', { limit: 10 }).results;
       for (let i = 1; i < rs.length; i++) {
         expect(rs[i]!.score).toBeLessThanOrEqual(rs[i - 1]!.score);
       }
@@ -381,7 +383,7 @@ maybe('against the built index', () => {
       for (const q of QUERIES) {
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          const cands = candidatesFor(a, parsed.nameTokens);
+          const cands = candidates(a, parsed.nameTokens, 10_000);
           for (const [id, text] of cands) {
             const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length);
             const exact = scoreExact(a, id, text, parsed);
@@ -398,7 +400,7 @@ maybe('against the built index', () => {
       const opts = { proximity: { lat: 50.0755, lon: 14.4378 } };
       for (const parsed of parseQuery('Nadrazni')) {
         if (parsed.nameTokens.length === 0) continue;
-        for (const [id, text] of candidatesFor(a, parsed.nameTokens)) {
+        for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
           const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length, opts);
           const exact = scoreExact(a, id, text, parsed, opts);
           expect(exact).toBeLessThanOrEqual(bound * (1 + 1e-9));
@@ -417,7 +419,7 @@ maybe('against the built index', () => {
     it('treats a repeated token as noise rather than reinforcement', () => {
       let prev = Infinity;
       for (const q of ['Praha', 'Praha Praha', 'Praha Praha Praha']) {
-        const top = forward(a, q, { limit: 1 })[0]!;
+        const top = forward(a, q, { limit: 1 }).results[0]!;
         expect(top.name, q).toBe('Praha');
         expect(top.score, q).toBeLessThan(prev);
         prev = top.score;
@@ -430,13 +432,13 @@ maybe('against the built index', () => {
      */
     it('gives the same top result as an exhaustive scan', () => {
       for (const q of QUERIES) {
-        const top = forward(a, q, { limit: 1 })[0];
+        const top = forward(a, q, { limit: 1 }).results[0];
         if (!top) continue;
 
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          for (const [id, text] of candidatesFor(a, parsed.nameTokens)) {
+          for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
             const sc = scoreExact(a, id, text, parsed);
             if (sc > bestScore) { bestScore = sc; bestId = id; }
           }
@@ -448,8 +450,7 @@ maybe('against the built index', () => {
     }, 120_000);
 
     it('prunes rather than scanning everything', () => {
-      forward(a, 'Praha', { limit: 5 });
-      const s = lastSearchStats;
+      const s = forward(a, 'Praha', { limit: 5 }).stats;
       expect(s.candidates).toBeGreaterThan(100);
       expect(s.reranked).toBeLessThan(s.candidates);
       expect(s.cappedByLimit).toBe(false);
@@ -497,15 +498,15 @@ maybe('against the built index', () => {
     });
 
     needs('cz')('recovers the intended place from a typo', () => {
-      const r = forward(a, 'Prahha', { limit: 1 })[0];
-      expect(r?.name).toBe('Praha');
-      expect(lastCorrection).toBe('praha');
+      const out = forward(a, 'Prahha', { limit: 1 });
+      expect(out.results[0]?.name).toBe('Praha');
+      expect(out.corrected).toBe('praha');
     });
 
     needs('cz')('keeps the house number through a correction', () => {
-      const r = forward(a, 'Marszalkowsa 12', { limit: 1 })[0];
-      expect(r?.layer).toBe('address');
-      expect(lastCorrection).toBe('marszalkowska 12');
+      const out = forward(a, 'Marszalkowsa 12', { limit: 1 });
+      expect(out.results[0]?.layer).toBe('address');
+      expect(out.corrected).toBe('marszalkowska 12');
     });
 
     /**
@@ -516,8 +517,8 @@ maybe('against the built index', () => {
     it('never rewrites a query that matched as typed', () => {
       for (const q of ['Praha', 'Brno', 'Nadrazni', 'Pra', 'Marszalkowska 12']) {
         const out = forward(a, q, { limit: 3 });
-        expect(out.length, q).toBeGreaterThan(0);
-        expect(lastCorrection, q).toBeNull();
+        expect(out.results.length, q).toBeGreaterThan(0);
+        expect(out.corrected, q).toBeNull();
       }
     });
 
@@ -529,14 +530,16 @@ maybe('against the built index', () => {
 
     it('gives up quickly on a query that is not a typo of anything', () => {
       const t = performance.now();
-      expect(forward(a, 'Xyzzyplugh Qwghlm', { limit: 5 })).toEqual([]);
-      expect(lastCorrection).toBeNull();
+      const out = forward(a, 'Xyzzyplugh Qwghlm', { limit: 5 });
+      expect(out.results).toEqual([]);
+      expect(out.corrected).toBeNull();
       expect(performance.now() - t).toBeLessThan(50);
     });
 
     it('can be switched off', () => {
-      expect(forward(a, 'Prahha', { limit: 1, fuzzy: false })).toEqual([]);
-      expect(lastCorrection).toBeNull();
+      const out = forward(a, 'Prahha', { limit: 1, fuzzy: false });
+      expect(out.results).toEqual([]);
+      expect(out.corrected).toBeNull();
     });
   });
 
@@ -857,7 +860,7 @@ maybe('against the built index', () => {
       expect(b.minLon).toBeGreaterThan(0);
       expect(b.maxLon).toBeLessThan(30);
       // And it must actually contain a place the index returns.
-      const praha = forward(a, 'Praha', { limit: 1 })[0]!;
+      const praha = forward(a, 'Praha', { limit: 1 }).results[0]!;
       expect(praha.lat).toBeGreaterThanOrEqual(b.minLat);
       expect(praha.lat).toBeLessThanOrEqual(b.maxLat);
       expect(praha.lon).toBeGreaterThanOrEqual(b.minLon);

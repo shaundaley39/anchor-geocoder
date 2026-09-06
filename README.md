@@ -1137,12 +1137,20 @@ ingest/                       Go — offline stages
 
 server/                       TypeScript — online stage
   src/artifact.ts             loads the binary artifact into typed arrays
-  src/normalize.ts            query folding; a port of internal/norm, contract-tested
-  src/forward.ts              inverted index, bounded rerank, house numbers
+  src/query.ts                splits a query into name tokens and a house number
+  src/terms.ts                inverted index: tokens -> candidate anchors
+  src/ranking.ts              scoring, and the ceiling that makes pruning safe
+  src/housenumber.ts          resolving a number inside an anchor's address run
   src/fuzzy.ts                one-edit spelling correction on the zero-result path
-  src/reverse.ts              k-d tree over 11.6M points
+  src/forward.ts              the search loop combining the above
+  src/geometry.ts             point-in-polygon, distance, area, haversine
+  src/pointindex.ts           static k-d tree over borrowed coordinate arrays
+  src/reverse.ts              two-tier reverse geocoding over that tree
+  src/result.ts               the internal result shape, shared by both directions
   src/geojson.ts              conventional FeatureCollection rendering
-  src/server.ts               the single /v1/geocode endpoint
+  src/routes.ts               /v1/geocode and /health
+  src/server.ts               Fastify instance, plugins, request logging
+  src/index.ts                process entry: load, attach indexes, listen
   test/                       99 tests, run against the real artifact
 
 build/                        generated artifact (gitignored)
