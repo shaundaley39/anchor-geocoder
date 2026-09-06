@@ -17,7 +17,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 7;
+export const SUPPORTED_VERSION = 8;
 
 export interface Manifest {
   version: number;
@@ -104,6 +104,10 @@ export interface Artifact {
   manifest: Manifest;
   strings: StringTable;
   terms: StringTable;
+  /** The terms again, each reversed and the set re-sorted, for suffix search. */
+  termsRev: StringTable;
+  /** Reversed-dictionary position -> term id. */
+  termRevId: Uint32Array;
 
   /** Inverted index: postOff[t]..postOff[t+1] slices `post` into a posting list. */
   postOff: Uint32Array;
@@ -207,6 +211,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
 
   const [
     stringsBin, stringsIdx, termsBin, termsIdx,
+    termsRevBin, termsRevIdx, termRevId,
     postOff, post,
     aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt, aNTok,
     aMinLat, aMinLon, aMaxLat, aMaxLon, gGeom, gOff, gClosed,
@@ -216,6 +221,8 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   ] = await Promise.all([
     view(dir, 'strings.bin'), view(dir, 'strings.idx'),
     view(dir, 'terms.bin'), view(dir, 'terms.idx'),
+    view(dir, 'terms_rev.bin'), view(dir, 'terms_rev.idx'),
+    view(dir, 'term_rev_id.bin'),
     view(dir, 'post_off.bin'), view(dir, 'post.bin'),
     view(dir, 'anchor_name.bin'), view(dir, 'anchor_local.bin'),
     view(dir, 'anchor_lat.bin'), view(dir, 'anchor_lon.bin'),
@@ -241,6 +248,8 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     manifest,
     strings: new StringTable(stringsBin, asU32(stringsIdx)),
     terms: new StringTable(termsBin, asU32(termsIdx)),
+    termsRev: new StringTable(termsRevBin, asU32(termsRevIdx)),
+    termRevId: asU32(termRevId),
     postOff: asU32(postOff),
     post: asU32(post),
     anchorName: asU32(aName),

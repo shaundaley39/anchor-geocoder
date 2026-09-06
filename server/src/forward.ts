@@ -8,6 +8,7 @@
  */
 import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
 import { type GeocodeResult, anchorResult, addressResult } from './result.js';
+import { correctTokens } from './fuzzy.js';
 
 export type { GeocodeResult } from './result.js';
 export { anchorBBox } from './result.js';
@@ -18,6 +19,8 @@ export interface ForwardOptions {
   country?: string;
   /** Bias results toward this point. */
   proximity?: { lat: number; lon: number };
+  /** Set false to suppress the spelling-correction retry on a zero-result query. */
+  fuzzy?: boolean;
 }
 
 /** A query split into the parts that search differently. */
@@ -433,17 +436,42 @@ function proximityBoost(
   return 1 + 1 / (1 + d / 50_000);
 }
 
+/**
+ * The spelling actually searched, when it differed from what was typed, so the
+ * response can say "showing results for ..." rather than silently answering a
+ * question nobody asked. Null whenever the query was used as given.
+ */
+export let lastCorrection: string | null = null;
+
 export function forward(
   a: Artifact, query: string, opts: ForwardOptions = {},
 ): GeocodeResult[] {
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 50);
+  lastCorrection = null;
+
   // A query can parse more than one way — "Plac 3 Maja" reads as a street with
   // no number, "Via Roma 1" as a street with one. Try each reading and take the
   // first that finds anything, rather than guessing from the shape alone.
-  for (const parsed of parseQuery(query)) {
-    if (parsed.nameTokens.length === 0) continue;
+  const readings = parseQuery(query).filter((p) => p.nameTokens.length > 0);
+  for (const parsed of readings) {
     const out = search(a, parsed, limit, opts);
     if (out.length > 0) return out;
+  }
+
+  // Nothing matched as typed. A misspelling is the most visible way a search
+  // box feels broken, so retry once against the nearest real spelling — after
+  // the exact attempt, never instead of it, so a correctly spelled query can
+  // never be second-guessed.
+  if (opts.fuzzy === false) return [];
+  for (const parsed of readings) {
+    const fixed = correctTokens(a, parsed.nameTokens);
+    if (fixed === null) continue;
+    const out = search(a, { ...parsed, nameTokens: fixed }, limit, opts);
+    if (out.length > 0) {
+      lastCorrection = [...fixed, ...(parsed.houseNumber !== null ? [parsed.houseNumber] : [])]
+        .join(' ');
+      return out;
+    }
   }
   return [];
 }

@@ -12,8 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
 import {
   forward, parseQuery, findHouseNumber, haversineMetres,
-  scoreBound, scoreExact, candidatesFor, lastSearchStats,
+  scoreBound, scoreExact, candidatesFor, lastSearchStats, lastCorrection,
 } from '../src/forward.js';
+import { correctToken, withinOneEdit } from '../src/fuzzy.js';
 import { hasShape, ringAreaM2, containsPoint } from '../src/geometry.js';
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
@@ -452,6 +453,90 @@ maybe('against the built index', () => {
       expect(s.candidates).toBeGreaterThan(100);
       expect(s.reranked).toBeLessThan(s.candidates);
       expect(s.cappedByLimit).toBe(false);
+    });
+  });
+
+  describe('spelling correction on the zero-result path', () => {
+    /**
+     * The pigeonhole property the whole approach rests on: a term at edit
+     * distance 1 must share either the query's first half as a prefix or its
+     * second half as a suffix, so a prefix search on the forward and reversed
+     * dictionaries between them find every one. Checked against a brute-force
+     * scan of all 496,534 terms, which is the only way to know nothing is
+     * missed rather than merely that the easy cases work.
+     */
+    it('finds the same corrections as a full scan of the dictionary', () => {
+      const TYPOS = ['prahha', 'warszwa', 'nadrzni', 'krakoww', 'zurick', 'sarajevoo'];
+      for (const typo of TYPOS) {
+        let bestBrute = '';
+        let bestPostings = -1;
+        for (let id = 0; id < a.terms.length; id++) {
+          const term = a.terms.get(id);
+          if (Math.abs(term.length - typo.length) > 1) continue;
+          if (!withinOneEdit(typo, term)) continue;
+          const n = a.postOff[id + 1]! - a.postOff[id]!;
+          if (n > bestPostings) { bestPostings = n; bestBrute = term; }
+        }
+        expect(correctToken(a, typo), typo).toBe(bestPostings < 0 ? null : bestBrute);
+      }
+    }, 120_000);
+
+    it('measures edit distance correctly at the boundary', () => {
+      for (const [q, t, want] of [
+        ['praha', 'praha', true],   // identical
+        ['praha', 'praga', true],   // substitution
+        ['praha', 'prha', true],    // deletion
+        ['praha', 'prahha', true],  // insertion
+        ['praha', 'prgaa', false],  // two substitutions
+        ['praha', 'prhaa', false],  // transposition is Levenshtein 2
+        ['praha', 'pra', false],    // length gap of 2
+        ['praha', 'ahrap', false],
+      ] as [string, string, boolean][]) {
+        expect(withinOneEdit(q, t), `${q} ~ ${t}`).toBe(want);
+      }
+    });
+
+    needs('cz')('recovers the intended place from a typo', () => {
+      const r = forward(a, 'Prahha', { limit: 1 })[0];
+      expect(r?.name).toBe('Praha');
+      expect(lastCorrection).toBe('praha');
+    });
+
+    needs('cz')('keeps the house number through a correction', () => {
+      const r = forward(a, 'Marszalkowsa 12', { limit: 1 })[0];
+      expect(r?.layer).toBe('address');
+      expect(lastCorrection).toBe('marszalkowska 12');
+    });
+
+    /**
+     * The rule that keeps this from doing harm: correction runs only after an
+     * exact search found nothing, so a correctly spelled query can never be
+     * quietly rewritten into a more popular one.
+     */
+    it('never rewrites a query that matched as typed', () => {
+      for (const q of ['Praha', 'Brno', 'Nadrazni', 'Pra', 'Marszalkowska 12']) {
+        const out = forward(a, q, { limit: 3 });
+        expect(out.length, q).toBeGreaterThan(0);
+        expect(lastCorrection, q).toBeNull();
+      }
+    });
+
+    it('leaves short tokens alone, where a correction would be a guess', () => {
+      // Four characters have hundreds of neighbours at distance 1.
+      expect(correctToken(a, 'brna')).toBeNull();
+      expect(correctToken(a, 'prg')).toBeNull();
+    });
+
+    it('gives up quickly on a query that is not a typo of anything', () => {
+      const t = performance.now();
+      expect(forward(a, 'Xyzzyplugh Qwghlm', { limit: 5 })).toEqual([]);
+      expect(lastCorrection).toBeNull();
+      expect(performance.now() - t).toBeLessThan(50);
+    });
+
+    it('can be switched off', () => {
+      expect(forward(a, 'Prahha', { limit: 1, fuzzy: false })).toEqual([]);
+      expect(lastCorrection).toBeNull();
     });
   });
 

@@ -25,6 +25,9 @@
 //	geom_off.bin     uint32[n_anchors+1] vertex offsets into geom.bin
 //	geom_closed.bin  uint8 per anchor: 1 = ring that can contain a point,
 //	                 0 = open point set (a street), only distances apply
+//	terms_rev.bin    the term dictionary again, each term reversed and the whole
+//	                 re-sorted, so a suffix search is a prefix search
+//	term_rev_id.bin  uint32 reversed-dictionary position -> term id
 //	anchor_ntok.bin  uint8 shortest name-variant token count, which lets the
 //	                 server bound relevance without folding the name
 //	kd_perm.bin      uint32 point ids in k-d tree order: ids below n_addresses
@@ -42,7 +45,7 @@ package index
 
 // Bumped whenever the layout changes; the server refuses an artifact it does
 // not recognise rather than misreading it.
-const Version = 7
+const Version = 8
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (

@@ -72,6 +72,12 @@ export const QueryEcho = Type.Object({
   lon: Type.Optional(Type.Number()),
   radius: Type.Optional(Type.Number()),
   proximity: Type.Optional(Type.Object({ lat: Type.Number(), lon: Type.Number() })),
+  corrected: Type.Optional(Type.String({
+    description:
+      'Set when the query matched nothing as typed and was retried against the '
+      + 'nearest real spelling. The features are for this text, not for q — show '
+      + 'it as "showing results for ...".',
+  })),
   hint: Type.Optional(Type.String({
     description: 'Advice when a query returned nothing for a diagnosable reason.',
   })),

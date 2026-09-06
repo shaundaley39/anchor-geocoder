@@ -440,9 +440,49 @@ func (b *Builder) writeIndex(dir string, man *Manifest) error {
 		return err
 	}
 	man.Bytes["terms"] = n
+
+	// The same dictionary over reversed terms, which is what lets the server
+	// find a typo in the *first* half of a token: a single edit lies wholly in
+	// one half of the query, so either its prefix or its suffix survives intact,
+	// and a suffix search is a prefix search on reversed strings.
+	revOrder := make([]uint32, len(terms))
+	for i := range revOrder {
+		revOrder[i] = uint32(i)
+	}
+	reversed := make([]string, len(terms))
+	for i, t := range terms {
+		reversed[i] = reverseRunes(t)
+	}
+	sort.Slice(revOrder, func(a, c int) bool {
+		return reversed[revOrder[a]] < reversed[revOrder[c]]
+	})
+	rt := NewStringTable()
+	rt.list = rt.list[:0]
+	rt.ids = map[string]uint32{}
+	for _, o := range revOrder {
+		rt.Intern(reversed[o])
+	}
+	nr, err := rt.Write(dir, "terms_rev")
+	if err != nil {
+		return err
+	}
+	man.Bytes["terms_rev"] = nr
+
 	man.NumTerms = len(terms)
 	man.NumPosting = len(flat)
-	return writeAll(dir, map[string]any{"post_off": offs, "post": flat}, man)
+	return writeAll(dir, map[string]any{
+		"post_off": offs, "post": flat, "term_rev_id": revOrder,
+	}, man)
+}
+
+// By rune, not byte: folding leaves Greek in place, and reversing its bytes
+// would produce a string the server could never match.
+func reverseRunes(s string) string {
+	r := []rune(s)
+	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+		r[i], r[j] = r[j], r[i]
+	}
+	return string(r)
 }
 
 func writeAll(dir string, files map[string]any, man *Manifest) error {

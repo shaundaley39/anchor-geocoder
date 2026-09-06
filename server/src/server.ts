@@ -14,7 +14,7 @@ import {
   type FeatureCollection as FeatureCollectionType,
 } from '@anchor-geocoder/core';
 import { type Artifact } from './artifact.js';
-import { forward } from './forward.js';
+import { forward, lastCorrection } from './forward.js';
 import { reverse, looksTransposed, type ReverseIndex } from './reverse.js';
 import { toFeatureCollection } from './geojson.js';
 
@@ -233,6 +233,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         ...(proximity !== undefined ? { proximity } : {}),
       });
       echo = { type: 'forward', ...(q !== undefined ? { q } : {}), ...(proximity ? { proximity } : {}) };
+      // The answer is for a different string than the one asked for, so say so
+      // rather than letting the caller assume their spelling was found.
+      if (lastCorrection !== null) echo.corrected = lastCorrection;
     }
 
     const micros = Number(process.hrtime.bigint() - started) / 1000;

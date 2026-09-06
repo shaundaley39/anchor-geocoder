@@ -51,7 +51,7 @@ peaks around 2 GB.
 ```bash
 make fetch       # 3.5 GB from Geofabrik, md5-verified per file
 make records     # 3m27s -> build/records.ndjson.gz     (16M records)
-make index       # 1m42s -> build/index/                (461 MB artifact)
+make index       # 1m42s -> build/index/                (469 MB artifact)
 make install     # server dependencies
 make serve       # boots in 118 ms, listens on 127.0.0.1:3000
 ```
@@ -331,7 +331,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
-| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **461 MB**. Peak 5.5 GB RSS |
+| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **469 MB**. Peak 5.5 GB RSS |
 | boot | **118 ms** | **609 MB RSS** |
 
 **Full region** (all fourteen), for comparison:
@@ -702,6 +702,55 @@ This one is worth dwelling on: the bug was invisible on the cz+pl index and only
 appeared on a cz-only build, because the IDF numbers happened to fall the other
 way. There is a regression test asserting the invariant — an exact name beats a
 longer prefix sibling — rather than one index's happened-to-work ordering.
+
+### A typo should not look like an empty world
+
+Diacritics were never the problem — `Plzen` finds `Plzeň` because both sides
+pass through the same normalizer, which is an exact match on a folded form. A
+real misspelling was: `Prahha` returned nothing, and an empty result is the most
+visible way a search box feels broken.
+
+Correction runs **only after** an exact search has found nothing, and never
+instead of one, so a correctly spelled query can never be quietly rewritten into
+a more popular neighbour. When it fires, the response says so — `query.corrected`
+carries the text actually searched, for the caller to render as *showing results
+for…* rather than passing off an answer to a different question:
+
+```json
+{ "type": "forward", "q": "Prahha", "corrected": "praha" }
+```
+
+The usual approach is SymSpell: precompute every deletion of every dictionary
+term and look up deletions of the query. It works, but at 496,534 terms the
+delete table is roughly 40 MB, and it is a whole index to build and ship.
+
+**Pigeonhole instead.** If a term is one edit from the query, that single edit
+lies wholly in one half of the query — so either the query's first half is an
+exact prefix of the term, or its second half is an exact suffix. Both are
+*prefix* searches, and a suffix search is a prefix search on reversed strings.
+The term dictionary is already a sorted table with binary-search `prefixRange`,
+so the only new data is that same dictionary reversed and re-sorted: **8 MB, and
+no new data structure**. Candidates are then verified with a real distance check
+that early-exits at two edits.
+
+Among terms within one edit, the most frequent wins. That is the standard
+spelling prior and the right one here: a typo is far likelier to be a mangled
+Praha (3,665 postings) than an exact hit on some hamlet spelled almost the same.
+
+Two deliberate limits. Tokens under 5 characters are left alone — `brna` is
+equally close to Brno, Brna, BrnA and Brní, and correcting it is guesswork, not
+inference. And the search is single-token: each token is corrected
+independently, rather than searching the product of every token's candidates for
+a combination that only works together.
+
+Warm, the correction itself costs under a millisecond; the visible cost is the
+retried search, so `Prahha` lands at the same 1.1 ms as `Praha`. A query that is
+not a typo of anything — `Xyzzyplugh` — has both halves miss the dictionary and
+returns in microseconds.
+
+The test that matters is not the handful of typos that work. It is that the
+pigeonhole property holds: for a set of misspellings, the two prefix searches
+find exactly what a brute-force scan of all 496,534 terms finds.
 
 ### Reverse geocoding is two tiers, and keeps real geometry
 
@@ -1089,11 +1138,12 @@ ingest/                       Go — offline stages
 server/                       TypeScript — online stage
   src/artifact.ts             loads the binary artifact into typed arrays
   src/normalize.ts            query folding; a port of internal/norm, contract-tested
-  src/forward.ts              inverted index, retrieve-then-rerank, house numbers
+  src/forward.ts              inverted index, bounded rerank, house numbers
+  src/fuzzy.ts                one-edit spelling correction on the zero-result path
   src/reverse.ts              k-d tree over 11.6M points
   src/geojson.ts              conventional FeatureCollection rendering
   src/server.ts               the single /v1/geocode endpoint
-  test/                       43 tests, run against the real artifact
+  test/                       99 tests, run against the real artifact
 
 build/                        generated artifact (gitignored)
 data/raw/                     downloaded extracts (gitignored)
@@ -1154,10 +1204,9 @@ expected bounding box (0).
   below. Prague's airport and the Colosseum are the visible examples; Vienna's
   Schönbrunn, Berlin's Brandenburger Tor, the Matterhorn and the Zugspitze all
   resolve correctly.
-- **No fuzzy matching.** A typo returns nothing. Diacritic-insensitivity
-  (`Plzen` → `Plzeň`) is *not* fuzzy matching — both sides pass through the same
-  deterministic normalizer, so it is an exact match on a folded form. Tolerating
-  a genuine misspelling needs edit distance; see Future improvements.
+- **Spelling correction stops at one edit, and at 5 characters.** `Prahha`
+  resolves; `Prgaa` (two edits) and `Prga` (four characters, below the gate) do
+  not. See "A typo should not look like an empty world".
 - **OSM relations are skipped**, which now costs more than it did: large parks,
   lakes, forests and city boundaries are disproportionately multipolygons, and
   those are exactly the features the containment tier is for. The Bodensee has
