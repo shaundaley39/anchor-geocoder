@@ -261,7 +261,9 @@ make docker-bundled # build the self-contained image
 ## The endpoint
 
 One endpoint serving both directions, dispatching on which parameters are
-present. Forward and reverse return the same feature shape.
+present. Forward and reverse return the same feature shape and differ only in
+how the caller asks, so splitting them would duplicate the response contract
+for no gain.
 
 ```bash
 # forward
@@ -1010,9 +1012,9 @@ one exactly. Regenerate with `make fold-vectors`.
 
 ### Why the build stage is Go
 
-Java is a common choice for this stage. Go is a deliberate alternative, and the
-case for it is specific to what this stage actually is: a batch job that reads
-somewhere between 3.5 GB and 88 GB of binary input and writes a binary file.
+Java is the obvious default for this stage, and the case for Go is specific to
+what the stage actually is: a batch job that reads somewhere between 3.5 GB and
+88 GB of binary input and writes a binary file.
 Not a service, not a request path — a compiler for map data. The default build
 reads 3.5 GB, the full European set 30 GB, and the planet 88 GB; the design
 target is the top of that range, not the bottom.
@@ -1066,8 +1068,8 @@ Worth stating plainly, because the usual version of it is out of date:
 - **The JVM might well be faster here.** A 24-minute batch job is exactly the
   long-running, throughput-bound shape where a mature JIT shines. I would not
   bet on Go winning a like-for-like rewrite on speed.
-- **Java's OSM ecosystem is older and richer** — Osmosis, osm4j — which is
-  probably why it remains a common choice.
+- **Java's OSM ecosystem is older and richer** — Osmosis, osm4j — and remains
+  the default choice for this kind of tooling.
 
 So the argument is surface area and memory control, not raw speed, not
 stability, and not a concurrency model Java lacks. And it is deliberately not
