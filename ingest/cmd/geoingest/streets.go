@@ -23,22 +23,19 @@ var catchmentKm = map[string]float64{
 	"neighbourhood": 1.2, "hamlet": 1.2, "isolated_dwelling": 0.4,
 }
 
-// searchRadiusKm bounds the candidate lookup. A candidate is rejected outright
-// once distance exceeds its catchment, and the largest catchment is a city's
-// 15km, so anything fetched beyond that is fetched only to be thrown away.
-// Scanning 30km examined roughly four times the area for no change in result.
+// Bounds the lookup: anything beyond the largest catchment is fetched only to
+// be discarded. Scanning 30km examined four times the area for no change.
 const searchRadiusKm = 15
 
-// groupStreets assigns each buffered street segment to a settlement and merges
-// segments sharing a (country, name, locality) key into one record.
+// Assigns each buffered segment to a settlement, then merges segments sharing a
+// (country, name, locality) key.
 //
-// This step exists because OSM tags localities on addresses but not on roads:
-// of 241,815 named Czech street ways, four carry addr:city. Grouping on the tag
-// alone collapsed every "Nadrazni" in the country into a single result.
+// OSM tags localities on addresses but not roads — four of 241,815 named Czech
+// street ways carry addr:city — so grouping on the tag alone collapsed every
+// "Nadrazni" in the country into one result.
 func groupStreets(segs []streetSeg, places map[string]*model.Record, counts map[string]int) map[string]*streetAgg {
-	// Build a per-country grid of settlements. Sub-city divisions (quarter,
-	// neighbourhood) are indexed too but their small catchments mean they only
-	// win when a street is right on top of them.
+	// Sub-city divisions are indexed too, but their small catchments mean they
+	// only win when a street is right on top of them.
 	grids := map[string]*spatial.Grid{}
 	names := map[string][]*model.Record{}
 	for _, k := range sortedKeysRec(places) {
@@ -60,7 +57,6 @@ func groupStreets(segs []streetSeg, places map[string]*model.Record, counts map[
 
 	out := map[string]*streetAgg{}
 	var unassigned int
-	// One reusable buffer across millions of lookups.
 	var buf []spatial.Neighbour
 
 	for i := range segs {
@@ -113,8 +109,8 @@ func groupStreets(segs []streetSeg, places map[string]*model.Record, counts map[
 	return out
 }
 
-// rebuildTokens refreshes the search tokens after a locality has been attached,
-// since the record was tokenized before it had one.
+// Refreshes tokens after a locality is attached; the record was tokenized
+// before it had one.
 func rebuildTokens(r *model.Record) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -137,11 +133,9 @@ func rebuildTokens(r *model.Record) []string {
 	return out
 }
 
-// resolveOrphanAddresses attaches a locality to address points that carry
-// neither addr:city nor addr:place — 3.6% of Czechia, where a street name and a
-// house number are all that was mapped. Without this they render as a bare
-// "Prazska 248/39" with no way to tell which of the country's 300-odd Prazska
-// streets is meant, and they cannot be found by a query naming the town.
+// Attaches a locality to addresses carrying neither addr:city nor addr:place —
+// 3.6% of Czechia. Without it they render as a bare "Prazska 248/39", with no
+// way to tell which of 300-odd Prazska streets is meant.
 func resolveOrphanAddresses(orphans []streetSeg, places map[string]*model.Record, counts map[string]int) {
 	if len(orphans) == 0 {
 		return

@@ -1,15 +1,10 @@
 /**
  * Forward geocoding: text to ranked candidate points.
  *
- * The search runs over anchors (streets and places), not address points. There
- * are 677,786 anchors against 11.6M addresses — a 17x smaller index — because a
- * house number is not a searchable name, it is a lookup within a street. So the
- * pipeline is:
- *
- *   1. split the query into a house-number part and a name part
- *   2. match the name part against the anchor inverted index
- *   3. rank anchors
- *   4. if a house number was given, resolve it inside the best anchors' runs
+ * Searches anchors (streets and places), not addresses — 17x fewer documents,
+ * because a house number is a lookup within a street, not a searchable name.
+ * Split off the number, match the rest against the inverted index, rank, then
+ * resolve the number inside the winning anchor's address run.
  */
 import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
 import { type GeocodeResult, anchorResult, addressResult } from './result.js';
@@ -34,16 +29,11 @@ export interface ParsedQuery {
 }
 
 /**
- * Splits a house number off the query.
+ * Candidate readings of a query, best guess first; the caller takes the first
+ * that finds anything.
  *
- * Both countries write the number after the street ("Marszałkowska 12",
- * "Pražská 248/39"), so a trailing token that starts with a digit is treated as
- * one. A leading numeric token is *not*: "3 Maja" is a common Polish street
- * name (Third of May), and treating the 3 as a house number would break it.
- *
- * A query that is only a number has no name part to search, so the number is
- * kept as a name token instead — that way "Velká Úpa 299" still works when the
- * user types just the village.
+ * A trailing or medial digit-leading token is a house number. Never a leading
+ * one: "3 Maja" is a common Polish street name.
  */
 export function parseQuery(raw: string): ParsedQuery[] {
   const all = foldTokens(raw);
@@ -62,12 +52,8 @@ export function parseQuery(raw: string): ParsedQuery[] {
     return [{ nameTokens: head, houseNumber: last }, whole];
   }
 
-  // A medial number: "Via Roma 1 Torino", "Damrak 1 Amsterdam". Much of the
-  // region writes the number between street and city, so a trailing-only rule
-  // silently fails those queries entirely.
-  //
-  // Never the first token: "3 Maja" (Third of May) is a very common Polish
-  // street name, and "3 Maggio" and "17 Novembre" are the same idea elsewhere.
+  // Medial: "Via Roma 1 Torino". Much of the region writes the number between
+  // street and city, so a trailing-only rule fails those outright.
   for (let i = 1; i < all.length - 1; i++) {
     const tok = all[i]!;
     if (!/^\d/.test(tok)) continue;
@@ -88,18 +74,12 @@ export function parseQuery(raw: string): ParsedQuery[] {
 }
 
 /**
- * Smoothing floor on document frequency when weighting a term.
+ * Smoothing floor on document frequency.
  *
- * Plain IDF over 10.2M anchors spans log(1+10.2M/2)=15.4 for a term appearing
- * once to 6.4 for one appearing 16,000 times — a 2.4x swing that overwhelms a
- * 7x difference in importance. Typing "Warsz" surfaced a shop whose brand is
- * literally "Warsz" (one posting) above Warszawa (16,262), because the shop's
- * term was rarer and matched to its full length.
- *
- * Rarity stops being informative below a point: a term in fewer than a few
- * hundred of ten million anchors is simply rare, and how rare says nothing more
- * about what the user meant. Adding a floor to the denominator saturates the
- * curve there instead of letting it run away.
+ * Unfloored IDF swings 2.4x between a one-posting term and a 16,000-posting
+ * one, which swamps a 7x difference in importance: "Warsz" surfaced a shop
+ * branded "Warsz" above Warszawa. Below a few hundred postings, rarity says
+ * nothing more about intent, so the curve saturates there.
  */
 const DF_FLOOR = 500;
 
@@ -113,12 +93,8 @@ function postings(a: Artifact, termID: number): Uint32Array {
 }
 
 /**
- * Candidate anchors for the name tokens.
- *
- * Every token but the last must match a term exactly; the last is treated as a
- * prefix, which is what makes the endpoint usable for autocomplete. Scores
- * accumulate an IDF-ish weight so a rare token ("Świętokrzyska") counts for far
- * more than a common one ("Nowa").
+ * Candidate anchors for the name tokens. All tokens but the last match exactly;
+ * the last is a prefix, which is what makes autocomplete work.
  */
 function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): Map<number, number> {
   const scores = new Map<number, number>();
@@ -128,8 +104,7 @@ function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): M
   const complete = nameTokens.slice(0, -1);
   const last = nameTokens[nameTokens.length - 1]!;
 
-  // Exact terms first: they are the most selective, and the smallest posting
-  // list bounds the whole intersection.
+  // Exact terms first: the smallest posting list bounds the intersection.
   const lists: Uint32Array[] = [];
   const weights: number[] = [];
   for (const t of complete) {
@@ -140,19 +115,14 @@ function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): M
     weights.push(idf(nAnchors, p.length));
   }
 
-  // The final token as a prefix: union the posting lists of every term sharing
-  // it, weighted by that term's own selectivity.
+  // The final token as a prefix: union every term sharing it.
   const [lo, hi] = a.terms.prefixRange(last);
   if (lo >= hi) return scores;
 
-  // The rarity that matters for the final token is the rarity of the *prefix*
-  // the user typed, not of whichever expansion a given anchor happens to carry.
-  // Weighting per expansion made a one-posting term the most valuable thing in
-  // the index: typing "Warsz" put a shop branded "Warsz" above Warszawa,
-  // because that expansion had one posting against the city's 16,262 — even
-  // though the prefix as typed matches 16,300 anchors and discriminates no
-  // better than the city's own term does. Summing the range first costs only a
-  // walk over the offset array, which is already resident.
+  // What matters is the rarity of the *prefix the user typed*, not of whichever
+  // expansion an anchor happens to carry. Weighting per expansion made a
+  // one-posting term the most valuable thing in the index — "Warsz" put a shop
+  // branded "Warsz" above Warszawa. Summing the range is a walk over offsets.
   let prefixTotal = 0;
   for (let t = lo; t < hi; t++) prefixTotal += a.postOff[t + 1]! - a.postOff[t]!;
   const prefixIdf = idf(nAnchors, prefixTotal);
@@ -164,18 +134,12 @@ function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): M
     const p = postings(a, t);
 
     // Completeness: how much of the matched term the user actually typed.
+    // Prefix expansion is a fallback, not an equal-weight alternative, so it is
+    // discounted — squared, so a term twice as long keeps a quarter of its
+    // weight. Without it "Prahatice" outscored "Praha".
     //
-    // This is load-bearing, not a tweak. Prefix expansion is a fallback for
-    // autocomplete, not an equal-weight alternative to matching what was typed,
-    // so evidence is discounted by how much of the term is the user's own
-    // input. Squared, so a term twice as long as the query keeps a quarter of
-    // its weight. Without it "Prahatice" — a real OSM name variant — outscored
-    // "Praha" and Prachatice came back as the top hit for the capital.
-    //
-    // There is deliberately no separate exact-term bonus on top: completeness
-    // is already exactly 1 when the term equals the query, so a bonus would
-    // double-count it, and the extra factor is paid for by the *legitimate*
-    // prefix match. That is what put a shop branded "Warsz" above Warszawa.
+    // No separate exact-term bonus: completeness is already 1 when the term
+    // equals the query, and double-counting it penalised legitimate prefixes.
     const completeness = last.length / term.length;
     const w = prefixIdf * completeness * completeness;
 
@@ -229,17 +193,13 @@ export interface HouseNumberMatch {
 }
 
 /**
- * Finds a house number inside an anchor's address run.
+ * Finds a house number in an anchor's address run by binary search; the run is
+ * sorted by the number's leading integer.
  *
- * The run is sorted by the number's leading integer, so this is a binary search
- * rather than a scan of what can be thousands of addresses on one street. An
- * exact string match wins; failing that the numeric match is accepted, so
- * "Pražská 248" finds the address written "248/39" — Czech addresses carry two
- * numbers and users type either.
- *
- * The caller needs to know which kind of match it got. Typing the full Czech
- * "248/39" should surface the one street that actually has that composed
- * number, not the dozens that merely have a 248.
+ * An exact string match wins, but a numeric one is accepted: Czech addresses
+ * carry two numbers ("248/39") and users type either. The caller needs to know
+ * which it got — the exact match deserves to outrank the dozens that merely
+ * share a 248.
  */
 export function findHouseNumber(
   a: Artifact, anchorID: number, wanted: string,
@@ -271,11 +231,9 @@ export function findHouseNumber(
 }
 
 /**
- * An anchor's own name and locality, folded into tokens.
- *
- * Not stored in the artifact: only the few hundred candidates that survive
- * coarse ranking need it, so computing it lazily is cheaper than several MB of
- * index. Memoized because popular anchors recur across queries.
+ * An anchor's name and locality as tokens. Computed lazily and memoized: only
+ * the few hundred reranked candidates need it, so storing it would cost several
+ * MB of index for nothing.
  */
 interface AnchorTokens {
   /** The canonical name first, then each alternate name, each folded separately. */
@@ -307,23 +265,14 @@ function hits(tokens: string[], q: string, isLast: boolean): boolean {
 }
 
 /**
- * How well an anchor's own name and locality explain the query.
+ * How well an anchor's name and locality explain the query.
  *
- * An anchor is indexed on more than its name: a POI carries its street, city
- * and postcode as searchable tokens too. Scoring on name *length* alone
- * therefore credits matches that never touched the name — a railway station
- * named "Lednice" standing at Nádražní 1 scored full marks for the query
- * "Nadrazni" and, with a station's importance prior, outranked every actual
- * street of that name in the country.
- *
- * So two things are measured:
- *
- *   explained  — the share of query tokens found in the name (full credit) or
- *                the locality (partial). Adding a city to a query should help,
- *                not dilute, so locality counts; matching neither barely counts
- *                at all.
- *   nameUsed   — the share of the anchor's own name the query accounted for,
- *                which is what keeps "Prazska" from tying with "Nova Prazska".
+ * Anchors are indexed on more than their name — a POI carries its street and
+ * city too — so scoring on name *length* credits matches that never touched the
+ * name: a station called "Lednice" at Nádražní 1 once beat every street named
+ * Nádražní. Two quantities instead: how much of the query the name explains
+ * (locality at partial credit, so adding a city helps rather than dilutes), and
+ * how much of the name the query used.
  */
 function relevance(a: Artifact, id: number, queryTokens: string[]): number {
   const { names, locality } = anchorTokens(a, id);
@@ -375,16 +324,12 @@ function relevance(a: Artifact, id: number, queryTokens: string[]): number {
 }
 
 /**
- * How many candidates survive coarse scoring, per layer.
+ * How many candidates survive coarse scoring — per layer, not overall.
  *
- * Per layer, not overall, and that matters. The coarse pass can only rank on
- * the importance prior, which spans 1.0 for a street to 7.0 for an airport —
- * so a single overall cut deletes the lowest-prior layer wholesale whenever a
- * term has more high-prior postings than the budget. Measured: the term
- * "nadrazni" has 1,136 postings, 424 of them POIs, and the Nádražní in Brno
- * came 427th and was discarded on every query, proximity included, because 424
- * stations and museums outranked all 710 streets before anything looked at
- * whether the query matched a name.
+ * The coarse pass ranks only on the importance prior, which spans 1.0 for a
+ * street to 7.0 for an airport, so one overall cut deletes the lowest-prior
+ * layer wholesale. Measured: Nádražní/Brno came 427th of 1,136 postings behind
+ * 424 stations and museums, and was discarded on every query.
  */
 const RERANK_DEPTH_PER_LAYER = 200;
 
@@ -426,24 +371,18 @@ function search(
   const scored = candidates(a, parsed.nameTokens, RERANK_DEPTH_PER_LAYER * 3);
   if (scored.size === 0) return [];
 
-  // Stage 1: coarse ranking, to cut the candidate set down to something worth
-  // doing real work on. A query like "Prazska" matches hundreds of streets
-  // nationwide; scoring all of them precisely would be wasted effort.
-  //
-  // The importance prior has to be applied HERE, not only in the rerank. The
-  // term "praha" has 3,665 postings that all share one text weight — every
-  // street whose locality is Praha — so ranking on text alone leaves the top
-  // 400 an arbitrary slice of a 3,665-way tie, and Praha itself falls out of
-  // it. Multiplying by the prior first is one array read and costs nothing.
+  // Stage 1: coarse ranking, to cut the candidate set to something worth real
+  // work on. The prior must apply HERE, not only in the rerank: "praha" has
+  // 3,665 postings sharing one text weight, so ranking on text alone leaves an
+  // arbitrary slice of a 3,665-way tie — and Praha itself falls out of it.
   const byLayer: { id: number; text: number; score: number }[][] = [[], [], []];
   for (const [id, text] of scored) {
     const flags = a.anchorFlags[id]!;
     if (wantCountry !== undefined && a.anchorCountry[id] !== wantCountry) continue;
     let s = text * a.anchorScore[id]!;
-    // Proximity biases the coarse pass too, for the same reason the prior
-    // does: "nadrazni" names 651 Czech streets sharing one text weight and one
-    // prior, so without it the surviving slice of that tie is arbitrary and
-    // the one next to the query point may not be in it.
+    // Proximity biases the coarse pass for the same reason: 651 streets named
+    // "Nádražní" share one weight and one prior, so the surviving slice of that
+    // tie is otherwise arbitrary.
     if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
     (byLayer[layerOf(flags)] ?? byLayer[0]!).push({ id, text, score: s });
   }
@@ -468,17 +407,14 @@ function search(
       score *= 1.25;
     } else {
       // Everything else inherits the standing of the place it is in. Streets
-      // and POIs share one flat prior, so without this the hundreds of streets
-      // called "Unter den Linden" are indistinguishable and the winner is
-      // whichever the sort happened to leave on top — an Austrian hamlet, as it
-      // turned out, rather than Berlin. Damped hard: it breaks ties between
-      // equally good name matches, it does not override a better one.
+      // and POIs share one flat prior, so without this "Unter den Linden"
+      // resolved to an Austrian hamlet. Damped hard: it breaks ties between
+      // equally good matches, it does not override a better one.
       score *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
     }
 
-    // Resolve the house number now, not after truncating to `limit`: an anchor
-    // that actually has the requested number is far more relevant than one that
-    // merely shares a name, and it may sit well down the coarse ranking.
+    // Resolved before truncating to `limit`: an anchor that actually has the
+    // number may sit well down the coarse ranking.
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {
       const hit = findHouseNumber(a, id, parsed.houseNumber);
@@ -486,10 +422,8 @@ function search(
         score *= 0.4; // the street exists, the number does not
       } else {
         addrIdx = hit.index;
-        // An exact match on the written number is a much stronger signal than
-        // a numeric one. Czech addresses carry two numbers, so "248/39" matches
-        // dozens of streets numerically but usually only one exactly; the one
-        // the user actually described should come first.
+        // Exact beats numeric: "248/39" matches dozens of streets numerically
+        // but usually only one exactly.
         score *= hit.exact ? 18 : 6;
       }
     }
@@ -516,15 +450,11 @@ function search(
 const DUPLICATE_RADIUS_M = 600;
 
 /**
- * Collapses results that name the same real-world thing.
+ * Collapses results naming the same real place — Karlův most is mapped as an
+ * attraction several times along its length, a tram stop once per direction.
  *
- * One place is routinely several OSM features: Karlův most is mapped as an
- * attraction more than once along its length, and a tram stop is a node per
- * direction. Returning all of them spends the caller's result slots on one
- * answer. Build-time deduplication cannot fix this — the features are hundreds
- * of metres apart, and widening the merge radius that far would fold together
- * genuinely distinct shops of the same chain — so it is a presentation concern
- * and belongs here.
+ * Not fixable at build time: the features are hundreds of metres apart, and a
+ * merge radius that wide would fold together distinct branches of a chain.
  */
 function isDuplicateOf(accepted: GeocodeResult[], r: GeocodeResult): boolean {
   for (const prev of accepted) {

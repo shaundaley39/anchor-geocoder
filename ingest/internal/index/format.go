@@ -1,24 +1,15 @@
-// Package index defines the on-disk index artifact: the contract between the Go
-// build stage and the TypeScript server.
+// Package index defines the on-disk artifact: the contract between the Go build
+// and the TypeScript server.
 //
-// # Shape
+// A directory of flat little-endian arrays plus a JSON manifest, each file
+// mapping one-to-one onto a JavaScript typed array — so the server loads it
+// with a read and a view rather than parsing anything.
 //
-// The artifact is a directory of flat little-endian arrays plus a JSON
-// manifest. Each file maps one-to-one onto a JavaScript typed array, so the
-// server loads it with a read and a view — no parsing, no per-record objects,
-// and a boot cost that scales with disk speed rather than record count.
-//
-// # Why anchors
-//
-// Measured over the built corpus: 11,637,055 address points resolve to just
-// 430,551 distinct (street-or-place, locality) anchors. Text search therefore
-// runs over ~572k anchor documents rather than 12M address documents — a 21x
-// reduction — and a house number is resolved afterwards by binary search within
-// the matched anchor's contiguous run of addresses.
-//
-// That is also what keeps the artifact small. Storing a rendered display string
-// per address would cost ~370MB; dictionary-encoding the 156,578 distinct names
-// and 262,313 distinct house numbers costs 3.7MB.
+// Text search runs over anchors, not addresses: 11.6M address points resolve to
+// 430k distinct (street-or-place, locality) anchors, a 21x smaller index, and a
+// house number is a binary search within the matched anchor's run. That is also
+// what keeps the artifact small — a rendered display string per address would
+// cost ~370MB against 3.7MB for the dictionary.
 //
 // # Files
 //
@@ -47,8 +38,8 @@
 //	post.bin         uint32 anchor ids, ascending within each term
 package index
 
-// Version is bumped whenever the binary layout changes. The server refuses to
-// load an artifact it does not recognise rather than misreading it.
+// Bumped whenever the layout changes; the server refuses an artifact it does
+// not recognise rather than misreading it.
 const Version = 6
 
 // Layer codes, packed into the low nibble of anchor_flags.
@@ -58,9 +49,8 @@ const (
 	LayerPOI    uint8 = 2
 )
 
-// CoordScale is the fixed-point factor for latitude and longitude. 1e7 gives
-// ~1.1cm resolution and keeps coordinates in an int32 instead of a float64,
-// halving the largest arrays in the artifact.
+// Fixed-point factor for coordinates: ~1.1cm resolution, and an int32 rather
+// than a float64 halves the largest arrays.
 const CoordScale = 1e7
 
 // Manifest describes an artifact. It is written as manifest.json.
@@ -74,9 +64,9 @@ type Manifest struct {
 	NumTerms   int      `json:"num_terms"`
 	NumPOIs    int      `json:"num_pois"`
 	NumShapes  int      `json:"num_shapes"`
-	// KDNodeSize is written because the k-d traversal is implicit: the reader
-	// must partition the permutation exactly as the writer did, and a silent
-	// mismatch returns subtly wrong neighbours rather than an error.
+	// Written because the k-d traversal is implicit: the reader must partition
+	// exactly as the writer did, and a mismatch returns subtly wrong neighbours
+	// rather than an error.
 	KDNodeSize  int            `json:"kd_node_size"`
 	NumCells    int            `json:"num_cells"`
 	NumVertices int            `json:"num_vertices"`

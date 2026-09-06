@@ -2,9 +2,9 @@ package pbf
 
 // Point-of-interest selection.
 //
-// "Index everything with a name and a POI tag" produces 332,648 features for
-// Czechia alone, and the bulk of it is noise that would bury real results. The
-// measured top of that distribution (see cmd/poistat):
+// "Everything named with a POI tag" is 332,648 features for Czechia alone, and
+// the bulk is noise that would bury real results. The top of that distribution
+// (cmd/poistat):
 //
 //	public_transport=platform   59,545   one per bus-stop platform, all sharing
 //	                                     the stop's name
@@ -16,20 +16,18 @@ package pbf
 //	historic=wayside_shrine      2,307   plus 1,284 wayside_cross, roadside crosses
 //	amenity=atm                  1,791
 //
-// So selection is an allowlist of keys with a per-key exclusion of the values
-// that are furniture rather than destinations. The test of inclusion is whether
-// a person would plausibly type the name into a search box.
+// So: an allowlist of keys with per-key exclusion of the values that are
+// furniture rather than destinations. The test is whether a person would
+// plausibly type the name into a search box.
 
-// poiKeys are the tags that can make a named feature a POI. Order matters only
-// in that the first match becomes the reported category.
+// Tags that can make a named feature a POI; the first match is the category.
 var poiKeys = []string{
 	"amenity", "shop", "tourism", "leisure", "historic", "office",
 	"healthcare", "craft", "railway", "aeroway", "public_transport", "man_made",
 	"natural", "waterway", "mountain_pass",
 }
 
-// excluded lists, per key, the values that are map furniture rather than
-// destinations. A value absent from a key's set is included.
+// Per key, the values that are map furniture. Absent means included.
 var excluded = map[string]map[string]bool{
 	"amenity": {
 		"parcel_locker": true, "atm": true, "charging_station": true,
@@ -43,9 +41,9 @@ var excluded = map[string]map[string]bool{
 		"water_point": true, "fire_hydrant": true, "street_lamp": true,
 		"lounger": true, "photo_booth": true, "device_charging_station": true,
 	},
-	// Guideposts and notice boards, 56,930 of them in Czechia.
+	// Guideposts and notice boards: 56,930 in Czechia.
 	"tourism": {"information": true},
-	// Only the station itself; a platform is not a place you search for.
+	// The station, not its platforms.
 	"public_transport": {
 		"platform": true, "stop_position": true, "stop_area": true,
 		"stop_area_group": true,
@@ -84,11 +82,9 @@ var excluded = map[string]map[string]bool{
 		"windsock": true, "gate": true,
 	},
 	"shop": {"vacant": true, "no": true},
-	// Named natural features are destinations — the Matterhorn, the
-	// Schwarzwald, the Bodensee — and the region is alpine, so leaving them out
-	// meant "Matterhorn" resolved to a tram stop in the Netherlands. What is
-	// excluded is ground cover: an individual tree or a patch of scrub has a
-	// name only incidentally.
+	// Named natural features are destinations, and the region is alpine —
+	// leaving them out made "Matterhorn" a tram stop in the Netherlands. What
+	// is excluded is ground cover, which is named only incidentally.
 	"natural": {
 		"tree": true, "tree_row": true, "scrub": true, "grassland": true,
 		"heath": true, "wetland": true, "rock": true, "stone": true,
@@ -104,14 +100,13 @@ var excluded = map[string]map[string]bool{
 	},
 }
 
-// isPOI reports whether tags describe a searchable point of interest, and under
-// which category. A POI must be named: an unnamed shop is not something anyone
-// can look up by name, and OSM has millions of them.
+// Whether tags describe a searchable POI, and its category. It must be named:
+// OSM has millions of unnamed shops and nobody can look one up.
 func isPOI(t map[string]string) (category string, ok bool) {
 	if t["name"] == "" {
 		return "", false
 	}
-	// Features mapped as gone are not destinations.
+	// Mapped as gone.
 	if t["disused"] == "yes" || t["abandoned"] == "yes" ||
 		t["demolished"] == "yes" || t["was"] != "" {
 		return "", false

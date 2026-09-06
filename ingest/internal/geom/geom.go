@@ -1,31 +1,14 @@
-// Package geom holds the build-time geometry work: reducing an OSM way's
-// vertices to a shape small enough to store for every feature, and the bounding
-// box that indexes it.
-//
-// # Why geometry is kept at all
+// Package geom reduces an OSM way's vertices to a storable shape and its box.
 //
 // Reverse geocoding answers "what is here", and a click inside a park is inside
-// it however far the park's centroid happens to be. Ranking on distance to a
-// representative point cannot express that: the Englischer Garten is 3.7km
-// long, so a click at its north end sits ~2km from the stored centroid and
-// falls below every house in between.
+// it however far the centroid is — a 3.7km park puts its north end ~2km from
+// the stored point, below every house in between. A box alone will not do
+// either: a crescent fills a fraction of it. The box filters, the ring refines.
 //
-// A bounding box alone is not enough either — a diagonal or crescent-shaped
-// feature fills a fraction of its box, so "inside the box" is not "inside the
-// feature". The box is the *filter*; the simplified ring is the *refinement*.
-//
-// # Why this is affordable
-//
-// Only features with real extent need a ring. Measured over the fourteen
-// extracts:
-//
-//	address ways   32,430,081  building footprints — metres across, centroid is fine
-//	street ways     9,045,760  linear, described by sampled points not a ring
-//	POI ways          926,901  parks, lakes, campuses, forests — these need rings
-//	place ways          8,472  likewise
-//
-// So the ring budget covers ~935k features, not 42M, which is what makes real
-// geometry practical here.
+// Affordable because only features with real extent need a ring. Measured over
+// fourteen extracts: 32.4M building ways need none (metres across), 9.0M street
+// ways are linear and take sampled points, and ~935k POI and place ways get
+// rings. That budget is what makes real geometry practical.
 package geom
 
 import "math"
@@ -49,8 +32,7 @@ func Bounds(pts []Point) BBox {
 	return b
 }
 
-// DiagonalMetres is the corner-to-corner size of a box, used to decide whether
-// a feature is big enough for its shape to matter.
+// Corner-to-corner size, for deciding whether a shape matters.
 func (b BBox) DiagonalMetres() float64 {
 	if math.IsInf(b.MinLat, 1) {
 		return 0
@@ -61,20 +43,16 @@ func (b BBox) DiagonalMetres() float64 {
 	return math.Hypot(latM, lonM)
 }
 
-// Simplify reduces a ring or line with Douglas-Peucker, then hard-caps the
-// vertex count so no single feature can dominate the geometry blob.
-//
-// The tolerance is in metres. Ten metres is far below the accuracy at which
-// anyone clicks a map, and takes a typical OSM park outline from hundreds of
-// vertices to a few dozen.
+// Douglas-Peucker at a metre tolerance, then a hard cap so no single feature
+// dominates the blob. Ten metres is far below map-click accuracy and takes a
+// typical park from hundreds of vertices to a few dozen.
 func Simplify(pts []Point, toleranceM float64, maxPoints int) []Point {
 	if len(pts) <= 2 {
 		return pts
 	}
 	out := douglasPeucker(pts, toleranceM)
-	// Douglas-Peucker has no upper bound on output size; a coastline or a
-	// national forest can still come back with thousands of vertices. Drop
-	// evenly spaced points until it fits.
+	// Douglas-Peucker has no upper bound: a coastline can still return
+	// thousands. Drop evenly spaced points until it fits.
 	for len(out) > maxPoints {
 		stride := float64(len(out)) / float64(maxPoints)
 		thinned := make([]Point, 0, maxPoints)
@@ -90,8 +68,8 @@ func douglasPeucker(pts []Point, toleranceM float64) []Point {
 	if len(pts) < 3 {
 		return pts
 	}
-	// Work in a local metric frame so the perpendicular distance is in metres
-	// and does not skew with longitude convergence.
+	// Local metric frame, so distances are metres and do not skew with
+	// longitude convergence.
 	scale := math.Cos(pts[0].Lat * math.Pi / 180)
 	x := func(p Point) float64 { return p.Lon * scale * 111_320 }
 	y := func(p Point) float64 { return p.Lat * 111_320 }

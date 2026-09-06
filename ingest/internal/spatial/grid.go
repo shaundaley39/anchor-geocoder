@@ -1,16 +1,14 @@
-// Package spatial provides a uniform lat/lon grid index for nearest-neighbour
-// lookups during the build.
+// Package spatial is a uniform lat/lon grid for bounded-radius lookups during
+// the build.
 //
-// The build needs this to answer "which settlement is this street segment in?",
-// because OSM highway ways essentially never carry addr:city — of 241,815 named
-// Czech street ways, four do. Without a spatial answer every "Nadrazni" in the
-// country collapses into a single record.
+// It answers "which settlement is this street segment in?", because OSM
+// highways essentially never carry addr:city — four of 241,815 named Czech
+// street ways do. Without it every "Nadrazni" in the country collapses into one
+// record.
 //
-// A uniform grid rather than a k-d tree: the queries are all bounded-radius
-// against a small, static point set (~20k Czech settlements), where a grid's
-// expanding-ring scan beats a tree and is a fraction of the code. The server's
-// reverse-geocoding path has different constraints — millions of points, k
-// nearest in true distance order — and uses a k-d tree instead.
+// A grid rather than a k-d tree: bounded-radius queries against a small static
+// point set, where a ring scan wins and is a fraction of the code. The server's
+// reverse path has different constraints and uses a tree.
 package spatial
 
 import "math"
@@ -27,8 +25,7 @@ type Grid struct {
 	lons    []float64
 }
 
-// NewGrid returns a grid with the given cell size in degrees of latitude.
-// 0.05 deg is ~5.5km, a good match for settlement spacing in Central Europe.
+// Cell size in degrees of latitude; 0.05 (~5.5km) matches settlement spacing.
 func NewGrid(cellDeg float64) *Grid {
 	return &Grid{cellDeg: cellDeg, buckets: map[cell][]int32{}}
 }
@@ -40,7 +37,7 @@ func (g *Grid) cellOf(lat, lon float64) cell {
 	}
 }
 
-// Add inserts a point and returns its index, which Nearest reports back.
+// Inserts a point and returns its index.
 func (g *Grid) Add(lat, lon float64) int32 {
 	id := int32(len(g.lats))
 	g.lats = append(g.lats, lat)
@@ -52,7 +49,7 @@ func (g *Grid) Add(lat, lon float64) int32 {
 
 func (g *Grid) Len() int { return len(g.lats) }
 
-// DistanceKm is the great-circle distance via the haversine formula.
+// Great-circle distance.
 func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 	const rad = math.Pi / 180
 	dLat := (lat2 - lat1) * rad
@@ -62,7 +59,7 @@ func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 	return 2 * earthRadiusKm * math.Asin(math.Sqrt(a))
 }
 
-// ring returns the cells whose Chebyshev distance from c is exactly r.
+// Cells whose Chebyshev distance from c is exactly r.
 func ring(c cell, r int32) []cell {
 	if r == 0 {
 		return []cell{c}
@@ -92,26 +89,21 @@ func max32(a, b int32) int32 {
 	return b
 }
 
-// Neighbour is a point found by Within, with its distance already computed.
+// A point found by Within, with its distance.
 type Neighbour struct {
 	ID     int32
 	DistKm float64
 }
 
-// Within appends the points within maxKm of the query to buf, in no particular
-// order, and returns the extended slice.
+// Appends points within maxKm to buf, in no particular order.
 //
-// Street-to-settlement assignment needs this rather than Nearest: picking the
-// literally closest settlement puts streets on the edge of Prague into whatever
-// village happens to sit just outside. The caller instead weighs every
-// candidate in range against the settlement's size.
+// Not "nearest": picking the literally closest settlement puts streets on the
+// edge of Prague into whatever village sits just outside, so the caller weighs
+// every candidate against the settlement's size.
 //
-// The distance comes back with the id because the caller needs it too, and this
-// is the hot loop of the whole build: one call per street segment and per
-// locality-less address, several million of them, against a grid holding every
-// settlement in fourteen countries. Recomputing the haversine caller-side
-// doubled the cost of the slowest phase, and passing buf in lets the caller
-// reuse one allocation across all of those calls.
+// This is the hot loop of the build — millions of calls — so the distance comes
+// back with the id (recomputing it caller-side doubled the slowest phase) and
+// buf is passed in to reuse one allocation.
 func (g *Grid) Within(lat, lon, maxKm float64, buf []Neighbour) []Neighbour {
 	if len(g.lats) == 0 {
 		return buf
@@ -133,5 +125,5 @@ func (g *Grid) Within(lat, lon, maxKm float64, buf []Neighbour) []Neighbour {
 	return buf
 }
 
-// At returns the coordinates of an indexed point.
+// Coordinates of an indexed point.
 func (g *Grid) At(id int32) (lat, lon float64) { return g.lats[id], g.lons[id] }

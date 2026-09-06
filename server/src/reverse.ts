@@ -1,36 +1,16 @@
 /**
- * Reverse geocoding: a click on the map to the places at and around it.
+ * Reverse geocoding: a click to the places at and around it.
  *
- * # The model
+ * Two tiers. Features whose outline *contains* the click come first, smallest
+ * area first — if you are inside something that is where you are, and the
+ * smaller of two nested regions is the more specific answer. Everything else
+ * follows by distance. A restaurant 25m away is somewhere the user is not.
  *
- * A click asks "what is here", and the honest answer is a short ranked list
- * rather than a single feature: the building the user meant may not be mapped,
- * or may be the second-nearest thing. So results come back in two tiers.
- *
- *   1. Features whose outline *contains* the click, smallest area first.
- *      If you are standing inside something, that is where you are; and of two
- *      nested regions the smaller is the more specific answer — an open-air
- *      theatre in the corner of a park before the park itself.
- *   2. Everything else, by distance.
- *
- * Containment beats proximity outright. A restaurant 25m away is somewhere the
- * user is *not*, so it ranks below the park they are standing in — but directly
- * below it, ahead of anything further away.
- *
- * # Filter and refine
- *
- * Two indexes, because the two tiers ask different questions.
- *
- * A k-d tree over every point — 61M addresses plus 10.2M anchors — answers
- * "what is near". It cannot answer "what am I inside": the Englischer Garten is
- * 3.7km long, so a click at its north end sits ~2km from the stored centroid
- * and no proximity search with a sane radius would ever reach it.
- *
- * So containment gets its own index: a uniform grid over anchor bounding boxes,
- * where a feature is registered in every cell its box overlaps. A click looks
- * up one cell to get its candidates — the filter — and each candidate is then
- * tested against its actual simplified outline — the refine. The box alone
- * would not do: a diagonal or crescent-shaped feature fills a fraction of it.
+ * Two indexes, because the tiers ask different questions. A k-d tree over every
+ * point answers "what is near" but cannot answer "what am I inside": a large
+ * park's centroid can be kilometres from where you clicked. So containment gets
+ * a grid over bounding boxes — one cell lookup filters, the simplified outline
+ * refines. The box alone will not do; a crescent fills a fraction of it.
  */
 import { PointIndex } from './pointindex.js';
 import { type Artifact, toDeg, anchorOfAddress } from './artifact.js';
@@ -46,10 +26,10 @@ export interface BBox {
 }
 
 /**
- * Containment grid geometry. These mirror `ingest/internal/index/kdtree.go` and
- * are part of the artifact format: the build lists a feature in every cell its
- * bounding box touches, and a lookup here has to compute the same key. Changing
- * either constant requires a format version bump.
+ * Containment grid geometry, mirroring `ingest/internal/index/kdtree.go`. Part
+ * of the format: the build lists a feature in every cell its box touches and a
+ * lookup recomputes the key, so a change needs a version bump.
+ * `test/format.contract.test.ts` asserts these against the Go values.
  */
 const EXTENT_CELL_DEG = 0.05;   // ~5.5km
 const CELL_ORIGIN = 4096;
@@ -88,24 +68,17 @@ function findCell(a: Artifact, key: number): number {
 }
 
 /**
- * Assembles the reverse index from the artifact.
- *
- * Both spatial structures are precomputed by the build, so this is a scan for
- * the coverage box and nothing else. It used to partition 15.9M points into a
- * k-d tree (~3.0s) and construct the containment grid (~2.4s) — startup work
- * that every replica repeated on every deploy and rollback, to recompute a pure
- * function of data already in the file.
+ * Assembles the reverse index. Both spatial structures come precomputed, so
+ * this is a scan for the coverage box and nothing else — building them here
+ * cost ~5.4s of startup that every replica repeated on every deploy.
  */
 export function buildReverseIndex(a: Artifact): ReverseIndex {
   const nAddr = a.manifest.num_addresses;
 
-  // One tree over addresses and anchors alike. Anchors have to be in it or a
-  // click can never return a park, a station or a street — only the nearest
-  // doorway, which is what the first version of this did.
-  //
-  // Point ids below nAddr index the address arrays; at or above it, the anchor
-  // arrays. The tree reads coordinates through these accessors rather than
-  // copying them, which on the four-country build saved 128MB of duplicate.
+  // Addresses and anchors in one tree: without the anchors a click can only
+  // ever return the nearest doorway, never a park or a station. Ids below nAddr
+  // index the address arrays, at or above them the anchors. Coordinates are
+  // read through these accessors rather than copied — 128MB saved.
   const getY = (id: number) => (id < nAddr ? a.addrLat[id]! : a.anchorLat[id - nAddr]!);
   const getX = (id: number) => (id < nAddr ? a.addrLon[id]! : a.anchorLon[id - nAddr]!);
   const tree = PointIndex.fromPermutation(
@@ -137,13 +110,11 @@ export function inBBox(b: BBox, lat: number, lon: number): boolean {
 }
 
 /**
- * Detects the classic lat/lon transposition.
- *
- * The forward response returns `center` in GeoJSON order, [lon, lat], while the
- * reverse parameters are named lat and lon. Reading one straight into the other
- * transposes them, and for this region the result is off Somalia. Reported only
- * when the given point is outside coverage AND the swapped one is inside it, so
- * a genuine query from elsewhere is never second-guessed.
+ * Detects the classic lat/lon transposition: GeoJSON `center` is [lon, lat]
+ * while the parameters are named lat and lon, so feeding one into the other
+ * lands this region off Somalia. Only reported when the given point is outside
+ * coverage and the swapped one is inside, so genuine queries are not
+ * second-guessed.
  */
 export function looksTransposed(b: BBox, lat: number, lon: number): boolean {
   return !inBBox(b, lat, lon) && inBBox(b, lon, lat);
@@ -172,9 +143,7 @@ interface Candidate {
   containing: boolean;
 }
 
-/**
- * Returns the places at and around a point, containing regions first.
- */
+/** Places at and around a point, containing regions first. */
 export function reverse(
   a: Artifact, idx: ReverseIndex, lat: number, lon: number, opts: ReverseOptions = {},
 ): GeocodeResult[] {
@@ -211,9 +180,8 @@ export function reverse(
   const head = containing.slice(0, MAX_CONTAINING);
 
   // ---- tier 2: everything else, by distance -------------------------------
-  // Containing regions past the cap are not discarded — they join the
-  // proximity tier at distance zero, so they sit at its head rather than
-  // disappearing from the results altogether.
+  // Regions past the cap join the proximity tier at distance zero rather than
+  // disappearing.
   const near: Candidate[] = containing.slice(MAX_CONTAINING)
     .map((c) => ({ ...c, containing: false }));
   const scale = Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
@@ -239,8 +207,8 @@ export function reverse(
       }
       const id = i - idx.addressCount;
       if (seenAnchor.has(id) || !okCountry(id)) return;
-      // Where a shape exists, measure to it rather than to the representative
-      // point: a click at one end of a 2km street is not 1km from the street.
+      // Measure to the shape: a click at one end of a 2km street is not 1km
+      // from the street.
       const d = hasShape(a, id)
         ? distanceToShape(a, id, lat, lon)
         : haversineMetres(lat, lon, toDeg(a.anchorLat[id]!), toDeg(a.anchorLon[id]!));
@@ -264,8 +232,8 @@ export function reverse(
 }
 
 function toResult(a: Artifact, c: Candidate): GeocodeResult {
-  // Containing regions are ordered by area, everything else by distance, so the
-  // two tiers need different scores; both are monotonically decreasing.
+  // The tiers order by different things, so they score differently; both are
+  // monotonically decreasing.
   const score = c.containing ? 1000 / (1 + c.area / 1e4) : 1 / (1 + c.distance);
   const extra: Partial<GeocodeResult> = {
     score,

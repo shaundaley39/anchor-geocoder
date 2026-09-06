@@ -1,8 +1,6 @@
 /**
- * GeoJSON rendering.
- *
- * The response is a FeatureCollection shaped after the conventional geocoding
- * API, so the endpoint is a drop-in for anything already speaking that dialect.
+ * GeoJSON rendering, shaped after the conventional geocoding API so the endpoint
+ * is a drop-in for anything already speaking that dialect.
  */
 import type { GeocodeResult } from './forward.js';
 
@@ -20,12 +18,12 @@ export interface Feature {
   relevance: number;
 }
 
-/** Renders the one-line human-facing form, skipping absent components. */
+/** One-line human-facing form, skipping absent components. */
 export function placeName(r: GeocodeResult): string {
   const head = r.houseNumber ? `${r.name} ${r.houseNumber}` : r.name;
   const parts = [head];
-  // Suppress a locality identical to the name, so a village address anchored on
-  // its own name does not render "Velká Úpa 42, Velká Úpa".
+  // Suppressed when identical to the name, or a village address renders as
+  // "Velká Úpa 42, Velká Úpa".
   if (r.locality && r.locality.toLowerCase() !== r.name.toLowerCase()) {
     parts.push(r.locality);
   }
@@ -55,9 +53,8 @@ export function toFeature(r: GeocodeResult): Feature {
   return {
     type: 'Feature',
     id: r.id,
-    // A UI zooming to a result needs its extent, not just a point: fitting the
-    // map to a point for a city-sized answer is wrong. Matches the conventional
-    // response, which carries center and bbox alongside a Point geometry.
+    // A UI needs the extent to zoom to, not just a point. The conventional
+    // response carries center and bbox alongside a Point geometry.
     ...(r.bbox ? { bbox: r.bbox } : {}),
     place_type: [r.layer],
     text: r.houseNumber ? `${r.name} ${r.houseNumber}` : r.name,

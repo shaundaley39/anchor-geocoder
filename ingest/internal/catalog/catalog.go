@@ -1,11 +1,8 @@
 // Package catalog reads the country and group definitions.
 //
-// These live in config/*.tsv rather than in Go source because the Makefile
-// needs them too — to know what to download — and duplicating the list in two
-// places is how a country ends up fetchable but not ingestable. Adding a
-// country is one line in one file.
-//
-// TSV rather than JSON so that awk in a Makefile can read it as easily as Go.
+// They live in config/*.tsv, not Go source, because the Makefile needs them too
+// — duplicating the list is how a country ends up fetchable but not ingestable.
+// TSV so awk reads it as easily as Go. Adding a country is one line.
 package catalog
 
 import (
@@ -18,7 +15,7 @@ import (
 	"strings"
 )
 
-// Country is one ingestable extract.
+// One ingestable extract.
 type Country struct {
 	Code string // ISO 3166-1 alpha-2 where one exists
 	Path string // Geofabrik path, relative to the download root
@@ -26,23 +23,23 @@ type Country struct {
 	Size int64 // indicative bytes, from the daily rebuild
 }
 
-// Filename is the local name of the extract, the last path component.
+// Local filename: the last path component.
 func (c Country) Filename() string {
 	return filepath.Base(c.Path) + "-latest.osm.pbf"
 }
 
-// URL is where the extract is fetched from.
+// Where the extract is fetched from.
 func (c Country) URL() string {
 	return "https://download.geofabrik.de/" + c.Path + "-latest.osm.pbf"
 }
 
-// Catalog is the parsed configuration.
+// The parsed configuration.
 type Catalog struct {
 	Countries map[string]Country
 	Groups    map[string][]string
 }
 
-// Load reads config/countries.tsv and config/groups.tsv from dir.
+// Reads countries.tsv and groups.tsv from dir.
 func Load(dir string) (*Catalog, error) {
 	c := &Catalog{Countries: map[string]Country{}, Groups: map[string][]string{}}
 
@@ -89,12 +86,9 @@ func eachRow(path string, want int, fn func([]string) error) error {
 	return sc.Err()
 }
 
-// Resolve expands a comma-separated selection into country codes, in the order
-// given and with duplicates removed.
-//
-// An entry prefixed with @ names a group, so "@nordics,pl" and
-// "se,no,fi,dk,is,pl" mean the same thing. Groups may not nest; one level keeps
-// the file readable and the error messages obvious.
+// Expands a selection into country codes, in order, deduplicated. An entry
+// prefixed with @ names a group; groups do not nest, which keeps the file
+// readable and the errors obvious.
 func (c *Catalog) Resolve(selection string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}

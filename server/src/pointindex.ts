@@ -1,32 +1,15 @@
 /**
  * A static k-d tree that does not own its coordinates.
  *
- * # Why not kdbush
+ * `kdbush` copies every coordinate into arrays of its own, duplicating what the
+ * artifact already holds — 128MB on the four-country build, ~490MB at fourteen.
+ * This keeps only the permutation and reads coordinates through an accessor.
  *
- * `kdbush` copies every coordinate into its own arrays, and those coordinates
- * are already in the artifact. Measured on the four-country build: the tree cost
- * 209MB, of which 128MB was a verbatim second copy of `addr_lat`/`addr_lon` and
- * `anchor_lat`/`anchor_lon`. At the fourteen-country scale that duplicate is
- * ~490MB — more than the entire render-only half of the artifact.
- *
- * So this keeps only the permutation: a `Uint32Array` of point ids in k-d order.
- * Coordinates are read back through an accessor, which for us means indexing
- * the artifact arrays that were going to be resident anyway.
- *
- * # Why the indirection is affordable
- *
- * Build and query have opposite access patterns. Building touches every point
- * ~log n times — hundreds of millions of reads — and doing that indirectly into
- * a 56MB array is cache-hostile. Querying touches only the handful of nodes on
- * the path to a small box.
- *
- * So the build materialises a temporary contiguous copy, partitions against it
- * at full speed, and drops it. Peak memory during boot is unchanged; steady
- * state loses the duplicate. Queries pay one indirect read per node visited,
- * which is a rounding error against a 15 microsecond reverse lookup.
- *
- * Coordinates are the artifact's raw fixed-point integers throughout — no
- * conversion during build, and exact comparisons.
+ * Affordable because build and query have opposite access patterns: a range
+ * query touches only the nodes on its path, so indirection costs nothing, while
+ * building touches every point ~log n times and is cache-hostile indirectly.
+ * Coordinates stay raw fixed-point integers throughout, so comparisons are
+ * exact and no conversion happens during the build.
  */
 
 /** Reads the fixed-point coordinate of a point id. */
@@ -40,14 +23,10 @@ export class PointIndex {
   private readonly getY!: CoordFn;
 
   /**
-   * Adopts a permutation computed at build time.
-   *
-   * This is the path the server takes. Partitioning 15.9M points cost ~3.0s of
-   * startup and scales to roughly 46s at planet size — expensive work in the
-   * serving process, paid again by every replica on every deploy and rollback,
-   * to recompute something that is a pure function of data the artifact already
-   * holds. `nodeSize` must match what produced the permutation, which is why
-   * the artifact records it.
+   * Adopts a permutation computed at build time — the path the server takes.
+   * Partitioning in-process cost ~3.0s of startup, repeated by every replica on
+   * every deploy. `nodeSize` must match what produced the permutation, which is
+   * why the artifact records it.
    */
   static fromPermutation(
     ids: Uint32Array, getX: CoordFn, getY: CoordFn, nodeSize: number,
@@ -63,15 +42,11 @@ export class PointIndex {
   }
 
   /**
-   * Builds the permutation in-process. Retained for tests and for reading an
-   * artifact that predates the precomputed one.
+   * Builds the permutation in-process; used by tests.
    *
-   * @param scratch  Build against temporary contiguous coordinate arrays.
-   *
-   * Faster — the partitioning reads sequentially instead of chasing ids through
-   * the artifact — but it costs 8 bytes per point while it runs, which lands on
-   * peak RSS. Peak is what a container limit and an OOM killer watch, so the
-   * default builds indirectly and trades boot time for headroom.
+   * @param scratch  Partition against temporary contiguous arrays. Faster, but
+   * costs 8 bytes per point on peak RSS, which is what an OOM killer watches —
+   * so the default trades boot time for headroom.
    */
   constructor(count: number, getX: CoordFn, getY: CoordFn, nodeSize = 64, scratch = false) {
     this.getX = getX;
@@ -105,9 +80,8 @@ export class PointIndex {
   get length(): number { return this.ids.length; }
 
   /**
-   * Recursively partitions the id array about its median on alternating axes,
-   * stopping at leaves of `nodeSize`. This is the standard implicit-k-d-tree
-   * layout: after it runs, the tree structure is entirely encoded by position.
+   * Partitions about the median on alternating axes, stopping at leaves of
+   * `nodeSize`. The tree structure ends up encoded entirely by position.
    */
   private sortKD(xs: Int32Array | null, ys: Int32Array | null, left: number, right: number, axis: number): void {
     if (right - left <= this.nodeSize) return;
@@ -118,9 +92,8 @@ export class PointIndex {
   }
 
   /**
-   * Floyd–Rivest quickselect: places the k-th element of [left, right] at k with
-   * everything smaller before it, in expected linear time. Sorting outright
-   * would be O(n log n) per level; only the median position matters.
+   * Floyd–Rivest quickselect: places the k-th element at k in expected linear
+   * time. Only the median position matters, so sorting would be wasteful.
    */
   private select(
     xs: Int32Array | null, ys: Int32Array | null,
@@ -130,7 +103,7 @@ export class PointIndex {
 
     while (right > left) {
       if (right - left > 600) {
-        // Recurse on a sample to pick tight bounds, as in the original.
+        // Recurse on a sample to pick tight bounds.
         const n = right - left + 1;
         const m = k - left + 1;
         const z = Math.log(n);
@@ -175,17 +148,13 @@ export class PointIndex {
     const ti = this.ids[i]!; this.ids[i] = this.ids[j]!; this.ids[j] = ti;
   }
 
-  /**
-   * Calls `visit` with the id of every point inside the box, in no particular
-   * order. Coordinates are read through the accessors, so only the nodes
-   * actually on the search path are touched.
-   */
+  /** Visits every point inside the box, in no particular order. */
   range(
     minX: number, minY: number, maxX: number, maxY: number, visit: (id: number) => void,
   ): void {
     if (this.ids.length === 0) return;
-    // Explicit stack of [left, right, axis] triples; recursion depth on 61M
-    // points is fine, but an explicit stack keeps the hot loop allocation-free.
+    // Explicit stack of [left, right, axis] triples, to keep the hot loop
+    // allocation-free.
     const stack: number[] = [0, this.ids.length - 1, 0];
 
     while (stack.length > 0) {

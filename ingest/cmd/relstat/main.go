@@ -1,16 +1,10 @@
 // Command relstat measures what is lost by skipping OSM relations.
 //
-// Extraction reads nodes and ways only, because resolving multipolygon geometry
-// needs member ways and then their nodes — two more passes and a large jump in
-// complexity. That is a defensible trade, but only if the size of the gap is
-// known rather than assumed. Measured on the 2026-08-31 extracts:
-//
-//	Czechia  252,959 relations, 71,880 named, 12,563 named and POI-tagged
-//	Poland   278,966 relations, 112,620 named, 24,140 named and POI-tagged
-//
-// 36,703 POI relations against 663,724 indexed POIs is 5.2% by count, but they
-// skew large: Prague's Letiste Vaclava Havla is a multipolygon and is missing,
-// while Warsaw Chopin and Krakow-Balice, mapped as ways, are present.
+// Extraction reads nodes and ways only; resolving multipolygon geometry needs
+// two more passes. A defensible trade, but only if the gap is measured. On
+// Czechia and Poland: 36,703 named POI relations against 663,724 indexed POIs,
+// 5.2% by count — but they skew large. Prague's airport is a multipolygon and
+// missing; Warsaw Chopin, mapped as a way, is present.
 package main
 
 import (

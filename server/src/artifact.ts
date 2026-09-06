@@ -1,11 +1,9 @@
 /**
  * Loads the binary index artifact produced by `ingest/cmd/geoindex`.
  *
- * Every file maps onto exactly one typed array, so loading is a read plus a
- * view — no parsing, no per-record objects. That is the whole reason the
- * artifact is shaped this way: 11.6M addresses as JavaScript objects would cost
- * several GB and minutes of startup, whereas the same data as struct-of-arrays
- * is ~254MB of buffers that the OS page cache can hand over directly.
+ * Every file maps onto one typed array, so loading is a read plus a view — no
+ * parsing, no per-record objects. The same data as JavaScript objects would
+ * cost several GB and minutes of startup.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -42,9 +40,9 @@ export interface Manifest {
 }
 
 /**
- * A string table: one concatenated UTF-8 blob plus an offset array. Strings are
- * decoded lazily on access, because a request touches a handful of them and
- * decoding all 416,885 up front would undo the point of the layout.
+ * One concatenated UTF-8 blob plus an offset array. Decoded lazily: a request
+ * touches a handful of strings, and decoding all of them up front would undo
+ * the point of the layout.
  */
 export class StringTable {
   private readonly decoder = new TextDecoder('utf-8');
@@ -71,11 +69,9 @@ export class StringTable {
   }
 
   /**
-   * Returns the id range [lo, hi) of terms sharing `prefix`.
-   *
-   * Terms are stored sorted, so a prefix match is two binary searches rather
-   * than a scan of 127,039 terms. This is what makes autocomplete on the final
-   * query token cheap.
+   * The id range [lo, hi) of terms sharing `prefix`. Terms are sorted, so this
+   * is a binary search rather than a scan — which is what makes autocomplete on
+   * the final token cheap.
    */
   prefixRange(prefix: string): [number, number] {
     const lo = this.lowerBound(prefix);
@@ -120,11 +116,9 @@ export interface Artifact {
   anchorLon: Int32Array;
   anchorFlags: Uint8Array;
   /**
-   * Country id per anchor, indexing `countryByID`.
-   *
-   * Its own array rather than the high nibble of `anchorFlags`: four bits caps
-   * at sixteen countries and the index already covers fourteen, so the next
-   * additions would have silently wrapped into the layer bits.
+   * Country id per anchor. Its own array rather than a nibble of `anchorFlags`:
+   * four bits caps at sixteen, and the next additions would have wrapped
+   * silently into the layer bits.
    */
   anchorCountry: Uint8Array;
   anchorScore: Float32Array;
@@ -133,30 +127,25 @@ export interface Artifact {
   /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
   anchorAlt: Uint32Array;
 
-  /**
-   * Bounding box per anchor, degenerate to the representative point when the
-   * feature has no extent. Every anchor has one, so the reverse path can put
-   * them all in a single index.
-   */
+  /** Bounding box per anchor, degenerate to its point when there is no extent. */
   anchorMinLat: Int32Array;
   anchorMinLon: Int32Array;
   anchorMaxLat: Int32Array;
   anchorMaxLon: Int32Array;
 
   /**
-   * Simplified outlines: `geom` holds fixed-point lat/lon pairs for every
-   * shape concatenated, `geomOff` slices it per anchor (vertex indices, not
-   * bytes), `geomClosed` marks a ring that can contain a point as against a
-   * street's sampled points, which can only be measured to.
+   * Simplified outlines. `geomOff` slices `geom` per anchor by *vertex* index;
+   * `geomClosed` marks a ring, which can contain a point, from a street's
+   * sampled points, which can only be measured to.
    */
   geom: Int32Array;
   geomOff: Uint32Array;
   geomClosed: Uint8Array;
 
   /**
-   * Spatial structures precomputed by the build, so boot is a read rather than
-   * a rebuild. `kdPerm` is point ids in k-d tree order; the cell arrays are the
-   * containment grid as sorted keys with a CSR of anchor ids.
+   * Precomputed by the build, so boot is a read rather than a rebuild. `kdPerm`
+   * is point ids in k-d order; the cell arrays are the containment grid as
+   * sorted keys with a CSR of anchor ids.
    */
   kdPerm: Uint32Array;
   cellKey: Int32Array;
@@ -176,16 +165,13 @@ export interface Artifact {
   countryByID: string[];
 
   /**
-   * Importance of each locality, indexed by its name's string id.
+   * Importance of each locality, by its name's string id, so an anchor can
+   * inherit the standing of the place it is in. Without it the hundreds of
+   * streets sharing a name are indistinguishable and "Unter den Linden 1"
+   * resolves to an Austrian hamlet.
    *
-   * Street and POI anchors all carry the same flat prior, so among the hundreds
-   * of streets sharing a name there is nothing to rank on and the winner is
-   * arbitrary: "Unter den Linden 1" resolved to a hamlet in Austria rather than
-   * Berlin. This gives every anchor the standing of the place it is in.
-   *
-   * Derived at boot rather than stored: it is a projection of the place layer
-   * already in the artifact, costs one pass over the anchors, and keeping it
-   * out of the format means the ranking can be retuned without a rebuild.
+   * Derived at boot: a projection of the place layer, one pass, and keeping it
+   * out of the format means ranking can be retuned without a rebuild.
    */
   localityScore: Float32Array;
 }
@@ -306,18 +292,14 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   return artifact;
 }
 
-/** Separator joining an anchor's alternate names inside one interned string. */
+/** Joins an anchor's alternate names inside one interned string. */
 export const ALT_SEP = '\x1f';
 
 export const layerOf = (flags: number): number => flags & 0x0f;
 
 /**
- * The anchor owning address `i`.
- *
- * Addresses are stored grouped by anchor, so this is a binary search over
- * `anchorAddrStart` for the last anchor whose run begins at or before `i` —
- * ~23 comparisons. Storing it explicitly would cost 4 bytes per address, which
- * is 244MB across the indexed region, to save that.
+ * The anchor owning address `i`, by binary search over `anchorAddrStart`.
+ * Storing it would cost 4 bytes per address — 244MB — to save ~23 comparisons.
  */
 export function anchorOfAddress(a: Artifact, i: number): number {
   let lo = 0;

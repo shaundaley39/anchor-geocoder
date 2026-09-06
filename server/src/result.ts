@@ -1,12 +1,9 @@
 /**
- * Turning an index row into an API result.
+ * Turning an index row into an API result, shared by forward and reverse.
  *
- * Forward and reverse both do this, and they used to do it separately: three
- * near-identical builders, each mapping the layer code to a name, deciding
- * whether a category applies, and assembling a bounding box. The copies had
- * already drifted — one of them tested `layerOf(flags) === 2` against a literal
- * rather than the constant, which is exactly the line that breaks silently if
- * the layer codes ever move.
+ * They used to do it separately, and the copies had drifted: one tested
+ * `layerOf(flags) === 2` against a literal rather than the constant — the line
+ * that breaks silently if layer codes move.
  */
 import {
   type Artifact, layerOf, toDeg, LAYER_STREET, LAYER_PLACE, LAYER_POI,
@@ -47,11 +44,9 @@ export function layerName(code: number): Exclude<Layer, 'address'> {
 }
 
 /**
- * The anchor's extent as a GeoJSON bbox, or undefined when it has none.
- *
- * Degenerate boxes — every anchor without a shape stores its own point twice —
- * are suppressed: a zero-area bbox tells a UI nothing and would make it zoom to
- * a pinpoint.
+ * The anchor's extent as a GeoJSON bbox. Degenerate boxes are suppressed: an
+ * anchor without a shape stores its own point twice, and a zero-area bbox would
+ * make a UI zoom to a pinpoint.
  */
 export function anchorBBox(
   a: Artifact, id: number,
@@ -65,11 +60,8 @@ export function anchorBBox(
 }
 
 /**
- * Fields every result carries, whether it names an anchor or an address.
- *
- * `withExtent` is false for address points: they have no extent of their own,
- * and the anchor's box describes the whole street, which is not what the caller
- * asked about.
+ * Fields every result carries. `withExtent` is false for address points: the
+ * anchor's box describes the whole street, not the address.
  */
 function common(a: Artifact, anchorID: number, withExtent: boolean) {
   const bbox = withExtent ? anchorBBox(a, anchorID) : undefined;

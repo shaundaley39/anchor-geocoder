@@ -1,16 +1,10 @@
-// Command formatconsts emits the constants that both halves of the system must
-// agree on, for the TypeScript side to assert against.
+// Command formatconsts emits the constants both halves must agree on, for the
+// TypeScript side to assert against.
 //
-// The artifact format is the contract between a Go writer and a TypeScript
-// reader, and six values are currently hand-mirrored across that boundary: the
-// format version, the coordinate scale, three layer codes, the alternate-name
-// separator, and the containment grid's geometry. Every one of them fails
-// silently if it drifts — wrong results, not an error. A reader with the wrong
-// cell stride simply finds nothing; one with the wrong layer codes labels every
-// result incorrectly.
-//
-// This is the same trick the fold vectors use for the normalizer: make the
-// contract executable rather than hoping a comment is enough.
+// Six values are hand-mirrored across the boundary, and every one fails
+// silently on drift: a reader with the wrong cell stride finds nothing, one
+// with the wrong layer codes mislabels everything. Same trick as the fold
+// vectors — make the contract executable.
 package main
 
 import (

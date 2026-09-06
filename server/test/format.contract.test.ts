@@ -1,16 +1,9 @@
 /**
- * Cross-language contract for the artifact format.
- *
  * The artifact is written by Go and read by TypeScript, and a handful of values
- * must agree exactly for that to work: the format version, the coordinate
- * scale, the layer codes, the alternate-name separator, and the containment
- * grid's geometry. Every one of them fails *silently* when it drifts — a reader
- * with the wrong cell stride finds nothing, one with the wrong layer codes
- * labels every result wrongly, and neither raises an error.
+ * must agree exactly. Each fails *silently* on drift: the wrong cell stride
+ * finds nothing, the wrong layer codes mislabel everything.
  *
- * Go emits its own values (`make format-constants`), and these assert the
- * TypeScript side matches. Same idea as the fold vectors: make the contract
- * executable rather than trusting a comment.
+ * Go emits its values (`make format-constants`); these assert the match.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -45,10 +38,8 @@ describe('artifact format constants match the Go writer', () => {
   });
 
   /**
-   * The build lists a feature in every cell its bounding box touches, and a
-   * lookup recomputes the key. A mismatch here returns no containing regions at
-   * all, which reads as "this point is not inside anything" — a plausible
-   * answer, and therefore the worst kind of wrong.
+   * A mismatch returns no containing regions at all, which reads as "this point
+   * is not inside anything" — plausible, and therefore the worst kind of wrong.
    */
   it('agrees on the containment grid geometry', () => {
     expect(CELL_CONSTANTS.deg).toBe(go['cellDeg']);
@@ -57,8 +48,7 @@ describe('artifact format constants match the Go writer', () => {
   });
 
   it('covers every constant Go publishes', () => {
-    // A new shared constant should fail here until it is asserted above, rather
-    // than silently going unchecked.
+    // A new shared constant fails here until it is asserted above.
     expect(Object.keys(go).sort()).toEqual([
       'altSep', 'cellDeg', 'cellOrigin', 'cellStride', 'coordScale',
       'kdNodeSize', 'layerPOI', 'layerPlace', 'layerStreet', 'version',

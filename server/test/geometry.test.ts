@@ -1,10 +1,6 @@
 /**
- * Unit tests for the refine half of the reverse query.
- *
- * These build a synthetic artifact holding only the geometry arrays, so the
- * containment and distance maths can be checked against shapes with known
- * answers — a square, an L, a line — rather than against whatever OSM happens
- * to contain.
+ * The refine half of the reverse query, against synthetic shapes with known
+ * answers — a square, an L, a line — rather than whatever OSM happens to hold.
  */
 import { describe, it, expect } from 'vitest';
 import type { Artifact } from '../src/artifact.js';
@@ -59,9 +55,8 @@ describe('containsPoint', () => {
   });
 
   /**
-   * The case a bounding box cannot express: an L-shaped feature fills only part
-   * of its box, so the notch must read as outside even though the box contains
-   * it. This is the whole reason the refine step exists.
+   * What a bounding box cannot express: the notch of an L must read as outside
+   * even though the box contains it. The whole reason refine exists.
    */
   it('rejects the notch of an L-shaped ring that its bbox would accept', () => {
     const L: [number, number][] = [
@@ -92,20 +87,14 @@ describe('distanceToShape', () => {
   });
 
   /**
-   * An open shape is measured to its nearest *vertex*, not along segments
-   * between consecutive vertices.
+   * Open shapes measure to the nearest vertex, not along segments between them.
+   * A street's points are way midpoints in extract order — a sample, not a
+   * traversal — so joining them draws segments the road does not follow, which
+   * under-reported 26.6% of streets by up to 300m.
    *
-   * A street's stored points are the midpoints of the OSM ways composing it, in
-   * whatever order those ways appeared — a sample of the street, not a
-   * traversal. Joining them draws segments the road does not follow: on the
-   * built index, treating them as a polyline changed the answer for 26.6% of
-   * streets and under-reported distance by up to 300m, so streets appeared
-   * nearer than they were and outranked things that genuinely were nearer.
-   *
-   * The price is visible here: with only two samples 2km apart, a query at the
-   * midpoint reports ~1km rather than 111m. On real data streets carry up to 16
-   * samples, so the error is bounded by roughly half the sample spacing — tens
-   * of metres — and it always over-estimates, which is the safe direction.
+   * The price is visible here: two samples 2km apart report ~1km at the
+   * midpoint. Real streets carry up to 16, so the error is half the spacing and
+   * always over-estimates, which is the safe direction.
    */
   it('measures an open shape to its nearest vertex, not along phantom segments', () => {
     const line: [number, number][] = [[50, 14], [50, 14.028]];
@@ -117,7 +106,7 @@ describe('distanceToShape', () => {
   });
 
   it('measures a closed ring along its edges, where they are real', () => {
-    // A ring is a genuine traversal, so a point beside an edge is edge-distance
+    // A ring is a real traversal, so a point beside an edge is edge-distance
     // away even when far from every vertex.
     const a = fake([{ pts: SQUARE, closed: true }]);
     expect(distanceToShape(a, 0, 49.999, 14.005)).toBeLessThan(125);

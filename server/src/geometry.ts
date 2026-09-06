@@ -1,13 +1,10 @@
 /**
- * Query-time geometry: containment and distance against the simplified shapes
- * stored in the artifact.
+ * The refine half of a filter-and-refine spatial query: containment and
+ * distance against the simplified shapes in the artifact.
  *
- * This is the refine half of a filter-and-refine spatial query. The bounding
- * box index narrows a click to a handful of candidates cheaply; these functions
- * then decide, exactly, whether the click is inside a feature and how far it is
- * from one it is outside. A box alone cannot do that — a diagonal or
- * crescent-shaped feature occupies a fraction of its box, so "inside the box"
- * is emphatically not "inside the park".
+ * The bounding box narrows a click to a few candidates; these decide exactly.
+ * A box alone cannot — a crescent occupies a fraction of its box, so "inside
+ * the box" is not "inside the park".
  */
 import { type Artifact, toDeg } from './artifact.js';
 
@@ -29,15 +26,10 @@ export function isClosed(a: Artifact, id: number): boolean {
 }
 
 /**
- * Point-in-polygon by ray casting (crossing number).
- *
- * Works on the raw fixed-point integers: the test is a sequence of comparisons
- * and one cross-product per edge, all of which are sign-preserving under a
- * uniform scale, so converting to degrees first would cost precision and time
- * for nothing.
- *
- * Longitude convergence does not matter either — shrinking every x coordinate
- * by the same factor cannot move a point across an edge.
+ * Point-in-polygon by ray casting, on the raw fixed-point integers: every
+ * comparison and cross-product is sign-preserving under a uniform scale, so
+ * converting to degrees would cost precision for nothing. Longitude convergence
+ * cannot move a point across an edge either.
  */
 export function containsPoint(a: Artifact, id: number, lat: number, lon: number): boolean {
   if (!isClosed(a, id)) return false;
@@ -64,7 +56,7 @@ export function containsPoint(a: Artifact, id: number, lat: number, lon: number)
   return inside;
 }
 
-/** Squared distance in metres from a point to a segment, in a local planar frame. */
+/** Squared distance from a point to a segment, in a local planar frame. */
 function segDistSq(
   py: number, px: number,
   ay: number, ax: number, by: number, bx: number,
@@ -82,25 +74,15 @@ function segDistSq(
 /**
  * Distance in metres from a click to an anchor's outline.
  *
- * A ring is measured to its boundary, edge by edge. An open shape is measured
- * to its nearest *vertex*, not along segments between consecutive vertices —
- * and that distinction is load-bearing.
+ * A ring is measured edge by edge. An open shape is measured to its nearest
+ * *vertex*, and that distinction is load-bearing: a street's stored points are
+ * way midpoints in extract order — a sample, not a traversal — so joining them
+ * draws segments the road does not follow. Measuring along those changed the
+ * answer for 26.6% of streets and under-reported by up to 300m.
  *
- * A street's stored points are the midpoints of the OSM ways making it up, in
- * the order those ways happened to appear in the extract. They are a sample of
- * the street, not a traversal of it. Joining consecutive samples draws segments
- * the road does not follow, and measuring to those cuts corners: on the built
- * index that changed the answer for 26.6% of streets and under-reported by up
- * to 300m, making streets look nearer than they are and outrank things that
- * genuinely were.
- *
- * Measuring to vertices is honest about what the data is. The error is bounded
- * by roughly half the spacing between samples, which for a street held to 16
- * samples is tens of metres — well inside the accuracy of a map click, and
- * always an over-estimate rather than an under-estimate.
- *
- * Everything is computed in a local planar frame centred on the query, accurate
- * to well under a metre at these scales and cheaper than a haversine per edge.
+ * Vertex distance errs by about half the sample spacing, and over-estimates,
+ * which is the safe direction. Computed in a local planar frame, accurate to
+ * well under a metre here and cheaper than a haversine per edge.
  */
 export function distanceToShape(
   a: Artifact, id: number, lat: number, lon: number,
@@ -148,12 +130,9 @@ export function distanceToShape(
 }
 
 /**
- * Area of an anchor's ring in square metres, via the shoelace formula.
- *
- * Used to order the regions a click falls inside, smallest first: standing in
- * an open-air theatre in the corner of a park, the theatre is the better answer
- * and the park the broader context. Computed on demand and memoized rather than
- * stored — only the handful of regions containing a given click ever need it.
+ * Ring area in m², by the shoelace formula. Orders the regions a click falls
+ * inside, smallest first — the theatre in the corner of the park before the
+ * park. Computed on demand: only the few containing regions need it.
  */
 const areaCache = new Map<number, number>();
 

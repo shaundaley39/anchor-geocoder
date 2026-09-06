@@ -10,8 +10,8 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
 )
 
-// Tag frequencies measured over the full 2026-08-31 extracts, which is what the
-// rules below are derived from (see cmd/tagstat):
+// Tag frequencies measured over the full extracts (cmd/tagstat), which is what
+// the rules below derive from:
 //
 //	                        Czechia   Poland
 //	  addr:housenumber       100.0%   100.0%
@@ -20,43 +20,36 @@ import (
 //	  addr:city               24.8%    64.5%
 //	  addr:conscriptionnumber 85.0%     0.3%
 //
-// Czechia leans on addr:place, Poland on addr:city, and neither guarantees a
+// Czechia leans on addr:place, Poland on addr:city, neither guarantees a
 // street. Hence the polymorphic anchor.
 
-// placeRank scores settlement classes when no population is tagged. A city
-// outranks a hamlet of the same name, which is what a user almost always means.
+// Settlement classes, for when no population is tagged.
 var placeRank = map[string]float64{
 	"city": 1.0, "borough": 0.85, "town": 0.7, "suburb": 0.6,
 	"quarter": 0.5, "village": 0.45, "neighbourhood": 0.35,
 	"hamlet": 0.25, "isolated_dwelling": 0.1, "municipality": 0.7,
 }
 
-// aliasTags are the non-language tags that carry an alternate name. Measured
-// over the Czech extract (cmd/namestat): official_name 21,764, alt_name 8,880,
-// short_name 4,311, old_name 2,907, loc_name 974.
+// Non-language tags carrying an alternate name. Measured over the Czech extract
+// (cmd/namestat): official_name 21,764, alt_name 8,880, short_name 4,311.
 var aliasTags = []string{
 	"alt_name", "short_name", "official_name", "old_name",
 	"loc_name", "int_name", "nat_name", "reg_name", "nickname",
 }
 
-// poiAliasTags apply only to points of interest. "Zabka", "Biedronka" and
-// "Ceska posta" are what people type; the feature's own name is often the
-// branch. 85,128 Czech features carry an operator and 29,537 a brand — but on a
-// school the operator is the municipality, which is noise, so these are not
-// applied to other layers.
+// POIs only: "Zabka" and "Ceska posta" are what people type. On a school the
+// operator is the municipality, which is noise.
 var poiAliasTags = []string{"brand", "operator"}
 
-// collectAltNames gathers every alternate name from a feature's tags.
-//
-// All name:<lang> variants are taken rather than a fixed language list: the
-// Czech extract alone carries de, cs, en, ru, pl, be, hu, sk, uk, fr, ja, nl,
-// it and zh, and picking a subset means silently failing queries in the rest.
+// Every alternate name from a feature's tags. All name:<lang> variants rather
+// than a fixed list — the Czech extract alone carries fourteen languages, and
+// picking a subset silently fails queries in the rest.
 func collectAltNames(t map[string]string, isPOI bool) []string {
 	seen := map[string]bool{t["name"]: true}
 	var out []string
 
 	add := func(v string) {
-		// A handful of values are semicolon-delimited lists (1,206 in Czechia).
+		// Some values are semicolon-delimited lists (1,206 in Czechia).
 		for _, part := range strings.Split(v, ";") {
 			part = strings.TrimSpace(part)
 			if part == "" || seen[part] {
@@ -71,7 +64,7 @@ func collectAltNames(t map[string]string, isPOI bool) []string {
 		if v == "" || !strings.HasPrefix(k, "name:") {
 			continue
 		}
-		// name:<lang>, not name:left / name:prefix / name:etymology:wikidata.
+		// name:<lang>, not name:left or name:etymology:wikidata.
 		lang := strings.TrimPrefix(k, "name:")
 		if lang == "" || len(lang) > 3 || strings.Contains(lang, ":") {
 			continue
@@ -94,15 +87,11 @@ func collectAltNames(t map[string]string, isPOI bool) []string {
 	return out
 }
 
-// FromTags converts an extracted OSM feature into the records it should
-// produce.
+// The records an extracted feature should produce.
 //
-// Usually one, but a named POI that also carries a house number yields two:
-// the POI itself and the address point underneath it. 10.5% of named Czech POIs
-// are tagged this way, and collapsing them into one record would mean either
-// losing "Restaurace U Fleku" from search or losing "Kremencova 11" from the
-// address layer — and with it from reverse geocoding, which only searches
-// addresses.
+// Usually one, but a named POI carrying a house number yields two — 10.5% of
+// named Czech POIs. Collapsing them would lose either the POI from search or
+// the address from the address layer, and so from reverse geocoding.
 func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 	lat, lon float64, country string, ring []geom.Point) []*Record {
 
@@ -162,10 +151,8 @@ func FromTags(osmType byte, osmID int64, category string, t map[string]string,
 	return append(out, r)
 }
 
-// buildPOI fills in a point of interest. Address components are retained when
-// present so the result renders "Restaurace U Fleku, Kremencova 11, Praha"
-// rather than a bare name, and so the address tokens are searchable alongside
-// it.
+// Address components are retained so the result renders "Restaurace U Fleku,
+// Kremencova 11, Praha" and the address tokens stay searchable.
 func buildPOI(r *Record, t map[string]string, category string) {
 	r.Layer = LayerPOI
 	r.Name = t["name"]
@@ -198,14 +185,12 @@ func hasAddress(t map[string]string) bool {
 func buildAddress(r *Record, t map[string]string) {
 	r.Layer = LayerAddress
 	r.Conscription = t["addr:conscriptionnumber"]
-	// In Czech OSM tagging addr:streetnumber carries the cislo orientacni, the
-	// number sequential along the street, not a second house number.
+	// In Czech tagging this is the cislo orientacni, sequential along the
+	// street, not a second house number.
 	r.Orientation = t["addr:streetnumber"]
 
-	// addr:housenumber is present on 100% of addressed features in both
-	// countries and already holds the composed "248/39" or "ev.38" form, so it
-	// is preferred; composition is only a fallback for the rare feature that
-	// carries the parts but not the whole.
+	// Present on 100% of addressed features and already composed, so preferred;
+	// composition is only for the rare feature carrying parts but not the whole.
 	r.HouseNumber = t["addr:housenumber"]
 	if r.HouseNumber == "" {
 		r.HouseNumber = ComposeCzechNumber(r.Conscription, r.Orientation,
@@ -217,8 +202,7 @@ func buildAddress(r *Record, t map[string]string) {
 	r.City = t["addr:city"]
 	r.Postcode = t["addr:postcode"]
 	if r.City == "" {
-		// Czechia tags the settlement as addr:place four times as often as
-		// addr:city, so fall back rather than emit a city-less address.
+		// Czechia tags addr:place four times as often as addr:city.
 		r.City = t["addr:place"]
 	}
 	if s := t["addr:suburb"]; s != "" && r.Place == "" {
@@ -265,11 +249,9 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// searchTokens builds the indexed token list. Every component a user might
-// plausibly type is folded in, deduplicated, because a query mixes them freely:
-// "Pražská 248 Poděbrady" spans street, number and city.
-// SearchTokens is exported so the build can re-tokenize a record after
-// enriching it with a spatially derived locality.
+// The indexed token list. Every component a user might type, deduplicated: a
+// query mixes them freely — "Pražská 248 Poděbrady" spans three.
+// Exported so the build can re-tokenize after attaching a derived locality.
 func SearchTokens(r *Record) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -291,9 +273,7 @@ func SearchTokens(r *Record) []string {
 	}
 	if r.Layer == LayerAddress || r.Layer == LayerPOI {
 		add(r.HouseNumber)
-		// Czech addresses are written "248/39" but spoken and typed either way,
-		// so both numbers are indexed separately in addition to the composed
-		// form the fold above already split on the slash.
+		// Written "248/39" but typed either way, so both are indexed.
 		add(r.Conscription)
 		add(r.Orientation)
 		add(r.Postcode)

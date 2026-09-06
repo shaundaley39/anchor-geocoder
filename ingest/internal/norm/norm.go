@@ -1,14 +1,11 @@
-// Package norm folds place and street names into the token form actually
-// indexed by the geocoder.
+// Package norm folds names into the token form the geocoder indexes.
 //
-// This is the single largest quality lever in the pipeline. The three target
-// countries between them use Czech hacky and carky, Polish ogonki plus the
-// stroked l, Bosnian-Croatian-Serbian carons, and Serbian Cyrillic. A user
-// typing "Lodz", "Plzen" or "Banja Luka" on a plain keyboard must reach
-// "Lodz", "Plzen" and "Banja Luka"/"Bawa Nyka" alike.
+// The largest quality lever in the pipeline. The region uses Czech hacky and
+// carky, Polish ogonki and the stroked l, BCS carons, and Serbian Cyrillic; a
+// user typing "Lodz" or "Banja Luka" on a plain keyboard must reach all of it.
 //
-// Folding happens identically at index time and at query time; that symmetry is
-// the whole contract. Anything applied here must be applied to the query too.
+// Index-time and query-time folding must stay identical — that symmetry is the
+// whole contract, and the TypeScript port is held to it by a fixture test.
 package norm
 
 import (
@@ -20,10 +17,9 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// singletons maps characters that Unicode NFKD does NOT decompose into a base
-// letter plus a combining mark. Stroked and ligatured letters have their own
-// codepoints, so diacritic stripping alone leaves them untouched: "Lodz" would
-// otherwise fold to "lodz" with the stroked l intact and never match a typed l.
+// Characters NFKD does not decompose. Stroked and ligatured letters have their
+// own codepoints, so stripping diacritics leaves them untouched and "Lodz"
+// would never match a typed l.
 var singletons = map[rune]string{
 	'ł': "l", 'Ł': "l", // Polish  — very high frequency
 	'đ': "d", 'Đ': "d", // BCS
@@ -36,10 +32,8 @@ var singletons = map[rune]string{
 	'ı': "i", 'İ': "i",
 }
 
-// cyrillic maps Serbian Cyrillic to its Latin equivalent. The Serbian script
-// pair is a clean bijection apart from three digraphs, which is why this is a
-// lookup table and not a statistical transliterator. Bosnia carries ~52k
-// name:sr values, so this earns its place even though Bosnia ships last.
+// Serbian Cyrillic to Latin: a bijection apart from three digraphs, which is
+// why a table suffices. Bosnia carries ~52k name:sr values.
 var cyrillic = map[rune]string{
 	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'ђ': "dj", 'е': "e",
 	'ж': "z", 'з': "z", 'и': "i", 'ј': "j", 'к': "k", 'л': "l", 'љ': "lj",
@@ -48,9 +42,8 @@ var cyrillic = map[rune]string{
 	'џ': "dz", 'ш': "s",
 }
 
-// abbrev expands the street-type abbreviations that appear in OSM name tags and
-// in user queries. Expansion runs before stopword removal so that "ul.",
-// "ulica" and an omitted prefix all converge on the same token list.
+// Street-type abbreviations, expanded before stopword removal so "ul.",
+// "ulica" and an omitted prefix converge.
 var abbrev = map[string]string{
 	// Czech
 	"nam": "namesti", "nám": "namesti", "namesti": "namesti",
@@ -67,11 +60,9 @@ var abbrev = map[string]string{
 	"st": "street", "str": "street", "rd": "road", "ave": "avenue",
 }
 
-// generic holds street-type words dropped from the token list. They carry
-// almost no discriminating power — Poland has thousands of "ulica X" — and
-// dropping them on both sides makes the prefix "ul. Marsz" behave like
-// "Marsz". Removal is skipped if it would empty the token list, which protects
-// the handful of features actually named just "Plac" or "Rynek".
+// Street-type words dropped from the token list: they discriminate nothing, and
+// dropping them on both sides makes "ul. Marsz" behave like "Marsz". Skipped
+// when it would empty the list, protecting features named just "Rynek".
 var generic = map[string]bool{
 	"ulice": true, "ulica": true, "street": true, "road": true, "avenue": true,
 	"namesti": true, "plac": true, "aleja": true, "trida": true,
@@ -84,9 +75,8 @@ var stripMarks = transform.Chain(
 	norm.NFC,
 )
 
-// Fold reduces a string to lowercase ASCII-ish letters and digits, separated by
-// single spaces. It is the canonical form used for both index terms and query
-// terms.
+// Fold reduces a string to lowercase ASCII-ish letters and digits, space
+// separated: the canonical form for index and query terms alike.
 func Fold(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -158,6 +148,5 @@ func Tokens(s string) []string {
 	return kept
 }
 
-// QueryTokens folds a user query. It is deliberately the same code path as
-// Tokens; the two must not drift.
+// Deliberately the same code path as Tokens; the two must not drift.
 func QueryTokens(q string) []string { return Tokens(q) }

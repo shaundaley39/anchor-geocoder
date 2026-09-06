@@ -1,11 +1,7 @@
 // Command namestat measures how alternate names are tagged, to decide which
-// tags the index must carry.
-//
-// A place routinely has several names people actually type: an exonym
-// (Prague/Praha, Danzig/Gdansk), a colloquial short form, a former name, or a
-// formal official name nobody uses. OSM spreads these across name:<lang>,
-// alt_name, short_name, official_name, old_name and friends, and several of
-// them are semicolon-delimited lists.
+// tags the index must carry. A place has several names people type — exonyms,
+// short forms, former names — spread across name:<lang>, alt_name, short_name,
+// official_name and friends, several of them semicolon-delimited.
 package main
 
 import (

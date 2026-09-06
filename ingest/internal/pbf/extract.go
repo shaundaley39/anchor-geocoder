@@ -1,33 +1,19 @@
-// Package pbf extracts geocodable features from an OpenStreetMap .osm.pbf
-// extract.
+// Package pbf extracts geocodable features from an OpenStreetMap .osm.pbf.
 //
-// # Why three passes
+// Three passes, because a pbf is ordered nodes-then-ways and way members are
+// bare node ids, so geometry needs locations already streamed past. That is not
+// a corner case: 5.37M of Poland's 8.58M addressed features are on building
+// ways, so a node-only ingest drops 63% of the country. Holding every node
+// location is not an option either — hundreds of millions per extract.
 //
-// A pbf file is ordered nodes, then ways, then relations, and way members are
-// bare node ID references. Resolving way geometry therefore needs node
-// locations that were already streamed past by the time the way is seen. This
-// matters a great deal here: 5.37M of Poland's 8.58M addressed features are
-// tagged on building *ways*, not nodes, so an ingest that only reads nodes
-// silently drops 63% of Polish addresses.
+//	pass 1  ways   — select features, record the node ids they need
+//	pass 2  nodes  — emit address/place nodes; retain only the wanted locations
+//	pass 3  ways   — resolve geometry, emit
 //
-// Holding every node location is not an option — a Poland extract has a few
-// hundred million nodes, and a map keyed by int64 OSM IDs would run to tens of
-// gigabytes. Instead:
-//
-//	pass 1  ways      — decide which ways we want, record the node IDs they need
-//	pass 2  nodes     — emit address/place nodes; retain only the wanted locations
-//	pass 3  ways      — resolve geometry, emit
-//
-// Pass 1 and 3 skip node decoding and pass 2 skips way decoding, so each pass
-// only pays to inflate the blobs it actually cares about.
-//
-// # The node-set optimisation
-//
-// Buildings need every vertex to compute a centroid, but a street only needs a
-// single representative point. Collecting all nodes of every named highway
-// would dominate the retained set (Poland has 7.6M highway ways, many of them
-// long). So for highways we record only the middle vertex, which is guaranteed
-// to lie on the road — unlike a centroid, which can fall off a curved one.
+// Each pass skips decoding the object types it does not need. Buildings need
+// every vertex for a centroid, but a street needs one point, so highways retain
+// only their middle vertex — which lies on the road, unlike a centroid, which
+// can fall off a curved one.
 package pbf
 
 import (
@@ -43,23 +29,18 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 )
 
-// coord is a packed node location. Fixed-point at 1e7 keeps the retained set to
-// 8 bytes per node instead of 16 for two float64s; 1e-7 degrees is ~1.1cm.
+// Packed node location: 8 bytes rather than 16, at ~1.1cm resolution.
 type coord struct{ lat, lon int32 }
 
 func packLat(v float64) int32   { return int32(math.Round(v * 1e7)) }
 func unpackLat(v int32) float64 { return float64(v) / 1e7 }
 
-// A way selected in pass 1 is remembered as a single packed int64: its OSM id
-// shifted left one bit, with the low bit set when the way needs all of its
-// vertices (a centroid) rather than a single midpoint.
+// A selected way is one packed int64: its OSM id shifted left a bit, low bit
+// set when it needs all its vertices rather than a midpoint.
 //
-// It is deliberately not a struct holding the way's tags. Pass 3 re-reads the
-// same way from the pbf, so keeping a map[string]string per selected way from
-// pass 1 to pass 3 buys nothing and costs everything: tens of millions of Go
-// maps at several hundred bytes each dominated the build's peak memory.
-// Recomputing the tag map in pass 3 is the same total work, since the tags have
-// to be materialised there anyway.
+// Deliberately not a struct holding the way's tags. Pass 3 re-reads the same
+// way, so retaining a map per selected way costs tens of millions of Go maps —
+// it dominated peak memory — to save work that has to happen there anyway.
 func packWay(id int64, needsAllVertices bool) int64 {
 	if needsAllVertices {
 		return id<<1 | 1
@@ -67,9 +48,9 @@ func packWay(id int64, needsAllVertices bool) int64 {
 	return id << 1
 }
 
-// findWay reports whether a way was selected, and whether it needs all of its
-// vertices. `wanted` must be sorted; pbf files emit ways in ascending id order,
-// so pass 1 produces it sorted already.
+// Reports whether a way was selected and whether it needs all its vertices.
+// `wanted` must be sorted; pbf emits ways in ascending id order, so it already
+// is.
 func findWay(wanted []int64, id int64) (needsAllVertices, ok bool) {
 	lo, hi := 0, len(wanted)
 	for lo < hi {
@@ -98,22 +79,18 @@ type Extractor struct {
 	Progress func(string)
 }
 
-// RawFeature is the pre-normalization output of extraction: OSM tags plus a
-// resolved point. Turning this into a model.Record is the normalizer's job.
+// Pre-normalization output: OSM tags plus a resolved point.
 type RawFeature struct {
 	OSMType byte // 'n' node, 'w' way, 'r' relation
 	OSMID   int64
 	Tags    map[string]string
 	Lat     float64
 	Lon     float64
-	// Category is non-empty when the feature qualifies as a point of interest;
-	// see poi.go. Computed during extraction so the converter does not repeat
-	// the classification.
+	// Non-empty when the feature is a POI (see poi.go), computed here so the
+	// converter need not repeat the classification.
 	Category string
-	// Ring is the simplified outline, present only for area features big
-	// enough for their shape to matter. Nil for nodes, for buildings, and for
-	// anything under the size threshold, where the representative point is
-	// already within clicking tolerance.
+	// Simplified outline, only for area features big enough for their shape to
+	// matter. Nil for nodes, buildings, and anything under the size threshold.
 	Ring []geom.Point
 }
 
@@ -123,9 +100,8 @@ func (e *Extractor) log(format string, args ...any) {
 	}
 }
 
-// isAddressed reports whether tags describe an address point. Czech addresses
-// frequently carry a conscription or provisional number with no plain
-// addr:housenumber, so all three are accepted.
+// Czech addresses often carry a conscription or provisional number with no
+// plain addr:housenumber, so all three count.
 func isAddressed(t map[string]string) bool {
 	if t["addr:housenumber"] != "" || t["addr:conscriptionnumber"] != "" ||
 		t["addr:provisionalnumber"] != "" {
@@ -134,9 +110,8 @@ func isAddressed(t map[string]string) bool {
 	return false
 }
 
-// isNamedStreet reports whether tags describe a routable, named way we want as
-// a street record. Non-routable and service-level ways are excluded: they add
-// noise ("Parking Aisle") without adding places people search for.
+// Routable named ways only: service-level ones add noise ("Parking Aisle")
+// without adding places anyone searches for.
 var streetTypes = map[string]bool{
 	"motorway": true, "trunk": true, "primary": true, "secondary": true,
 	"tertiary": true, "unclassified": true, "residential": true,
@@ -147,7 +122,7 @@ func isNamedStreet(t map[string]string) bool {
 	return t["name"] != "" && streetTypes[t["highway"]]
 }
 
-// placeTypes are the settlement classes worth indexing as standalone results.
+// Settlement classes worth indexing as standalone results.
 var placeTypes = map[string]bool{
 	"city": true, "town": true, "village": true, "hamlet": true,
 	"suburb": true, "quarter": true, "neighbourhood": true,
@@ -199,7 +174,7 @@ func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
-// Stats counts what extraction saw, for the build manifest and the README.
+// What extraction saw, for the build manifest.
 type Stats struct {
 	NodesScanned   int64
 	WaysScanned    int64
@@ -226,9 +201,8 @@ func dedupeSorted(a []int64) []int64 {
 	return out
 }
 
-// search is a tight binary search over the sorted node-ID set. Pass 2 calls it
-// once per node in the extract — hundreds of millions of times — so it avoids
-// sort.Search's closure-call overhead.
+// Binary search over the sorted node-id set. Pass 2 calls it once per node —
+// hundreds of millions of times — so it avoids sort.Search's closure overhead.
 func search(a []int64, v int64) int {
 	lo, hi := 0, len(a)
 	for lo < hi {

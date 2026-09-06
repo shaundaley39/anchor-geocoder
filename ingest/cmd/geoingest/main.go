@@ -1,11 +1,9 @@
-// Command geoingest builds the geocoder's index artifact from OpenStreetMap
-// country extracts.
+// Command geoingest extracts OSM country files into the normalized record
+// stream.
 //
-// It is the offline half of the system. Everything expensive — pbf decoding,
-// geometry resolution, text folding, street grouping, deduplication — happens
-// here, once, and the result is an immutable artifact the TypeScript server
-// loads at boot and never mutates. The artifact format is the contract between
-// the two halves; this stage could be rewritten in Java or Rust without the
+// The offline half: pbf decoding, geometry resolution, text folding, street
+// grouping and deduplication all happen here, once. The artifact format is the
+// contract, so this stage could be rewritten in another language without the
 // server noticing.
 package main
 
@@ -30,21 +28,13 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/pbf"
 )
 
-// defaultCountries is a four-country default chosen so the whole pipeline can
-// be built and run by someone evaluating it: ~3.5GB of extracts and ~14M
-// addresses, against ~30GB for the whole of Europe.
+// A four-country default anyone can build: ~3.5GB against ~30GB for Europe,
+// while still spanning the interesting cases — Czechia for the polymorphic
+// anchor (47% of addresses have no street), Poland for street-and-city at
+// scale, Switzerland for four languages and alpine POIs, Bosnia for sparse
+// coverage with Cyrillic and Latin names.
 //
-// It still spans the interesting cases. Czechia exercises the polymorphic
-// address anchor, where 47% of addresses have no street. Poland is the
-// street-and-city model at scale. Switzerland adds a third and fourth language
-// and dense alpine POIs. Bosnia is the sparse-coverage case, ~10% addressed,
-// with Cyrillic and Latin names for the same places.
-//
-// Any subset of config/countries.tsv works, and config/groups.tsv names the
-// useful sets:
-//
-//	make all COUNTRIES=@europe
-//	make all COUNTRIES=@nordics,@baltics
+// Any subset of config/countries.tsv works; config/groups.tsv names the sets.
 const defaultCountries = "@default"
 
 // source pairs an extract file with the country it is authoritative for.
@@ -72,10 +62,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Extraction order matters for cross-extract deduplication: the first
-	// extract to claim an OSM id wins, and Geofabrik country files overlap at
-	// the borders. Largest first, so a shared border feature is kept from
-	// whichever side maps more of the region around it.
+	// Order matters: the first extract to claim an OSM id wins the border-buffer
+	// duplicate, so largest first keeps it from whichever side maps more.
 	sort.SliceStable(codes, func(i, j int) bool {
 		return cat.Countries[codes[i]].Size > cat.Countries[codes[j]].Size
 	})
@@ -96,23 +84,20 @@ func main() {
 	}
 }
 
-// streetSeg is one OSM way of a named street, buffered until the places layer
-// is complete enough to say which settlement it belongs to.
+// One way of a named street, buffered until the places layer can say which
+// settlement it is in.
 type streetSeg struct {
 	rec      *model.Record
 	lat, lon float64
 	country  string
 }
 
-// streetAgg accumulates the many OSM way segments that make up one named street
-// into a single searchable record.
+// Accumulates the many way segments of one named street into a single record.
 //
-// A street is split into dozens of ways at every junction and attribute change;
-// emitting one result per segment would bury everything else in the ranking.
-// Segments are grouped by (folded name, folded locality) and reduced to one
-// point. We keep a running mean plus a bounded sample of segment midpoints, and
-// finally pick the sampled midpoint nearest the mean: the mean itself can fall
-// off an L-shaped or crescent street, whereas a midpoint always lies on it.
+// A street is split at every junction and attribute change, so one result per
+// segment would bury everything else. Segments group by (name, locality) and
+// reduce to the sampled midpoint nearest their mean — the mean itself can fall
+// off an L-shaped street, a midpoint cannot.
 type streetAgg struct {
 	rec     *model.Record
 	sumLat  float64
@@ -148,10 +133,9 @@ func (s *streetAgg) finalize() {
 	}
 	s.rec.Lat, s.rec.Lon = best[0], best[1]
 
-	// A street is linear, so one representative point misdescribes it: a click
-	// at one end of a 2km road measures to its middle. Keep the sampled segment
-	// midpoints as an open shape — an unordered point set is enough, since only
-	// the minimum distance to any of them is ever needed.
+	// A street is linear, so one point misdescribes it. Keep the sampled
+	// midpoints as an open shape; an unordered set suffices, since only the
+	// minimum distance to any of them is needed.
 	if len(s.samples) > 1 {
 		pts := make([]geom.Point, len(s.samples))
 		for i, p := range s.samples {
@@ -167,9 +151,8 @@ func (s *streetAgg) finalize() {
 	}
 }
 
-// minStreetShapeM is the length below which a street's single representative
-// point is already within clicking tolerance. Most residential streets fall
-// under it, which keeps the geometry blob to the roads where it matters.
+// Below this a street's single point is within clicking tolerance. Most
+// residential streets fall under it.
 const minStreetShapeM = 150
 
 type manifest struct {
@@ -197,15 +180,12 @@ func run(sources []source, outDir string) error {
 	enc := json.NewEncoder(gz)
 
 	var (
-		// seenOSM deduplicates across extracts. Geofabrik country files carry a
-		// cross-border buffer: the Poland extract contains Czech villages
-		// (Detrichovec) and German ones (Gorlitz). Without this, every border
-		// settlement is indexed twice. First extract to claim an OSM ID wins.
+		// Deduplicates across extracts: Geofabrik files carry a cross-border
+		// buffer, so the Poland extract contains Czech and German villages and
+		// every border settlement would be indexed twice. First claim wins.
 		//
-		// Keyed by a packed int64 rather than the "osm:n123" string. Across
-		// fourteen countries this map holds ~70M entries, where Go string keys
-		// would cost roughly 90 bytes each in header, backing array and bucket
-		// overhead — some 6GB — against 16 for an int64.
+		// Packed int64 keys, not "osm:n123" strings: ~70M entries at fourteen
+		// countries, where string keys cost ~90 bytes each against 16.
 		seenOSM = make(map[int64]struct{}, 16_000_000)
 		segs    []streetSeg
 		orphans []streetSeg // addresses with no locality tag of any kind
@@ -250,9 +230,8 @@ func run(sources []source, outDir string) error {
 		route = func(r *model.Record, country string) error {
 			switch r.Layer {
 			case model.LayerPOI:
-				// A single POI is often mapped twice, as a node inside its own
-				// building way. Collapse on name plus a ~500m cell, keeping
-				// whichever carries more detail.
+				// Often mapped twice, as a node inside its own building way.
+				// Collapse on name plus a ~500m cell, keeping the fuller one.
 				k := fmt.Sprintf("%s|%s|%s|%.3f|%.3f", country, r.Category,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := pois[k]; ok {
@@ -273,9 +252,8 @@ func run(sources []source, outDir string) error {
 				return nil
 
 			case model.LayerPlace:
-				// A settlement is often mapped as both a node and an area.
-				// Collapse them on name plus a ~1km cell, keeping the
-				// higher-ranked class (a "town" beats a "suburb" of the name).
+				// Often mapped as both node and area; collapse on name plus a
+				// ~1km cell, keeping the higher-ranked class.
 				k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
 					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
 				if prev, ok := places[k]; ok {
@@ -288,11 +266,9 @@ func run(sources []source, outDir string) error {
 				places[k] = r
 				return nil
 			}
-			// An address with neither addr:city nor addr:place (3.6% of
-			// Czechia) has no locality to render or search on. Buffer it and
-			// resolve it spatially alongside the streets. Only the orphans are
-			// buffered, so peak memory stays a few hundred MB rather than the
-			// several GB holding every address would cost.
+			// 3.6% of Czech addresses have neither addr:city nor addr:place, so
+			// nothing to render or search on. Buffered and resolved spatially
+			// alongside the streets; only the orphans, so memory stays bounded.
 			if r.Layer == model.LayerAddress && r.City == "" && r.Place == "" {
 				orphans = append(orphans, streetSeg{rec: r, lat: r.Lat, lon: r.Lon,
 					country: src.country})
@@ -321,7 +297,7 @@ func run(sources []source, outDir string) error {
 		}
 	}
 
-	// Flush the grouped layers in a stable order so builds are reproducible.
+	// Stable order, so builds are reproducible.
 	log.Printf("grouping %d street segments -> %d streets, %d places",
 		len(segs), len(streets), len(places))
 	for _, k := range sortedKeys(streets) {
@@ -380,8 +356,7 @@ func run(sources []source, outDir string) error {
 	return nil
 }
 
-// packOSMKey folds an OSM type and id into one int64. OSM ids are well under
-// 2^62, so two low bits are free for the type.
+// Folds an OSM type and id into one int64; ids are well under 2^62.
 func packOSMKey(osmType byte, id int64) int64 {
 	var t int64
 	switch osmType {
@@ -393,7 +368,7 @@ func packOSMKey(osmType byte, id int64) int64 {
 	return id<<2 | t
 }
 
-// placeScore ranks duplicate place features so the better mapping survives.
+// Ranks duplicate place features so the better mapping survives.
 func placeScore(r *model.Record) float64 {
 	s := float64(r.Population) / 1e6
 	switch r.PlaceType {

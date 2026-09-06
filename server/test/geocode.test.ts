@@ -1,13 +1,10 @@
 /**
- * End-to-end tests against the real built artifact.
+ * End-to-end tests against the real artifact.
  *
- * These are integration tests on purpose: the things most likely to break in a
- * geocoder are the joins between stages — folding vs index terms, anchor keys
- * vs address binding, sort order vs binary search — and none of those are
- * visible to a unit test with a hand-made fixture.
- *
- * They skip rather than fail when the artifact is absent, so `pnpm test` works
- * on a fresh clone before `make all` has run.
+ * Integration on purpose: what breaks in a geocoder is the joins between stages
+ * — folding versus index terms, anchor keys versus address binding, sort order
+ * versus binary search — and none of that is visible to a hand-made fixture.
+ * They skip when the artifact is absent, so a fresh clone can run them.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -28,13 +25,9 @@ const haveIndex = existsSync(`${INDEX_DIR}/manifest.json`);
 const maybe = haveIndex ? describe : describe.skip;
 
 /**
- * Which countries the built index actually contains.
- *
- * Most of what follows is structural and holds for any corpus, but some tests
- * name real places, and those can only run where that country was built. CI
- * builds Czechia alone — 0.9GB rather than 30 — so a test naming Warszawa has
- * to skip rather than fail. Stating the dependency also documents it: a test
- * that silently requires one dataset is testing the dataset.
+ * Which countries the index contains. Most tests are structural, but some name
+ * real places and can only run where that country was built — CI builds Czechia
+ * alone. A test that silently requires one dataset is testing the dataset.
  */
 const covered: Record<string, number> = haveIndex
   ? (JSON.parse(readFileSync(`${INDEX_DIR}/manifest.json`, 'utf8')) as
@@ -49,7 +42,7 @@ describe('rate limiting', () => {
   needs('cz')('returns 429 with Retry-After once the window is exhausted', async () => {
     if (!haveIndex) return;
     const a = await loadArtifact(INDEX_DIR);
-    // A tiny index slice is enough; the limiter runs before the handler.
+
     const rev = buildReverseIndex(a);
     const app = await buildServer({
       artifact: a, reverseIndex: rev,
@@ -65,15 +58,13 @@ describe('rate limiting', () => {
     expect(blocked.headers['retry-after']).toBeDefined();
     expect(blocked.json().error).toBe('rate_limited');
 
-    // Health checks must never be throttled, or the container runtime starts
-    // reporting the service unhealthy under exactly the load it should survive.
+    // Never throttled, or the runtime kills the service under load.
     expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
   }, 120_000);
 });
 
 describe('parseQuery', () => {
-  // parseQuery returns candidate readings, best guess first; forward() takes
-  // the first that finds anything.
+  // Candidate readings, best guess first.
   const first = (q: string) => parseQuery(q)[0]!;
 
   it('splits a trailing house number off the street name', () => {
@@ -89,9 +80,8 @@ describe('parseQuery', () => {
   });
 
   /**
-   * Much of the region writes the number between the street and the city, so a
-   * trailing-only rule fails "Via Roma 1 Torino" and "Damrak 1 Amsterdam"
-   * outright — no results at all, rather than a worse ordering.
+   * Much of the region writes the number between street and city, so a
+   * trailing-only rule fails those outright — no results, not a worse ordering.
    */
   it('extracts a medial house number', () => {
     expect(first('Via Roma 1 Torino')).toEqual({
@@ -103,8 +93,7 @@ describe('parseQuery', () => {
   });
 
   it('does not treat a leading number as a house number', () => {
-    // "3 Maja" (Third of May) is a very common Polish street name, and
-    // "17 Novembre" and friends are the same idea elsewhere in the region.
+    // "3 Maja" is a common Polish street name; "17 Novembre" is the same idea.
     const p = first('3 Maja');
     expect(p.houseNumber).toBeNull();
     expect(p.nameTokens).toEqual(['3', 'maja']);
@@ -214,14 +203,10 @@ maybe('against the built index', () => {
     });
 
     /**
-     * Regression: an exact name match must beat a longer term that merely
-     * shares its prefix.
-     *
-     * IDF alone ranks a rare term far above a common one, so "praha" (3,665
-     * postings) lost to "prahatice" (1 posting, a real OSM name variant) and
-     * the top hit for "Praha" was Prachatice. The bug was invisible on the
-     * cz+pl index and only appeared on a cz-only build, so this asserts the
-     * invariant rather than one index's happened-to-work ordering.
+     * Regression: an exact name must beat a longer term sharing its prefix.
+     * IDF alone put "prahatice" (1 posting, a real OSM variant) above "praha"
+     * (3,665), so Prachatice was the top hit for Praha. Invisible on cz+pl and
+     * only visible on a cz-only build, so this asserts the invariant.
      */
     needs('cz')('ranks an exact name above a longer prefix sibling', () => {
       for (const city of ['Praha', 'Plzen', 'Brno', 'Ostrava', 'Liberec', 'Olomouc']) {
@@ -308,7 +293,7 @@ maybe('against the built index', () => {
     });
 
     needs('cz')('biases toward the proximity point', () => {
-      // Nádražní is one of the commonest Czech street names (575 of them).
+      // One of the commonest Czech street names: 575 of them.
       const nearBrno = forward(a, 'Nadrazni', {
         limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
       })[0]!;
@@ -325,11 +310,9 @@ maybe('against the built index', () => {
     });
 
     /**
-     * A POI carries its street and city as searchable tokens, so a query naming
-     * a street must not be answered by a POI that merely stands on it. A
-     * station called "Lednice" at Nádražní 1 once outranked all 651 streets
-     * named Nádražní, because relevance was measured against name *length*
-     * rather than whether the name matched.
+     * A POI carries its street as a token, so a street query must not be
+     * answered by a POI standing on it. A station called "Lednice" at Nádražní 1
+     * once outranked all 651 streets of that name.
      */
     needs('cz')('ranks a street above a POI that merely sits on it', () => {
       const r = forward(a, 'Nadrazni', {
@@ -340,11 +323,7 @@ maybe('against the built index', () => {
       expect(haversineMetres(49.1951, 16.6068, r.lat, r.lon)).toBeLessThan(5_000);
     });
 
-    /**
-     * The coarse pass ranks on the importance prior alone, which spans 1.0 for
-     * a street to 7.0 for an airport. A single overall cut therefore deletes
-     * the lowest-prior layer wholesale, so the cut is per layer.
-     */
+    /** The coarse cut is per layer, or the lowest-prior layer is deleted whole. */
     needs('cz')('never lets one layer crowd another out of the candidate set', () => {
       const layers = new Set(forward(a, 'Nadrazni', { limit: 20 }).map((r) => r.layer));
       expect(layers.has('street')).toBe(true);
@@ -430,18 +409,15 @@ maybe('against the built index', () => {
     });
 
     /**
-     * These derive their query points from whatever index is built rather than
-     * hardcoding coordinates, so they hold for any COUNTRIES setting. An
-     * earlier version pinned them to Munich and Berlin and broke the moment the
-     * default build shrank — a test that only passes on one dataset is testing
-     * the dataset.
+     * Query points derived from whatever index is built, so these hold for any
+     * COUNTRIES setting. Pinned to Munich and Berlin, they broke the moment the
+     * default build shrank.
      */
     const someRing = (minAreaM2: number) => {
       for (let id = 0; id < a.manifest.num_anchors; id += 7) {
         if (!hasShape(a, id) || a.geomClosed[id] !== 1) continue;
         if (ringAreaM2(a, id) < minAreaM2) continue;
-        // Use a vertex-adjacent interior point: the centroid of a concave ring
-        // is not guaranteed to be inside it.
+        // The centroid of a concave ring is not guaranteed to be inside it.
         const start = a.geomOff[id]!;
         const n = a.geomOff[id + 1]! - start;
         let sLat = 0, sLon = 0;
@@ -457,11 +433,8 @@ maybe('against the built index', () => {
     };
 
     /**
-     * The two-tier contract: a feature whose outline contains the click ranks
-     * above everything nearby, because a restaurant 25m away is somewhere the
-     * user is *not*. Before shapes existed, reverse indexed only address points,
-     * so a click inside a park returned the nearest doorway and the park could
-     * not be returned at all.
+     * The two-tier contract. Before shapes existed, reverse indexed only address
+     * points, so a click inside a park returned the nearest doorway.
      */
     it('puts a containing region above nearby points', () => {
       const spot = someRing(10_000); // at least a hectare
@@ -472,8 +445,7 @@ maybe('against the built index', () => {
     });
 
     it('orders containing regions smallest first, and all before the rest', () => {
-      // A property over many real query points, rather than one hand-picked
-      // nesting that only exists in one country's data.
+      // A property over real query points, not one hand-picked nesting.
       let checkedWithContainment = 0;
       for (let k = 0; k < 400; k++) {
         const i = (k * 137_777) % a.manifest.num_addresses;
@@ -497,10 +469,8 @@ maybe('against the built index', () => {
     });
 
     it('returns anchors, not just addresses', () => {
-      // The first version indexed only address points for reverse, so a click
-      // could never resolve to a park, a station or a street. Sample real
-      // address locations until one has a non-address neighbour, which in any
-      // populated area is immediate.
+      // The first version indexed only addresses, so a click could never
+      // resolve to a park or a station.
       const layers = new Set<string>();
       for (let k = 0; k < 200 && layers.size < 2; k++) {
         const i = (k * 911_111) % a.manifest.num_addresses;
@@ -513,9 +483,8 @@ maybe('against the built index', () => {
     });
 
     it('measures a street to its shape, not to its representative point', () => {
-      // Find a street with sampled points, then query beside one of them that
-      // is far from the anchor's representative point. Distance must reflect
-      // the shape, not the centroid.
+      // Query beside a vertex far from the anchor's point: distance must
+      // reflect the shape, not the centroid.
       for (let id = 0; id < a.manifest.num_anchors; id += 13) {
         if (!hasShape(a, id) || a.geomClosed[id] === 1) continue;
         const start = a.geomOff[id]!;
@@ -536,10 +505,9 @@ maybe('against the built index', () => {
     }, 30_000);
 
     /**
-     * Brute-forcing 61M points is slow, but it is the only way to know the k-d
-     * tree and the box widening are correct. Compared against the nearest
-     * *address* in the result rather than the first result overall, because a
-     * containing region legitimately outranks it at distance zero.
+     * Slow, but the only way to know the k-d tree and box widening are correct.
+     * Compared against the nearest *address*, since a containing region
+     * legitimately outranks it at distance zero.
      */
     needs('cz')('agrees with brute force on the nearest address', () => {
       const qLat = 50.0813, qLon = 14.4262;
@@ -573,16 +541,13 @@ maybe('against the built index', () => {
     const get = (url: string) => app.inject({ method: 'GET', url });
 
     /**
-     * A UI zooming to a result needs its extent, not a point.
-     *
-     * Note which features have one: an area mapped as a way does, a settlement
-     * does not — OSM maps a city as a node and its boundary as a relation, and
-     * relations are not ingested. So `bbox` is present where the data supports
-     * it and absent otherwise, rather than faked from a radius.
+     * An area mapped as a way has an extent; a settlement does not, because OSM
+     * maps a city as a node and its boundary as a relation. Present where the
+     * data supports it, absent otherwise, never faked from a radius.
      */
     it('carries a bbox on results that have extent, for the UI to zoom to', async () => {
-      // Search for a feature the index actually holds a ring for, rather than
-      // naming one: which parks exist depends on which countries were built.
+      // A feature the index holds a ring for, rather than a named one: which
+      // parks exist depends on which countries were built.
       let named = '';
       for (let id = 0; id < a.manifest.num_anchors && !named; id += 3) {
         if (!hasShape(a, id) || a.geomClosed[id] !== 1) continue;
@@ -648,7 +613,7 @@ maybe('against the built index', () => {
     });
 
     it('rejects a country outside the index', async () => {
-      // Derived from the manifest rather than hardcoded: the covered set grows.
+      // From the manifest, not hardcoded: the covered set grows.
       const covered = new Set(Object.keys(a.manifest.country_ids));
       const absent = ['fr', 'es', 'pt', 'se', 'no'].find((c) => !covered.has(c));
       expect(absent).toBeDefined();
@@ -664,10 +629,8 @@ maybe('against the built index', () => {
     });
 
     /**
-     * The forward response returns `center` as GeoJSON [lon, lat] while the
-     * reverse parameters are named lat/lon, so reading one into the other
-     * transposes them. For Czechia and Poland that lands off Somalia and
-     * returns nothing, with no indication why.
+     * `center` is [lon, lat] while the parameters are lat/lon, so reading one
+     * into the other lands this region off Somalia with no indication why.
      */
     needs('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
       const res = await get('/v1/geocode?lat=16.6148&lon=49.2012');

@@ -4,29 +4,20 @@ import "sort"
 
 // Precomputed spatial structures.
 //
-// The server used to build both of these at boot: ~3.0s for the k-d tree
-// permutation and ~2.4s for the containment grid on the four-country index,
-// scaling to something near a minute at planet size. That is expensive work
-// happening in the request path's process, which contradicts the whole premise
-// of the build/serve split — and it is paid again by every replica, on every
-// deploy and every rollback.
-//
-// Both are pure functions of data the artifact already holds, so both belong
-// here. Boot becomes a read and a cast.
+// The server built both at boot — ~5.4s on the four-country index, near a
+// minute at planet size — repeated by every replica on every deploy. Both are
+// pure functions of data the artifact already holds, so both belong here.
 
-// KDNodeSize is the leaf threshold of the k-d tree. It is written to the
-// manifest because the traversal is implicit: the reader must partition the
-// permutation exactly as the writer did, and a silent mismatch would return
-// subtly wrong neighbours rather than an error.
+// Leaf threshold, written to the manifest because the traversal is implicit:
+// a mismatch returns subtly wrong neighbours rather than an error.
 const KDNodeSize = 64
 
-// BuildKDPermutation returns point ids ordered as an implicit k-d tree:
-// recursive median splits on alternating axes, stopping at leaves of nodeSize.
+// BuildKDPermutation returns point ids as an implicit k-d tree: median splits
+// on alternating axes, leaves of nodeSize.
 //
-// The reader only relies on the *invariant* — at each node everything to the
-// left is <= the split on that axis and everything to the right is >= — not on
-// a particular tie-break, so a permutation built here and one built by the
-// server are both valid even where they differ.
+// The reader relies only on the invariant at each node, not on a particular
+// tie-break, so this permutation and one built by the server can differ and
+// both be valid.
 func BuildKDPermutation(n int, getX, getY func(int) int32, nodeSize int) []uint32 {
 	ids := make([]uint32, n)
 	for i := range ids {
@@ -35,8 +26,7 @@ func BuildKDPermutation(n int, getX, getY func(int) int32, nodeSize int) []uint3
 	if n == 0 {
 		return ids
 	}
-	// Contiguous scratch, as the partitioning below is the one place that reads
-	// coordinates in bulk; it is freed on return.
+	// Contiguous scratch: the partitioning is the one bulk read. Freed on return.
 	xs := make([]int32, n)
 	ys := make([]int32, n)
 	for i := 0; i < n; i++ {
@@ -77,9 +67,8 @@ func (k *kdSorter) swap(i, j int) {
 	k.ids[i], k.ids[j] = k.ids[j], k.ids[i]
 }
 
-// selectNth is a Hoare partition loop placing the n-th element at n, with
-// everything smaller before it. Sorting outright would be O(n log n) per level
-// when only the median position matters.
+// Hoare partition placing the n-th element at n. Only the median position
+// matters, so sorting would be wasteful.
 func (k *kdSorter) selectNth(n, left, right, axis int) {
 	for right > left {
 		t := k.val(n, axis)
@@ -116,22 +105,21 @@ func (k *kdSorter) selectNth(n, left, right, axis int) {
 	}
 }
 
-// Containment grid parameters. These are part of the format: the server looks
-// up a cell by computing the same key, so a change here needs a version bump.
+// Containment grid parameters. Part of the format — the server recomputes the
+// same key — so a change needs a version bump.
 const (
-	// CellDeg is ~5.5km. A feature is listed in every cell its bounding box
-	// touches, so smaller cells multiply large features across many entries
-	// while larger ones return too many candidates per lookup.
+	// ~5.5km. A feature is listed in every cell its box touches, so smaller
+	// cells multiply large features while larger ones return too many
+	// candidates per lookup.
 	CellDeg = 0.05
-	// MinExtentM is the size below which a feature is found by the k-d tree
-	// anyway and need not be in the containment grid.
+	// Below this a feature is found by the k-d tree anyway.
 	MinExtentM = 30
 	// CellOrigin keeps cell coordinates non-negative so the key packs cleanly.
 	CellOrigin = 4096
 	CellStride = 16384
 )
 
-// CellKey packs a cell coordinate pair into one integer. The server computes it
+// Packs a cell coordinate pair into one integer; the server computes it
 // identically.
 func CellKey(lat, lon float64) int32 {
 	x := int32(floorDiv(lon, CellDeg)) + CellOrigin
@@ -147,8 +135,8 @@ func floorDiv(v, by float64) float64 {
 	return float64(int64(q))
 }
 
-// CellGrid is the containment index in flat form: unique cell keys in ascending
-// order, each with a slice of the anchor ids whose bounding box covers it.
+// The containment index in flat form: ascending cell keys, each with a slice of
+// the anchor ids whose box covers it.
 type CellGrid struct {
 	Keys   []int32
 	Starts []uint32

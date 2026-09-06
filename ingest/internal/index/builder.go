@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// StringTable interns strings and assigns each a stable id.
+// Interns strings, assigning each a stable id.
 type StringTable struct {
 	ids  map[string]uint32
 	list []string
@@ -36,7 +36,7 @@ func (t *StringTable) Intern(s string) uint32 {
 
 func (t *StringTable) Len() int { return len(t.list) }
 
-// Write emits the blob and its offset table.
+// Emits the blob and its offset table.
 func (t *StringTable) Write(dir, base string) (int, error) {
 	var blob []byte
 	offs := make([]uint32, len(t.list)+1)
@@ -55,7 +55,7 @@ func (t *StringTable) Write(dir, base string) (int, error) {
 	return len(blob) + 4*len(offs), nil
 }
 
-// Anchor is a searchable street or place: the unit text queries match against.
+// A searchable street, place or POI: what text queries match against.
 type Anchor struct {
 	Key      string // country|folded name|folded locality — dedup key only
 	NameID   uint32
@@ -88,21 +88,18 @@ type Anchor struct {
 	Closed bool
 }
 
-// Address is one address point, stored in a run belonging to a single anchor.
+// One address point, in a run belonging to a single anchor.
 type Address struct {
 	AnchorID uint32
 	NumID    uint32 // house number string id
 	Lat, Lon int32
-	// SortKey is the leading integer of the house number ("248/39" -> 248,
-	// "12A" -> 12, "ev.38" -> 38). Address runs are sorted by it so a numeric
-	// lookup is a binary search, and so results come back in street order
-	// rather than in whatever order OSM happened to store them.
+	// Leading integer of the house number. Runs sort by it, so a numeric lookup
+	// is a binary search and results come back in street order.
 	SortKey uint32
 }
 
-// LeadingInt extracts the first run of digits in a house number. Czech numbers
-// are written "conscription/orientation" and Polish ones often carry a letter
-// suffix, so the leading integer is the only reliably comparable part.
+// The first run of digits: Czech numbers are "conscription/orientation" and
+// Polish ones carry letter suffixes, so it is the only comparable part.
 func LeadingInt(s string) uint32 {
 	start := -1
 	for i := 0; i < len(s); i++ {
@@ -118,8 +115,7 @@ func LeadingInt(s string) uint32 {
 	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
 		end++
 	}
-	// Cap at a value that still fits comfortably in uint32; absurd numbers in
-	// OSM data should not wrap around and sort first.
+	// Capped, so an absurd OSM value cannot wrap and sort first.
 	n, err := strconv.ParseUint(s[start:end], 10, 32)
 	if err != nil {
 		return 0
@@ -130,7 +126,7 @@ func LeadingInt(s string) uint32 {
 	return uint32(n)
 }
 
-// Builder assembles the artifact.
+// Assembles the artifact.
 type Builder struct {
 	Strings   *StringTable
 	Anchors   []Anchor
@@ -158,10 +154,8 @@ func (b *Builder) CountryID(cc string) uint8 {
 	return uint8(id)
 }
 
-// AnchorID returns the id for an anchor key, creating a placeholder if the key
-// has not been seen. Placeholders exist because 141,524 anchors are referenced
-// only by address points and have no street or place record of their own —
-// a street name that appears in addr:street but was never mapped as a highway.
+// The id for an anchor key, creating a placeholder if unseen: 141,524 anchors
+// are referenced only by addresses, never mapped in their own right.
 func (b *Builder) AnchorID(key string) (uint32, bool) {
 	if id, ok := b.byKey[key]; ok {
 		return id, false
@@ -172,15 +166,14 @@ func (b *Builder) AnchorID(key string) (uint32, bool) {
 	return id, true
 }
 
-// Finish sorts address runs, links them to anchors, builds the inverted index
-// and writes every file.
+// Sorts address runs, links them to anchors, builds the inverted index, writes.
 func (b *Builder) Finish(dir string, man *Manifest) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
-	// Group addresses by anchor, then by house number. Sorting by SortKey then
-	// by the raw string keeps "12", "12A", "12B" adjacent and in order.
+	// By anchor, then house number. SortKey then raw string keeps "12", "12A",
+	// "12B" adjacent and ordered.
 	sort.Slice(b.Addrs, func(i, j int) bool {
 		a, c := b.Addrs[i], b.Addrs[j]
 		if a.AnchorID != c.AnchorID {
@@ -192,15 +185,10 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		return b.Strings.list[a.NumID] < b.Strings.list[c.NumID]
 	})
 
-	// Build the address ranges as a proper CSR offset array: every anchor gets
-	// a start, and an anchor with no addresses takes the offset of the next
-	// run rather than zero.
-	//
-	// That matters because the server recovers an address's owning anchor by
-	// binary-searching this array instead of storing it (244MB saved), and the
-	// search requires it to be monotonically non-decreasing. Leaving empty
-	// anchors at zero would break it for every POI — and POIs are the majority
-	// of anchors.
+	// A proper CSR offset array: an anchor with no addresses takes the offset
+	// of the next run, not zero. The server recovers an address's anchor by
+	// binary-searching this (244MB saved), which needs it non-decreasing —
+	// zeroes would break it for every POI, and POIs are most anchors.
 	counts := make([]uint32, len(b.Anchors))
 	for _, ad := range b.Addrs {
 		counts[ad.AnchorID]++
@@ -215,8 +203,8 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		return fmt.Errorf("address range accounting: %d != %d", running, len(b.Addrs))
 	}
 
-	// An anchor with no coordinates of its own (a placeholder) borrows the
-	// centroid of its address run, so it is still a usable standalone result.
+	// A placeholder borrows the centroid of its address run, so it is still a
+	// usable standalone result.
 	for i := range b.Anchors {
 		a := &b.Anchors[i]
 		if a.Lat != 0 || a.Lon != 0 || a.AddrCount == 0 {
@@ -233,9 +221,8 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		b.Counts["anchor_centroid_from_addresses"]++
 	}
 
-	// Every anchor gets a box: a degenerate one at its own point when the
-	// feature has no extent. Done here rather than during writing because the
-	// k-d tree and the containment grid both read it.
+	// Degenerate to the anchor's own point when there is no extent. Done here
+	// because the k-d tree and the containment grid both read it.
 	for i := range b.Anchors {
 		a := &b.Anchors[i]
 		if a.MinLat == 0 && a.MaxLat == 0 {
@@ -347,17 +334,15 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	return writeAll(dir, w, man)
 }
 
-// writeSpatial precomputes the two structures the server used to build at boot:
-// the k-d tree permutation over every point, and the containment grid over
-// anchor outlines. Together they were ~5.4s of startup on the four-country
-// index and would be close to a minute at planet scale — paid by every replica,
-// on every deploy and every rollback.
+// The two structures the server used to build at boot: the k-d permutation and
+// the containment grid. Together ~5.4s of startup, paid by every replica on
+// every deploy.
 func (b *Builder) writeSpatial(dir string, man *Manifest) error {
 	nAddr := len(b.Addrs)
 	n := nAddr + len(b.Anchors)
 
-	// Ids below nAddr index the address arrays, at or above them the anchor
-	// arrays. The server resolves them the same way.
+	// Ids below nAddr index addresses, at or above them anchors; the server
+	// resolves them the same way.
 	getY := func(i int) int32 {
 		if i < nAddr {
 			return b.Addrs[i].Lat
@@ -404,13 +389,9 @@ func (b *Builder) writeAddrs(dir string, man *Manifest) error {
 	return writeAll(dir, w, man)
 }
 
-// writeIndex builds the inverted index over anchor tokens.
-//
-// Terms are stored as a sorted string table so the server can binary-search a
-// prefix range: the last token of an autocomplete query matches every term in
-// [prefix, prefix+0xFF), which is a pair of binary searches rather than a scan.
-// Posting lists hold ascending anchor ids, which makes multi-token queries a
-// linear intersection.
+// The inverted index over anchor tokens. Terms are sorted so a prefix range is
+// two binary searches rather than a scan; posting lists hold ascending anchor
+// ids, so multi-token queries are a linear intersection.
 func (b *Builder) writeIndex(dir string, man *Manifest) error {
 	postings := map[string][]uint32{}
 	for id, a := range b.Anchors {
@@ -506,12 +487,11 @@ func writeF32(dir, name string, v []float32) error {
 	return os.WriteFile(filepath.Join(dir, name), buf, 0o644)
 }
 
-// AnchorKey is the dedup key joining address points to their anchor. It must be
-// computed identically for street records, place records and addresses.
+// The dedup key joining addresses to their anchor, computed identically for
+// street records, place records and addresses.
 //
-// The layer is part of the key. Without it a street named after the village it
-// runs through ("Adamov" in Adamov) collides with the village itself, and one
-// silently overwrites the other.
+// Layer is part of it: without that a street named after the village it runs
+// through collides with the village, and one silently overwrites the other.
 func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string) string {
 	l := "s"
 	if layer == LayerPlace {
@@ -521,20 +501,16 @@ func AnchorKey(country string, layer uint8, foldedName, foldedLocality []string)
 		"|" + strings.Join(foldedLocality, " ")
 }
 
-// POIKey is the dedup key for a point of interest. geoingest has already
-// collapsed node-and-way duplicates of one POI, so this only needs to keep
-// genuinely distinct POIs apart — hence the OSM id rather than a name.
+// geoingest already collapsed node-and-way duplicates, so this only keeps
+// genuinely distinct POIs apart — hence the OSM id.
 func POIKey(id string) string { return "poi|" + id }
 
-// PlaceKey is the dedup key for a settlement. A place record's locality is its
-// own name, so AnchorKey alone merges every same-named village in a country —
-// and "Nowa Wies" names several hundred distinct Polish villages. Quantising
-// the position to a ~28km cell keeps them apart while still collapsing the
-// node-and-area mappings of a single settlement.
+// Dedup key for a settlement. A place's locality is its own name, so AnchorKey
+// alone merges every same-named village — and "Nowa Wies" names hundreds. A
+// ~28km cell keeps them apart while still collapsing node-and-area pairs.
 //
-// Addresses do not use this key: they bind to the nearest place of a matching
-// name, so a village sitting near a cell boundary still gathers its own
-// addresses.
+// Addresses bind by nearest matching name instead, so a village near a cell
+// boundary still gathers its own.
 func PlaceKey(country string, foldedName []string, lat, lon float64) string {
 	const cellDeg = 0.25
 	return country + "|p|" + strings.Join(foldedName, " ") + "|" +
@@ -542,11 +518,11 @@ func PlaceKey(country string, foldedName []string, lat, lon float64) string {
 		strconv.Itoa(int(math.Floor(lon/cellDeg)))
 }
 
-// AltSep joins an anchor's alternate names inside one interned string. U+001F
-// (unit separator) cannot occur in an OSM name.
+// Joins alternate names inside one interned string; U+001F cannot occur in an
+// OSM name.
 const AltSep = "\x1f"
 
-// Get returns the interned string for an id.
+// The interned string for an id.
 func (t *StringTable) Get(id uint32) string {
 	if int(id) >= len(t.list) {
 		return ""
@@ -554,8 +530,7 @@ func (t *StringTable) Get(id uint32) string {
 	return t.list[id]
 }
 
-// NewSynthetic appends an anchor that has no corresponding OSM street or place
-// record, for a name referenced only by address points.
+// An anchor for a name referenced only by address points.
 func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 	st *StringTable, tokens []string, lat, lon int32) uint32 {
 	id := uint32(len(b.Anchors))

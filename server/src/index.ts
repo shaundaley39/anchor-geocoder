@@ -1,9 +1,4 @@
-/**
- * Entry point: load the artifact, build the reverse index, serve.
- *
- * All the cost is here at boot — after this the process holds only typed arrays
- * and answers requests without allocating per-record objects.
- */
+/** Entry point: load the artifact, attach the spatial indexes, serve. */
 import { loadArtifact } from './artifact.js';
 import { buildReverseIndex } from './reverse.js';
 import { buildServer } from './server.js';
@@ -24,10 +19,8 @@ async function main(): Promise<void> {
     `(${(t1 - t0).toFixed(0)}ms)`,
   );
 
-  // Both spatial structures come precomputed in the artifact, so this only
-  // scans for the coverage box. It used to partition every point into a k-d
-  // tree and construct the containment grid, which was ~5.4s of startup here
-  // and would be close to a minute at planet scale.
+  // Precomputed in the artifact, so this only scans for the coverage box.
+  // Building them here was ~5.4s of startup.
   const reverseIndex = buildReverseIndex(artifact);
   const t2 = performance.now();
   console.log(`  spatial indexes attached (${(t2 - t1).toFixed(0)}ms)`);

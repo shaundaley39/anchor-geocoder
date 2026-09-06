@@ -1,8 +1,7 @@
 /**
- * The k-d tree borrows its coordinates rather than copying them, which makes it
- * cheap but also makes it ours to get right. Every test here compares against
- * brute force, because a tree bug returns a plausible subset rather than an
- * error.
+ * The k-d tree borrows its coordinates, which makes it cheap but also ours to
+ * get right. Everything compares against brute force: a tree bug returns a
+ * plausible subset, not an error.
  */
 import { describe, it, expect } from 'vitest';
 import { PointIndex } from '../src/pointindex.js';

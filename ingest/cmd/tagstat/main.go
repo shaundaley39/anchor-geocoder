@@ -1,6 +1,5 @@
-// Command tagstat samples addressed features from an extract and reports which
-// combinations of address tags actually occur. Used to derive the converter's
-// rules from the data rather than from assumptions about tagging conventions.
+// Command tagstat reports which combinations of address tags actually occur, so
+// the converter's rules derive from the data rather than from assumptions.
 package main
 
 import (

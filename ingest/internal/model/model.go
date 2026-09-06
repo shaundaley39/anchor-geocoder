@@ -1,17 +1,14 @@
 // Package model defines the normalized records the ingest stage emits.
 //
-// The schema is deliberately wider than the classic {housenumber, street, city}
-// triple. Roughly 47% of Czech address points carry no addr:street at all: they
-// hang off addr:place (the "cast obce", a municipality part) and are identified
-// by a conscription number. Poland uses the street model for most urban
-// addresses but falls back to addr:place across much of the countryside. A
-// schema that assumes a street exists silently drops half of Czechia.
+// The schema is wider than the classic {housenumber, street, city} because 47%
+// of Czech addresses have no street: they hang off addr:place (the cast obce)
+// with a conscription number. Poland uses both models. Assuming a street exists
+// silently drops half of Czechia.
 package model
 
 import "strings"
 
-// Layer is the result class of a record. Ordering matters: the geocoder ranks
-// more specific layers above less specific ones when scores are otherwise close.
+// Layer is the result class of a record.
 type Layer string
 
 const (
@@ -38,21 +35,16 @@ type Record struct {
 	// Name is the feature's own display name: the street name for a street,
 	// the settlement name for a place, empty for most address points.
 	Name string `json:"name,omitempty"`
-	// AltNames holds every other name the feature is known by: name:<lang>
-	// exonyms, alt_name, short_name, official_name, old_name, and for POIs the
-	// brand and operator. Each is a searchable name in its own right — "Prague"
-	// and "Praha" are the same city, and a user may type either.
+	// Every other name the feature is known by: name:<lang> exonyms, alt_name,
+	// short_name, official_name, old_name, and for POIs brand and operator.
 	//
-	// These are scored per variant rather than merged, so a query matching one
-	// alias exactly is treated as an exact name match. Merging them into one
-	// token bag would make every well-documented place look like it has a very
-	// long name and score worse for it.
+	// Scored per variant, not merged: merging would make a well-documented
+	// place look like it has a very long name and rank worse for it.
 	AltNames []string `json:"alt_names,omitempty"`
 
 	// --- address components -------------------------------------------------
 
-	// HouseNumber is the rendered, human-facing number. For Czech addresses
-	// this is the composed "conscription/orientation" form, e.g. "729/37".
+	// The rendered form: for Czech addresses the composed "729/37".
 	HouseNumber string `json:"house_number,omitempty"`
 	// Conscription is the Czech cislo popisne (c.p.), unique within a cast obce.
 	Conscription string `json:"conscription,omitempty"`
@@ -73,17 +65,14 @@ type Record struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
 
-	// Shape is the feature's outline, flattened as [lat,lon,lat,lon,...].
+	// The feature's outline, flattened as [lat,lon,lat,lon,...]. Present for
+	// area features large enough for their shape to matter, and for long
+	// streets, where it is sampled points rather than a ring.
 	//
-	// Present for area features large enough for their shape to matter, and for
-	// long streets, where it is a set of sampled points along the way rather
-	// than a ring. Reverse geocoding needs it because a click inside a park is
-	// inside it however far away the park's centroid is, and because a
-	// bounding box is a poor stand-in for a diagonal or crescent-shaped
-	// feature — the box filters, the shape decides.
+	// Reverse needs it: a click inside a park is inside it however far the
+	// centroid is, and a bounding box is a poor stand-in for a crescent.
 	Shape []float64 `json:"shape,omitempty"`
-	// Closed distinguishes a ring, which can contain a point, from a set of
-	// sampled points along a line, which cannot.
+	// A ring can contain a point; sampled points along a line cannot.
 	Closed bool `json:"closed,omitempty"`
 
 	// --- ranking inputs -----------------------------------------------------
@@ -101,8 +90,8 @@ type Record struct {
 	Display string `json:"display"`
 }
 
-// Anchor returns the addressing anchor and its kind. This is the join key that
-// groups address points into a searchable unit; see the package comment.
+// The addressing anchor and its kind: the join key grouping address points into
+// a searchable unit.
 func (r *Record) Anchor() (string, AnchorKind) {
 	if r.Street != "" {
 		return r.Street, AnchorStreet
@@ -113,14 +102,8 @@ func (r *Record) Anchor() (string, AnchorKind) {
 	return "", AnchorNone
 }
 
-// ComposeCzechNumber renders the Czech two-number form. A Czech address may
-// carry a conscription number (c.p.), an orientation number (c.o.), or both:
-//
-//	both  -> "729/37"   (as written on the building)
-//	c.p.  -> "729"
-//	c.o.  -> "37"
-//
-// fallback is used when neither is present (a plain addr:housenumber).
+// Renders the Czech two-number form: conscription and orientation give
+// "729/37", either alone gives itself, neither falls back.
 func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	switch {
 	case conscription != "" && orientation != "":
@@ -134,9 +117,8 @@ func ComposeCzechNumber(conscription, orientation, fallback string) string {
 	}
 }
 
-// Display builds the one-line rendering for an address record, skipping empty
-// components. Czech village addresses render as "Cerna Hora 42", street
-// addresses as "Dlouha 729/37, Praha".
+// One-line rendering, skipping empty components: "Cerna Hora 42" for a village
+// address, "Dlouha 729/37, Praha" for a street one.
 func BuildAddressDisplay(r *Record) string {
 	var head string
 	anchor, _ := r.Anchor()
@@ -150,8 +132,8 @@ func BuildAddressDisplay(r *Record) string {
 	}
 
 	parts := []string{head}
-	// Only add the city when it differs from the anchor, so a village address
-	// anchored on its own name doesn't render as "Cerna Hora 42, Cerna Hora".
+	// Skipped when it equals the anchor, or a village address renders as
+	// "Cerna Hora 42, Cerna Hora".
 	if r.City != "" && !strings.EqualFold(r.City, anchor) {
 		parts = append(parts, r.City)
 	}

@@ -1,7 +1,6 @@
-// Command poistat counts named point-of-interest features by category, to size
-// the POI layer before building it. Tag occurrence counts from taginfo are not
-// enough: what matters is how many features are both POI-tagged AND named, and
-// how many of those already carry an address.
+// Command poistat counts named POI features by category, to size the layer
+// before building it. Taginfo counts are not enough: what matters is how many
+// are both POI-tagged and named, and how many already carry an address.
 package main
 
 import (

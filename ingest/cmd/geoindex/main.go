@@ -1,11 +1,8 @@
-// Command geoindex turns the normalized record stream from geoingest into the
-// binary index artifact the TypeScript server loads.
+// Command geoindex turns the record stream into the binary artifact.
 //
-// It is a separate stage from extraction on purpose: extraction is bound by pbf
-// decoding and is the part that changes when OSM tagging changes, whereas
-// indexing is bound by sorting and is the part that changes when ranking or the
-// on-disk layout changes. Keeping them apart means retuning the index does not
-// mean re-reading 3GB of pbf.
+// Separate from extraction on purpose: extraction is bound by pbf decoding and
+// changes when OSM tagging does, indexing is bound by sorting and changes when
+// ranking or the layout does. Retuning the index costs 36s, not 3m30s.
 package main
 
 import (
@@ -34,7 +31,7 @@ func main() {
 	}
 }
 
-// scan walks the record stream, invoking fn for every record.
+// Walks the record stream.
 func scan(inPath string, fn func(*model.Record) error) error {
 	f, err := os.Open(inPath)
 	if err != nil {
@@ -66,14 +63,10 @@ func run(inPath, outDir string) error {
 	b := index.NewBuilder()
 	countries := map[string]bool{}
 
-	// Two passes over the record stream, because geoingest emits addresses as
-	// it streams the pbf but can only emit streets and places after grouping
-	// them — so anchors arrive last. A single pass would create a placeholder
-	// for every address anchor and then throw away the real street record that
-	// arrived behind it. Decompressing 570MB twice costs ~25s and is the
-	// cheapest way to get the ordering right.
-	//
-	// Pass 1: every real anchor.
+	// Two passes, because geoingest emits addresses while streaming the pbf but
+	// can only emit streets and places after grouping — so anchors arrive last.
+	// A single pass would create a placeholder for every address anchor and
+	// then discard the real record behind it.
 	nAnchor := 0
 	if err := scan(inPath, func(r *model.Record) error {
 		countries[r.Country] = true
@@ -88,10 +81,9 @@ func run(inPath, outDir string) error {
 	}
 	log.Printf("pass 1: %d anchor records -> %d anchors", nAnchor, len(b.Anchors))
 
-	// placesByName lets a place-anchored address find the actual village it
-	// belongs to. Keying on the address's own addr:city would miss, because a
-	// village record is keyed on its own name while an address in it may be
-	// tagged with the surrounding municipality (place=Zboiska, city=Dukla).
+	// Lets a place-anchored address find its village. Keying on the address's
+	// own addr:city would miss: a village is keyed on its name, while an
+	// address in it may carry the surrounding municipality.
 	placesByName := map[string][]uint32{}
 	for id := range b.Anchors {
 		a := &b.Anchors[id]
@@ -102,7 +94,6 @@ func run(inPath, outDir string) error {
 		}
 	}
 
-	// Pass 2: addresses, resolved onto the anchors from pass 1.
 	n := 0
 	if err := scan(inPath, func(r *model.Record) error {
 		if r.Layer != model.LayerAddress {
@@ -195,8 +186,7 @@ func addAnchor(b *index.Builder, r *model.Record) {
 	id, _ := b.AnchorID(key)
 	a := &b.Anchors[id]
 
-	// Two real records with the same key: geoingest already deduplicated within
-	// a layer, so this is rare. Keep the higher-scoring one.
+	// Rare: geoingest already deduplicates within a layer. Keep the better one.
 	if a.Real {
 		b.Counts["anchor_duplicate_key"]++
 		if placeScore(r) <= a.Score {
@@ -229,13 +219,9 @@ func addAnchor(b *index.Builder, r *model.Record) {
 	}
 }
 
-// poiScore is the importance prior for a point of interest, on the same scale
-// as placeScore where an ordinary street is 1.
-//
-// The ordering reflects what people actually search for by name. A railway
-// station or an airport is a navigation landmark and should outrank a village;
-// a hairdresser should not. Chain retail sits in the middle: "Lidl" is a common
-// and reasonable query, but it should never beat a town called Lidl would-be.
+// Importance prior for a POI, same scale. Ordered by what people search for:
+// a station or airport is a navigation landmark and outranks a village, a
+// hairdresser does not, chain retail sits in between.
 func poiScore(r *model.Record) float32 {
 	switch r.Category {
 	case "aeroway=aerodrome":
@@ -273,12 +259,10 @@ func poiScore(r *model.Record) float32 {
 	return 1.8
 }
 
-// placeScore is the importance prior for a settlement, on a scale where an
-// ordinary street is 1. Population dominates when it is tagged; the settlement
-// class is the fallback, and both are compressed logarithmically so Warsaw does
-// not outscore every street in the country by six orders of magnitude.
-// setGeometry copies a record's outline and bounding box onto its anchor,
-// converting to the fixed point the artifact stores.
+// Importance prior for a settlement, on a scale where a street is 1.
+// Population dominates when tagged, class is the fallback, and both are
+// compressed so Warsaw does not outscore every street by six orders.
+// Copies a record's outline and box onto its anchor, in fixed point.
 func setGeometry(a *index.Anchor, r *model.Record) {
 	a.Closed = r.Closed
 	if len(r.Shape) < 4 {
@@ -321,8 +305,8 @@ func placeScore(r *model.Record) float32 {
 func addAddress(b *index.Builder, r *model.Record, placesByName map[string][]uint32) {
 	anchorName, kind := r.Anchor()
 	if anchorName == "" {
-		// Neither a street nor a place to hang the number off: 4,460 of 11.6M.
-		// Left out of the index rather than indexed unfindably.
+		// Nothing to hang the number off: 4,460 of 11.6M, left out rather than
+		// indexed unfindably.
 		b.Counts["address_no_anchor"]++
 		return
 	}
@@ -330,9 +314,8 @@ func addAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 
 	var id uint32
 	if kind == model.AnchorPlace {
-		// Bind to the nearest real place of that name. Candidate lists are
-		// tiny (a name repeats a handful of times per country), so a linear
-		// scan beats building a spatial index for it.
+		// Nearest real place of that name. Candidate lists are tiny, so a linear
+		// scan beats a spatial index.
 		cands := placesByName[placeNameKey(cc, anchorName)]
 		best, bestD := uint32(0), math.MaxFloat64
 		found := false
@@ -360,8 +343,7 @@ func addAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 		var created bool
 		id, created = b.AnchorID(key)
 		if created {
-			// A street name that appears in addr:street but was never mapped
-			// as a highway way.
+			// In addr:street but never mapped as a highway.
 			a := &b.Anchors[id]
 			a.NameID = b.Strings.Intern(anchorName)
 			a.LocalID = b.Strings.Intern(r.City)

@@ -1,11 +1,9 @@
-// Command foldvectors emits fold/tokenize fixtures for the TypeScript server to
-// verify itself against.
+// Command foldvectors emits fold/tokenize fixtures for the server to verify
+// itself against.
 //
 // The server re-implements the Go normalizer, and index terms were folded by
-// the Go code. If the two drift, queries silently stop matching — no error, just
-// zero results. This makes the contract testable: the vectors are generated
-// from real names in the built artifact plus a set of hand-picked edge cases,
-// and the TS test asserts identical output for every one.
+// Go. Drift makes queries silently return nothing. Vectors come from real names
+// in the built artifact plus hand-picked edge cases.
 package main
 
 import (
@@ -26,8 +24,7 @@ type vector struct {
 	Tokens []string `json:"tokens"`
 }
 
-// edge cases that must never regress, independent of what happens to be in the
-// current extracts
+// Edge cases that must never regress, whatever the current extracts hold.
 var handPicked = []string{
 	"Plzeň", "Náměstí Míru", "Český Krumlov", "Dlouhá třída", "U Půjčovny 2/953",
 	"Łódź", "Marszałkowska", "Świętokrzyska", "Gdańsk", "Zażółć gęślą jaźń",
@@ -58,8 +55,8 @@ func main() {
 		names = append(names, s)
 	}
 
-	// Sample real names across the corpus rather than the first N, which would
-	// only cover one country and one import batch.
+	// Across the corpus, not the first N — that would cover one country and one
+	// import batch.
 	f, err := os.Open(*in)
 	if err != nil {
 		log.Fatal(err)
