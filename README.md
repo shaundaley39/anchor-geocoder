@@ -891,16 +891,75 @@ names drawn from the built corpus plus hand-picked edge cases, and
 `server/test/normalize.contract.test.ts` asserts the TypeScript reproduces every
 one exactly. Regenerate with `make fold-vectors`.
 
-### Why Go, not Java
+### Why the build stage is Go
 
-Java is a common choice for this stage; Go was a deliberate alternative, and the
-architecture is designed so it does not matter — see "the artifact is the
-contract" above. Concretely Go bought: a static dependency-free binary,
-`paulmach/osm` for pbf decoding, cheap parallelism across blob decoding (the
-build sustains ~200–700% CPU), and a fast edit-compile-test loop. The
-`fst`-crate case for Rust is real but only pays off at the index-structure
+Java is a common choice for this stage. Go is a deliberate alternative, and the
+case for it is specific to what this stage actually is: a batch job that reads
+14 GB of binary input and writes a binary file. Not a service, not a request
+path — a compiler for map data.
+
+**Memory layout is the dominant constraint, and Go gives direct control of it.**
+Two of the largest wins in this project were layout decisions that Go makes
+expressible and measurable:
+
+- the cross-extract dedup set keyed by a packed `int64` rather than an
+  `"osm:n123"` string — at ~70M entries, 16 bytes each instead of roughly 90
+- selected ways held as one packed `int64` rather than a struct carrying a
+  `map[string]string` of tags, which took the build's peak from 11.5 GB to
+  5.5 GB
+
+Both are the kind of change you reach for when values are values and a slice is
+a slice. In a language where everything is boxed by default they are harder to
+express and harder to verify; in Node or Python they are not on the table.
+The same control produced the artifact format itself — struct-of-arrays,
+fixed-point `int32` coordinates, CSR offsets.
+
+**The decode parallelises for free.** `paulmach/osm` decodes pbf blobs across
+goroutines, and the scan phases sustain **696% CPU on a 16-core machine**. The
+whole extract averages 238%, the gap being the genuinely sequential parts —
+sorting the node-id set, grouping streets. Go's concurrency model is what makes
+a library expose that as a plain `Scan()` loop rather than an executor and a
+future.
+
+**The operational surface is small.** Two direct dependencies. `CGO_ENABLED=0`
+throughout, so the output is a static binary with no runtime to install — which
+is why the build stage needs nothing in CI beyond `setup-go`, and why the
+container never has to carry a JVM. Formatting, vetting, testing and
+benchmarking are in the toolchain rather than in build-tool configuration.
+
+**And it is easy to read six months later.** A small language with one obvious
+way to do most things, and `gofmt` ending style discussion, is a real
+maintenance property for a stage that will be revisited whenever OSM tagging
+shifts.
+
+#### Where the Go-versus-Java argument is weaker than it looks
+
+Worth stating plainly, because the usual version of it is out of date:
+
+- **Java's backwards compatibility is comparable, not worse.** Old bytecode runs
+  on new JVMs. What people remember is the 8→9 module migration and the Oracle
+  licensing scare, both largely behind us; since 17 LTS the story is good. The
+  honest claim for Go is a *smaller* surface, not a *more stable* one.
+- **Virtual threads closed most of the concurrency gap.** Since Java 21 the
+  ergonomics of cheap concurrency are close enough that "Go for concurrency" is
+  much weaker than it was a decade ago. The parallel decode above is a real
+  benefit, but it is not one Java could not have.
+- **The JVM might well be faster here.** A 24-minute batch job is exactly the
+  long-running, throughput-bound shape where a mature JIT shines. I would not
+  bet on Go winning a like-for-like rewrite on speed.
+- **Java's OSM ecosystem is older and richer** — Osmosis, osm4j — which is
+  probably why it remains a common choice.
+
+So the argument is surface area and memory control, not raw speed, not
+stability, and not a concurrency model Java lacks. And it is deliberately not
+load-bearing: the artifact format is the contract, so this stage can be
+rewritten in Java tomorrow without the server noticing. That property is the
+point — a build stage you can replace is worth more than one you chose
+perfectly.
+
+The `fst`-crate case for Rust is real but only pays off at the index-structure
 stage, and pulling native code back into the TypeScript server via napi-rs would
-undercut the point of the split.
+undercut the split.
 
 ---
 
