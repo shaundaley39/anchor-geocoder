@@ -3,6 +3,7 @@ package pbf
 import (
 	"context"
 	"math"
+	"sort"
 
 	"github.com/paulmach/osm"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
@@ -22,7 +23,7 @@ const (
 
 // scanWays is pass 1. It decodes only ways, selects the ones we want, and
 // records the node IDs needed to give each of them a point.
-func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int64, error) {
+func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]int64, []int64, error) {
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -33,7 +34,7 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int
 	s.SkipRelations = true
 
 	var (
-		ways   []wantedWay
+		ways   []int64
 		needed []int64
 	)
 	for s.Scan() {
@@ -59,7 +60,7 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats) ([]wantedWay, []int
 		// A building or place polygon needs every vertex for its centroid; a
 		// street needs only a point that lies on the line. See package doc.
 		wantAll := addressed || place || poi
-		ways = append(ways, wantedWay{id: int64(w.ID), tags: tags, isBuild: wantAll})
+		ways = append(ways, packWay(int64(w.ID), wantAll))
 
 		if wantAll {
 			for _, n := range w.Nodes {
@@ -149,12 +150,11 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 
 // emitWays is pass 3. It re-reads ways, rebuilds geometry from the retained
 // locations, and emits a point per selected way.
-func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, needed []int64, locs []coord) error {
-	// Index the selection so the second way scan can find each entry in O(1).
-	byID := make(map[int64]*wantedWay, len(ways))
-	for i := range ways {
-		byID[ways[i].id] = &ways[i]
-	}
+func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []int64, needed []int64, locs []coord) error {
+	// `ways` is sorted, so membership is a binary search — ~25 comparisons
+	// against a flat int64 slice, rather than a map of tens of millions of
+	// entries that would itself cost gigabytes.
+	sort.Slice(ways, func(i, j int) bool { return ways[i]>>1 < ways[j]>>1 })
 
 	f, s, err := e.openScanner(ctx)
 	if err != nil {
@@ -171,13 +171,15 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, n
 		if !ok {
 			continue
 		}
-		ww := byID[int64(w.ID)]
-		if ww == nil {
+		isBuild, want := findWay(ways, int64(w.ID))
+		if !want {
 			continue
 		}
+		// Tags come from this scan, not from a copy kept since pass 1.
+		tags := tagsOf(w.Tags)
 
 		pts := make([][2]float64, 0, len(w.Nodes))
-		if ww.isBuild {
+		if isBuild {
 			for _, n := range w.Nodes {
 				if i := search(needed, int64(n.ID)); i >= 0 {
 					c := locs[i]
@@ -200,15 +202,15 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, n
 			continue
 		}
 
-		lat, lon := representativePoint(pts, ww.isBuild)
-		poiCat, _ := isPOI(ww.tags)
+		lat, lon := representativePoint(pts, isBuild)
+		poiCat, _ := isPOI(tags)
 
 		// Keep the outline only where it can change an answer. A building is a
 		// few metres across, so its centroid is already inside clicking
 		// tolerance and a ring would cost 32M rings for nothing; a park or a
 		// lake is not.
 		var ring []geom.Point
-		if ww.isBuild && !isAddressed(ww.tags) && len(pts) >= 4 {
+		if isBuild && !isAddressed(tags) && len(pts) >= 4 {
 			gp := make([]geom.Point, len(pts))
 			for i, p := range pts {
 				gp[i] = geom.Point{Lat: p[0], Lon: p[1]}
@@ -219,7 +221,7 @@ func (e *Extractor) emitWays(ctx context.Context, st *Stats, ways []wantedWay, n
 		}
 
 		if err := e.Emit(RawFeature{
-			OSMType: 'w', OSMID: ww.id, Tags: ww.tags,
+			OSMType: 'w', OSMID: int64(w.ID), Tags: tags,
 			Lat: lat, Lon: lon, Category: poiCat, Ring: ring,
 		}); err != nil {
 			return err

@@ -50,11 +50,40 @@ type coord struct{ lat, lon int32 }
 func packLat(v float64) int32   { return int32(math.Round(v * 1e7)) }
 func unpackLat(v int32) float64 { return float64(v) / 1e7 }
 
-// wantedWay is a way selected in pass 1, awaiting geometry in pass 3.
-type wantedWay struct {
-	id      int64
-	tags    map[string]string
-	isBuild bool // true: needs all vertices (centroid); false: single midpoint
+// A way selected in pass 1 is remembered as a single packed int64: its OSM id
+// shifted left one bit, with the low bit set when the way needs all of its
+// vertices (a centroid) rather than a single midpoint.
+//
+// It is deliberately not a struct holding the way's tags. Pass 3 re-reads the
+// same way from the pbf, so keeping a map[string]string per selected way from
+// pass 1 to pass 3 buys nothing and costs everything: tens of millions of Go
+// maps at several hundred bytes each dominated the build's peak memory.
+// Recomputing the tag map in pass 3 is the same total work, since the tags have
+// to be materialised there anyway.
+func packWay(id int64, needsAllVertices bool) int64 {
+	if needsAllVertices {
+		return id<<1 | 1
+	}
+	return id << 1
+}
+
+// findWay reports whether a way was selected, and whether it needs all of its
+// vertices. `wanted` must be sorted; pbf files emit ways in ascending id order,
+// so pass 1 produces it sorted already.
+func findWay(wanted []int64, id int64) (needsAllVertices, ok bool) {
+	lo, hi := 0, len(wanted)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if wanted[mid]>>1 < id {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < len(wanted) && wanted[lo]>>1 == id {
+		return wanted[lo]&1 == 1, true
+	}
+	return false, false
 }
 
 // Extractor pulls features out of one country extract.

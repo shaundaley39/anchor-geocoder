@@ -41,10 +41,10 @@ Built as three stages:
 | pnpm | 10+ | `corepack enable && corepack prepare pnpm@latest --activate` |
 
 No cgo, no C++ toolchain, no database, no Docker. `CGO_ENABLED=0` throughout, so
-the ingest binaries are fully static. The default build needs **~5 GB of free disk** and about **16 GB of RAM** —
-extraction peaks at 11.5 GB. The full fourteen-country build needs ~20 GB of
-disk and **32 GB of RAM**, peaking at 23 GB. Czechia alone (`COUNTRIES=cz`)
-builds in ~90 seconds and peaks well under 4 GB.
+the ingest binaries are fully static. The default build needs **~5 GB of free disk** and about **8 GB of RAM** —
+extraction peaks at 5.5 GB. The full fourteen-country build needs ~20 GB of disk
+and **16 GB of RAM**. Czechia alone (`COUNTRIES=cz`) builds in ~90 seconds and
+peaks around 2 GB.
 
 ### Full build
 
@@ -269,7 +269,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
-| extract + index | **3m33s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **398 MB**. Peak 11.5 GB RSS |
+| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **398 MB**. Peak 5.5 GB RSS |
 | boot | **3.4 s** | **620 MB RSS** |
 
 **Full region** (all fourteen), for comparison:
@@ -277,7 +277,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 14 GB of extracts |
-| extract | 24m39s | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak 23 GB RSS |
+| extract | ~24m | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak ~11 GB RSS |
 | index | 7m41s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms, 1,466,886 shapes — **1.8 GB**. Peak 13 GB RSS |
 | boot | ~15 s | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — ~**2.6 GB RSS** |
 
@@ -386,6 +386,15 @@ Peak RSS for the full CZ+PL build stays comfortably under 4 GB.
 Buildings need every vertex, but a street only needs one representative point,
 so for highways only the middle vertex is retained — otherwise long roads would
 dominate the retained set.
+
+A way selected in pass 1 is remembered as **one packed `int64`** — its OSM id
+shifted left a bit, with the low bit marking whether it needs all its vertices —
+and pass 3 finds it by binary search. It deliberately does *not* keep the way's
+tags. Pass 3 re-reads the same way from the pbf, so a `map[string]string` held
+per selected way buys nothing and costs everything: tens of millions of Go maps
+at several hundred bytes each dominated peak memory. Dropping them took the
+default build's peak from **11.5 GB to 5.5 GB** with no change to build time and
+a byte-identical artifact.
 
 ### Representative points
 
