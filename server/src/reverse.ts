@@ -36,7 +36,7 @@ import { PointIndex } from './pointindex.js';
 import { type Artifact, toDeg, anchorOfAddress, layerOf, LAYER_PLACE } from './artifact.js';
 import { type GeocodeResult, haversineMetres, anchorBBox } from './forward.js';
 import {
-  containsPoint, distanceToShape, distanceToBBox, hasShape, isClosed, ringAreaM2,
+  containsPoint, distanceToShape, distanceToBBox, hasShape, ringAreaM2,
 } from './geometry.js';
 
 /** Geographic extent of the indexed data, in degrees. */
@@ -45,54 +45,66 @@ export interface BBox {
 }
 
 /**
- * Cell size of the containment grid, in degrees (~5.5km).
- *
- * A feature is listed in every cell its bounding box touches, so small cells
- * multiply large features across many entries while large cells return too many
- * candidates per lookup. At this size a city park occupies one or two cells and
- * a lookup returns a handful of candidates.
+ * Containment grid geometry. These mirror `ingest/internal/index/kdtree.go` and
+ * are part of the artifact format: the build lists a feature in every cell its
+ * bounding box touches, and a lookup here has to compute the same key. Changing
+ * either constant requires a format version bump.
  */
-const EXTENT_CELL_DEG = 0.05;
-
-/** Features whose box is smaller than this are found by the k-d tree anyway. */
-const MIN_EXTENT_M = 30;
+const EXTENT_CELL_DEG = 0.05;   // ~5.5km
+const CELL_ORIGIN = 4096;
+const CELL_STRIDE = 16384;
 
 export interface ReverseIndex {
   tree: PointIndex;
   bbox: BBox;
   /** Number of address points; ids at or above this index anchors. */
   addressCount: number;
-  /**
-   * Containment grid as a flat CSR: `cellRuns` maps a cell key to the
-   * [start, length] of its slice of `cellItems`. Flat rather than a map of
-   * arrays because there are millions of entries and one typed array costs a
-   * fraction of the per-object overhead.
-   */
-  cellRuns: Map<number, [number, number]>;
-  cellItems: Uint32Array;
 }
 
 function cellKey(lat: number, lon: number): number {
-  const x = Math.floor(lon / EXTENT_CELL_DEG) + 4096;
-  const y = Math.floor(lat / EXTENT_CELL_DEG) + 4096;
-  return y * 16384 + x;
+  const x = Math.floor(lon / EXTENT_CELL_DEG) + CELL_ORIGIN;
+  const y = Math.floor(lat / EXTENT_CELL_DEG) + CELL_ORIGIN;
+  return y * CELL_STRIDE + x;
 }
 
+/** Index of a cell key in the sorted key array, or -1. */
+function findCell(a: Artifact, key: number): number {
+  let lo = 0;
+  let hi = a.cellKey.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const v = a.cellKey[mid]!;
+    if (v === key) return mid;
+    if (v < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/**
+ * Assembles the reverse index from the artifact.
+ *
+ * Both spatial structures are precomputed by the build, so this is a scan for
+ * the coverage box and nothing else. It used to partition 15.9M points into a
+ * k-d tree (~3.0s) and construct the containment grid (~2.4s) — startup work
+ * that every replica repeated on every deploy and rollback, to recompute a pure
+ * function of data already in the file.
+ */
 export function buildReverseIndex(a: Artifact): ReverseIndex {
   const nAddr = a.manifest.num_addresses;
-  const nAnchor = a.manifest.num_anchors;
 
   // One tree over addresses and anchors alike. Anchors have to be in it or a
   // click can never return a park, a station or a street — only the nearest
   // doorway, which is what the first version of this did.
   //
   // Point ids below nAddr index the address arrays; at or above it, the anchor
-  // arrays. The tree reads coordinates through these accessors instead of
-  // copying them: kdbush kept its own copy, which on the four-country build was
-  // 128MB of duplicate — ~490MB at fourteen countries.
+  // arrays. The tree reads coordinates through these accessors rather than
+  // copying them, which on the four-country build saved 128MB of duplicate.
   const getY = (id: number) => (id < nAddr ? a.addrLat[id]! : a.anchorLat[id - nAddr]!);
   const getX = (id: number) => (id < nAddr ? a.addrLon[id]! : a.anchorLon[id - nAddr]!);
-  const tree = new PointIndex(nAddr + nAnchor, getX, getY, 64);
+  const tree = PointIndex.fromPermutation(
+    a.kdPerm, getX, getY, a.manifest.kd_node_size,
+  );
 
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
   for (let i = 0; i < nAddr; i++) {
@@ -104,46 +116,9 @@ export function buildReverseIndex(a: Artifact): ReverseIndex {
     if (lon > maxLon) maxLon = lon;
   }
 
-  // Containment grid, built as a counting sort so it is one flat array rather
-  // than several million small ones.
-  const counts = new Map<number, number>();
-  const visit = (fn: (key: number, id: number) => void) => {
-    for (let id = 0; id < nAnchor; id++) {
-      if (!hasShape(a, id) || !isClosed(a, id)) continue;
-      const lo = toDeg(a.anchorMinLat[id]!);
-      const hi = toDeg(a.anchorMaxLat[id]!);
-      const lw = toDeg(a.anchorMinLon[id]!);
-      const hw = toDeg(a.anchorMaxLon[id]!);
-      if ((hi - lo) * 111_320 < MIN_EXTENT_M && (hw - lw) * 111_320 < MIN_EXTENT_M) continue;
-      for (let y = Math.floor(lo / EXTENT_CELL_DEG); y <= Math.floor(hi / EXTENT_CELL_DEG); y++) {
-        for (let x = Math.floor(lw / EXTENT_CELL_DEG); x <= Math.floor(hw / EXTENT_CELL_DEG); x++) {
-          fn((y + 4096) * 16384 + (x + 4096), id);
-        }
-      }
-    }
-  };
-  visit((key) => counts.set(key, (counts.get(key) ?? 0) + 1));
-
-  const cellRuns = new Map<number, [number, number]>();
-  let running = 0;
-  for (const [key, n] of counts) {
-    cellRuns.set(key, [running, n]);
-    running += n;
-  }
-  const cellItems = new Uint32Array(running);
-  const cursor = new Map<number, number>();
-  for (const [key, [s0]] of cellRuns) cursor.set(key, s0);
-  visit((key, id) => {
-    const at = cursor.get(key)!;
-    cellItems[at] = id;
-    cursor.set(key, at + 1);
-  });
-
   return {
     tree,
     addressCount: nAddr,
-    cellRuns,
-    cellItems,
     bbox: {
       minLat: toDeg(minLat), maxLat: toDeg(maxLat),
       minLon: toDeg(minLon), maxLon: toDeg(maxLon),
@@ -209,11 +184,12 @@ export function reverse(
   // ---- tier 1: regions containing the click ------------------------------
   const containing: Candidate[] = [];
   const seenAnchor = new Set<number>();
-  const run = idx.cellRuns.get(cellKey(lat, lon));
-  if (run !== undefined) {
-    const [from, len] = run;
+  const cell = findCell(a, cellKey(lat, lon));
+  if (cell >= 0) {
+    const from = a.cellStart[cell]!;
+    const len = a.cellCount[cell]!;
     for (let i = from; i < from + len; i++) {
-      const id = idx.cellItems[i]!;
+      const id = a.cellItems[i]!;
       if (seenAnchor.has(id) || !okCountry(id)) continue;
       if (distanceToBBox(a, id, lat, lon) > 0) continue;   // filter: the box
       if (!containsPoint(a, id, lat, lon)) continue;        // refine: the ring

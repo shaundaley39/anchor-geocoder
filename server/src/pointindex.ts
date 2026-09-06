@@ -34,12 +34,38 @@ export type CoordFn = (id: number) => number;
 
 export class PointIndex {
   /** Point ids in k-d tree order. The only thing this structure retains. */
-  private readonly ids: Uint32Array;
-  private readonly nodeSize: number;
-  private readonly getX: CoordFn;
-  private readonly getY: CoordFn;
+  private readonly ids!: Uint32Array;
+  private readonly nodeSize!: number;
+  private readonly getX!: CoordFn;
+  private readonly getY!: CoordFn;
 
   /**
+   * Adopts a permutation computed at build time.
+   *
+   * This is the path the server takes. Partitioning 15.9M points cost ~3.0s of
+   * startup and scales to roughly 46s at planet size — expensive work in the
+   * serving process, paid again by every replica on every deploy and rollback,
+   * to recompute something that is a pure function of data the artifact already
+   * holds. `nodeSize` must match what produced the permutation, which is why
+   * the artifact records it.
+   */
+  static fromPermutation(
+    ids: Uint32Array, getX: CoordFn, getY: CoordFn, nodeSize: number,
+  ): PointIndex {
+    const idx = Object.create(PointIndex.prototype) as {
+      ids: Uint32Array; nodeSize: number; getX: CoordFn; getY: CoordFn;
+    };
+    idx.ids = ids;
+    idx.nodeSize = nodeSize;
+    idx.getX = getX;
+    idx.getY = getY;
+    return idx as unknown as PointIndex;
+  }
+
+  /**
+   * Builds the permutation in-process. Retained for tests and for reading an
+   * artifact that predates the precomputed one.
+   *
    * @param scratch  Build against temporary contiguous coordinate arrays.
    *
    * Faster — the partitioning reads sequentially instead of chasing ids through

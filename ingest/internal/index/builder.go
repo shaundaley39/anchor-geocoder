@@ -233,7 +233,21 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 		b.Counts["anchor_centroid_from_addresses"]++
 	}
 
+	// Every anchor gets a box: a degenerate one at its own point when the
+	// feature has no extent. Done here rather than during writing because the
+	// k-d tree and the containment grid both read it.
+	for i := range b.Anchors {
+		a := &b.Anchors[i]
+		if a.MinLat == 0 && a.MaxLat == 0 {
+			a.MinLat, a.MaxLat = a.Lat, a.Lat
+			a.MinLon, a.MaxLon = a.Lon, a.Lon
+		}
+	}
+
 	if err := b.writeAnchors(dir, man); err != nil {
+		return err
+	}
+	if err := b.writeSpatial(dir, man); err != nil {
 		return err
 	}
 	if err := b.writeAddrs(dir, man); err != nil {
@@ -296,13 +310,6 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		cat[i] = a.CatID
 		alt[i] = a.AltID
 
-		// An anchor with no shape still gets a box: a degenerate one at its own
-		// point. That lets the reverse path put every anchor in one index and
-		// treat "inside the box" uniformly, rather than branching per feature.
-		if a.MinLat == 0 && a.MaxLat == 0 {
-			a.MinLat, a.MaxLat = a.Lat, a.Lat
-			a.MinLon, a.MaxLon = a.Lon, a.Lon
-		}
 		minLat[i], minLon[i] = a.MinLat, a.MinLon
 		maxLat[i], maxLon[i] = a.MaxLat, a.MaxLon
 
@@ -332,6 +339,44 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	}
 	man.NumVertices = len(geomFlat) / 2
 	return writeAll(dir, w, man)
+}
+
+// writeSpatial precomputes the two structures the server used to build at boot:
+// the k-d tree permutation over every point, and the containment grid over
+// anchor outlines. Together they were ~5.4s of startup on the four-country
+// index and would be close to a minute at planet scale — paid by every replica,
+// on every deploy and every rollback.
+func (b *Builder) writeSpatial(dir string, man *Manifest) error {
+	nAddr := len(b.Addrs)
+	n := nAddr + len(b.Anchors)
+
+	// Ids below nAddr index the address arrays, at or above them the anchor
+	// arrays. The server resolves them the same way.
+	getY := func(i int) int32 {
+		if i < nAddr {
+			return b.Addrs[i].Lat
+		}
+		return b.Anchors[i-nAddr].Lat
+	}
+	getX := func(i int) int32 {
+		if i < nAddr {
+			return b.Addrs[i].Lon
+		}
+		return b.Anchors[i-nAddr].Lon
+	}
+
+	perm := BuildKDPermutation(n, getX, getY, KDNodeSize)
+	grid := BuildCellGrid(b.Anchors)
+
+	man.KDNodeSize = KDNodeSize
+	man.NumCells = len(grid.Keys)
+	return writeAll(dir, map[string]any{
+		"kd_perm":    perm,
+		"cell_key":   grid.Keys,
+		"cell_start": grid.Starts,
+		"cell_count": grid.Counts,
+		"cell_items": grid.Items,
+	}, man)
 }
 
 func (b *Builder) writeAddrs(dir string, man *Manifest) error {

@@ -269,8 +269,8 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
-| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **398 MB**. Peak 5.5 GB RSS |
-| boot | **3.4 s** | **620 MB RSS** |
+| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **459 MB**. Peak 5.5 GB RSS |
+| boot | **118 ms** | **609 MB RSS** |
 
 **Full region** (all fourteen), for comparison:
 
@@ -279,7 +279,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | fetch | — | 14 GB of extracts |
 | extract | ~24m | 69,970,497 records — 61,100,607 addresses, 4,811,189 POIs, 3,549,769 streets, 508,932 places. Peak ~11 GB RSS |
 | index | 7m41s | 10,240,843 anchors, 61,002,577 addresses, 2,079,646 terms, 1,466,886 shapes — **1.8 GB**. Peak 13 GB RSS |
-| boot | ~15 s | 138 ms to load the artifact, then the k-d tree over 71M points and the containment grid — ~**2.6 GB RSS** |
+| boot | ~0.5 s | the spatial structures come precomputed; boot is a read and a cast — ~**2.6 GB RSS** |
 
 Per country, as indexed:
 
@@ -699,6 +699,31 @@ Note this is data-limited, not code-limited: `Cracow` does *not* resolve to
 Kraków, because Polish OSM sets `name:en=Kraków` and no alias in the data spells
 it that way. GeoNames publishes an `alternateNames` table of historical and
 English exonyms that would close the gap; see Future improvements.
+
+### Nothing expensive happens at boot
+
+The premise of the build/serve split is that the server does no heavy work. The
+first version violated it: startup partitioned every point into a k-d tree
+(~3.0 s) and constructed the containment grid (~2.4 s). Both are pure functions
+of data already in the artifact, and both were recomputed by every replica on
+every deploy and every rollback — scaling to close to a minute at planet size.
+
+They are now built once, in Go, and shipped:
+
+- `kd_perm.bin` — point ids in k-d tree order. The traversal is implicit, so the
+  reader must partition exactly as the writer did; `kd_node_size` is recorded in
+  the manifest rather than assumed. The reader depends only on the *invariant*
+  at each node, not on a particular tie-break, so the Go and TypeScript builders
+  can differ in permutation and both be correct — which the brute-force reverse
+  test confirms.
+- `cell_key` / `cell_start` / `cell_count` / `cell_items` — the containment grid
+  as sorted cell keys with a CSR of anchor ids, replacing a `Map` built at boot
+  with a binary search.
+
+**Boot falls from 3.4 s to 118 ms**, for 61 MB of artifact — which is the same
+`Uint32Array` that was resident anyway, so resident memory is unchanged. Cheap
+startup is what makes horizontal scaling and instant rollback practical: a
+replica is a process that reads a file.
 
 ### The k-d tree does not own its coordinates
 

@@ -24,10 +24,13 @@ async function main(): Promise<void> {
     `(${(t1 - t0).toFixed(0)}ms)`,
   );
 
-  console.log('building reverse k-d tree ...');
+  // Both spatial structures come precomputed in the artifact, so this only
+  // scans for the coverage box. It used to partition every point into a k-d
+  // tree and construct the containment grid, which was ~5.4s of startup here
+  // and would be close to a minute at planet scale.
   const reverseIndex = buildReverseIndex(artifact);
   const t2 = performance.now();
-  console.log(`  done (${(t2 - t1).toFixed(0)}ms)`);
+  console.log(`  spatial indexes attached (${(t2 - t1).toFixed(0)}ms)`);
 
   const app = await buildServer({ artifact, reverseIndex });
   await app.listen({ port: PORT, host: HOST });

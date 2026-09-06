@@ -19,7 +19,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 5;
+export const SUPPORTED_VERSION = 6;
 
 export interface Manifest {
   version: number;
@@ -31,6 +31,8 @@ export interface Manifest {
   num_terms: number;
   num_pois: number;
   num_shapes: number;
+  kd_node_size: number;
+  num_cells: number;
   num_vertices: number;
   num_postings: number;
   country_ids: Record<string, number>;
@@ -150,6 +152,17 @@ export interface Artifact {
   geom: Int32Array;
   geomOff: Uint32Array;
   geomClosed: Uint8Array;
+
+  /**
+   * Spatial structures precomputed by the build, so boot is a read rather than
+   * a rebuild. `kdPerm` is point ids in k-d tree order; the cell arrays are the
+   * containment grid as sorted keys with a CSR of anchor ids.
+   */
+  kdPerm: Uint32Array;
+  cellKey: Int32Array;
+  cellStart: Uint32Array;
+  cellCount: Uint32Array;
+  cellItems: Uint32Array;
   anchorAddrStart: Uint32Array;
   anchorAddrCount: Uint32Array;
 
@@ -206,6 +219,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     postOff, post,
     aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt,
     aMinLat, aMinLon, aMaxLat, aMaxLon, gGeom, gOff, gClosed,
+    kdPerm, cKey, cStart, cCount, cItems,
     aStart, aCount,
     dNum, dLat, dLon, dSort,
   ] = await Promise.all([
@@ -220,6 +234,9 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     view(dir, 'anchor_minlat.bin'), view(dir, 'anchor_minlon.bin'),
     view(dir, 'anchor_maxlat.bin'), view(dir, 'anchor_maxlon.bin'),
     view(dir, 'geom.bin'), view(dir, 'geom_off.bin'), view(dir, 'geom_closed.bin'),
+    view(dir, 'kd_perm.bin'),
+    view(dir, 'cell_key.bin'), view(dir, 'cell_start.bin'),
+    view(dir, 'cell_count.bin'), view(dir, 'cell_items.bin'),
     view(dir, 'anchor_addr_start.bin'), view(dir, 'anchor_addr_count.bin'),
     view(dir, 'addr_num.bin'), view(dir, 'addr_lat.bin'), view(dir, 'addr_lon.bin'),
     view(dir, 'addr_sortkey.bin'),
@@ -250,6 +267,11 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     geom: asI32(gGeom),
     geomOff: asU32(gOff),
     geomClosed: new Uint8Array(gClosed.buffer, gClosed.byteOffset, gClosed.byteLength),
+    kdPerm: asU32(kdPerm),
+    cellKey: asI32(cKey),
+    cellStart: asU32(cStart),
+    cellCount: asU32(cCount),
+    cellItems: asU32(cItems),
     anchorAddrStart: asU32(aStart),
     anchorAddrCount: asU32(aCount),
     addrNum: asU32(dNum),

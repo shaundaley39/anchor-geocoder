@@ -34,6 +34,9 @@
 //	geom_off.bin     uint32[n_anchors+1] vertex offsets into geom.bin
 //	geom_closed.bin  uint8 per anchor: 1 = ring that can contain a point,
 //	                 0 = open point set (a street), only distances apply
+//	kd_perm.bin      uint32 point ids in k-d tree order: ids below n_addresses
+//	                 index the address arrays, at or above them the anchors
+//	cell_*.bin       containment grid, sorted cell keys with a CSR of anchor ids
 //	addr_*.bin       struct-of-arrays, n_addresses entries, grouped by anchor.
 //	                 There is deliberately no addr_anchor: an address's owning
 //	                 anchor is recovered by binary-searching anchor_addr_start,
@@ -46,7 +49,7 @@ package index
 
 // Version is bumped whenever the binary layout changes. The server refuses to
 // load an artifact it does not recognise rather than misreading it.
-const Version = 5
+const Version = 6
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (
@@ -62,15 +65,20 @@ const CoordScale = 1e7
 
 // Manifest describes an artifact. It is written as manifest.json.
 type Manifest struct {
-	Version     int            `json:"version"`
-	BuiltAt     string         `json:"built_at"`
-	Countries   []string       `json:"countries"`
-	NumStrings  int            `json:"num_strings"`
-	NumAnchors  int            `json:"num_anchors"`
-	NumAddrs    int            `json:"num_addresses"`
-	NumTerms    int            `json:"num_terms"`
-	NumPOIs     int            `json:"num_pois"`
-	NumShapes   int            `json:"num_shapes"`
+	Version    int      `json:"version"`
+	BuiltAt    string   `json:"built_at"`
+	Countries  []string `json:"countries"`
+	NumStrings int      `json:"num_strings"`
+	NumAnchors int      `json:"num_anchors"`
+	NumAddrs   int      `json:"num_addresses"`
+	NumTerms   int      `json:"num_terms"`
+	NumPOIs    int      `json:"num_pois"`
+	NumShapes  int      `json:"num_shapes"`
+	// KDNodeSize is written because the k-d traversal is implicit: the reader
+	// must partition the permutation exactly as the writer did, and a silent
+	// mismatch returns subtly wrong neighbours rather than an error.
+	KDNodeSize  int            `json:"kd_node_size"`
+	NumCells    int            `json:"num_cells"`
 	NumVertices int            `json:"num_vertices"`
 	NumPosting  int            `json:"num_postings"`
 	CountryIDs  map[string]int `json:"country_ids"`
