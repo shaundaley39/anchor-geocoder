@@ -1,6 +1,14 @@
-# Minimal Geocoding API — Central Europe
+# anchor-geocoder
 
-A geocoding service over OpenStreetMap data.
+A forward and reverse geocoding API over OpenStreetMap data, served from a
+purpose-built binary index.
+
+Named for the abstraction it is built on. Addresses are not documents in the
+text index — each one hangs off an **anchor**, which is polymorphically a street
+*or* a place, because 47% of Czech addresses have no street and the classic
+`{housenumber, street, city}` schema silently drops half the country. That
+collapses 14.0M addresses into 2.0M searchable anchors, and turns a house number
+from a document of its own into a binary search inside the anchor that matched.
 
 The default build covers **Poland, Czechia, Switzerland and Bosnia and
 Herzegovina** — 14.0M addresses, 963k points of interest, 2.0M anchors — and
@@ -293,9 +301,10 @@ classification (`railway=station`, `amenity=restaurant`, `historic=castle`).
 Coverage is whatever the artifact holds: currently
 lat 48.547–54.835, lon 12.090–24.160.
 
-Responses are a GeoJSON `FeatureCollection` shaped after the conventional
-geocoding API, so the endpoint is a drop-in for anything already speaking that
-dialect. The **OpenAPI 3.1 document** is served at `/openapi.json` and rendered
+Responses are a GeoJSON `FeatureCollection` shaped after the dialect the
+commercial geocoding APIs converged on — `center`, `bbox` and a `place_type`
+alongside the standard geometry — so the endpoint is a drop-in for anything
+already speaking it. The **OpenAPI 3.1 document** is served at `/openapi.json` and rendered
 at **`/docs`**.
 
 ```json
@@ -386,8 +395,7 @@ query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
 
 Everything expensive happens offline and exactly once: pbf decoding, way
 geometry resolution, Unicode folding, street grouping, deduplication. The server
-loads the result and never mutates it. This is a common shape
-and the point of it is that the
+loads the result and never mutates it. The point of the split is that the
 boundary is a **file format, not a language**. The ingest stage is Go here; it
 could be Java or Rust tomorrow without the server noticing.
 
@@ -1147,7 +1155,7 @@ server/                       TypeScript — online stage
   src/pointindex.ts           static k-d tree over borrowed coordinate arrays
   src/reverse.ts              two-tier reverse geocoding over that tree
   src/result.ts               the internal result shape, shared by both directions
-  src/geojson.ts              conventional FeatureCollection rendering
+  src/geojson.ts              FeatureCollection rendering
   src/routes.ts               /v1/geocode and /health
   src/server.ts               Fastify instance, plugins, request logging
   src/index.ts                process entry: load, attach indexes, listen

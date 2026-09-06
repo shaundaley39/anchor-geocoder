@@ -1,5 +1,5 @@
-/** Shaped after the conventional geocoding API, so the endpoint is a drop-in for
- * anything already speaking that dialect. */
+/** Shaped after the dialect the commercial geocoding APIs converged on, so the
+ * endpoint is a drop-in for anything already speaking it. */
 import type { GeocodeResult } from './result.js';
 import type {
   Feature, FeatureCollection, FeatureProperties,

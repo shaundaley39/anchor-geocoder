@@ -17,3 +17,7 @@ packages/*/dist/
 *~
 .idea/
 .vscode/
+
+# compiled binaries
+/ingest/geoingest
+/ingest/geoindex
