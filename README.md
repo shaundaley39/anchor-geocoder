@@ -1012,12 +1012,15 @@ one exactly. Regenerate with `make fold-vectors`.
 
 ### Why the build stage is Go
 
-Java is the obvious default for this stage, and the case for Go is specific to
-what the stage actually is: a batch job that reads somewhere between 3.5 GB and
-88 GB of binary input and writes a binary file.
-Not a service, not a request path — a compiler for map data. The default build
-reads 3.5 GB, the full European set 30 GB, and the planet 88 GB; the design
-target is the top of that range, not the bottom.
+There is no default language for this. The heavy lifting in the OSM ecosystem is
+mostly C++ — libosmium, osm2pgsql, Nominatim's indexer, OSRM — with a strong JVM
+contingent in [Planetiler](https://github.com/onthegomap/planetiler),
+GraphHopper and Photon, and Go present in imposm3. So the choice has to be
+argued from what the stage actually is: a batch job that reads between 3.5 GB
+and 88 GB of binary input and writes a binary file. Not a service, not a request
+path — a compiler for map data. The default build reads 3.5 GB, the full
+European set 30 GB, and the planet 88 GB; the design target is the top of that
+range, not the bottom.
 
 **Memory layout is the dominant constraint, and Go gives direct control of it.**
 Two of the largest wins in this project were layout decisions that Go makes
@@ -1065,11 +1068,19 @@ Worth stating plainly, because the usual version of it is out of date:
   ergonomics of cheap concurrency are close enough that "Go for concurrency" is
   much weaker than it was a decade ago. The parallel decode above is a real
   benefit, but it is not one Java could not have.
-- **The JVM might well be faster here.** A 24-minute batch job is exactly the
-  long-running, throughput-bound shape where a mature JIT shines. I would not
-  bet on Go winning a like-for-like rewrite on speed.
-- **Java's OSM ecosystem is older and richer** — Osmosis, osm4j — and remains
-  the default choice for this kind of tooling.
+- **The JVM might well be faster here, and the GC argument says so too.** A
+  24-minute batch job is long past warmup, which is where a mature JIT shines.
+  More pointedly: Go's collector is tuned for low pause and is not generational,
+  while this workload wants throughput and allocates a torrent of short-lived
+  decoded objects over a multi-GB long-lived heap. That is the generational
+  hypothesis in its textbook form, and Java's collectors are built for it. I
+  would not bet on Go winning a like-for-like rewrite on speed.
+- **Planetiler is the counter-example that matters.** It builds planet-scale
+  vector tiles in a few hours on one machine, memory-efficiently and with no
+  external database, in Java — a strictly harder version of this job. It cuts
+  both ways, though: its speed comes from hand-built off-heap, memory-mapped
+  primitive storage, which is to say from working around the object model rather
+  than with it.
 
 So the argument is surface area and memory control, not raw speed, not
 stability, and not a concurrency model Java lacks. And it is deliberately not
