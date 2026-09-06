@@ -16,9 +16,12 @@
     "fastify": "^5.2.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.0",
+    "eslint": "^10.9.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.69.0",
     "vitest": "^2.1.8"
   }
 }

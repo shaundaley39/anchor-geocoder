@@ -17,7 +17,7 @@ CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
 
 .PHONY: all fetch records index test test-go test-server clean verify countries \
         fold-vectors serve bench install docker docker-bundled docker-run \
-        docker-run-bundled
+        docker-run-bundled hooks lint lint-go lint-server
 
 all: fetch records index
 
@@ -73,6 +73,24 @@ serve:
 ## bench: measure query latency against the built index
 bench:
 	cd server && pnpm exec tsx bench.mts
+
+## hooks: install the local git hooks (fast static checks, no tests)
+hooks:
+	@git config core.hooksPath scripts/hooks
+	@echo "  hooks installed from scripts/hooks (bypass once with -n / --no-verify)"
+
+## lint: the same checks CI runs
+lint: lint-go lint-server
+
+lint-go:
+	cd ingest && $(GO) vet ./...
+	@cd ingest && u=$$(gofmt -l .); test -z "$$u" || (echo "not gofmt'd:"; echo "$$u"; exit 1)
+	@command -v golangci-lint >/dev/null && (cd ingest && CGO_ENABLED=0 golangci-lint run ./...) \
+	  || echo "  golangci-lint not installed; skipped (brew install golangci-lint)"
+
+lint-server:
+	cd server && pnpm exec tsc --noEmit -p tsconfig.test.json
+	cd server && pnpm exec eslint .
 
 ## test: run both test suites
 test: test-go test-server

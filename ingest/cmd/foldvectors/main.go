@@ -102,10 +102,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer of.Close()
 	e := json.NewEncoder(of)
 	e.SetIndent("", " ")
 	if err := e.Encode(vecs); err != nil {
+		_ = of.Close() // already failing; this error adds nothing
+		log.Fatal(err)
+	}
+	// Checked, not deferred: a failed Close on a writer means unflushed data,
+	// and silently reporting a truncated file as success is worse than a crash.
+	if err := of.Close(); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %d fold vectors to %s", len(vecs), *out)

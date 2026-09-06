@@ -1,0 +1,23 @@
+# Conservative configuration: the goal is to catch real defects without
+# generating findings that get routinely ignored, which is how a linter stops
+# being read at all.
+version: "2"
+
+linters:
+  default: standard          # errcheck, govet, ineffassign, staticcheck, unused
+  exclusions:
+    rules:
+      # A deferred Close on a file opened for reading cannot lose data, and
+      # checking it adds noise to every scan function. Writers are different —
+      # a failed Close there means unflushed output — and those are checked
+      # explicitly rather than deferred.
+      - linters: [errcheck]
+        source: '^\s*defer .*\.Close\(\)$'
+
+      # Measurement commands are deliberately throwaway-shaped: they print and
+      # exit, so an unchecked Fprintf or a missing error path is not a defect.
+      - linters: [errcheck]
+        path: 'cmd/(tagstat|poistat|relstat|namestat)/'
+
+formatters:
+  enable: [gofmt]

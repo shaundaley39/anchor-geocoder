@@ -274,10 +274,16 @@ func (b *Builder) Finish(dir string, man *Manifest) error {
 	if err != nil {
 		return err
 	}
-	defer mf.Close()
 	e := json.NewEncoder(mf)
 	e.SetIndent("", "  ")
-	return e.Encode(man)
+	if err := e.Encode(man); err != nil {
+		_ = mf.Close() // already failing; this error adds nothing
+		return err
+	}
+	// Checked, not deferred: a failed Close on a writer means unflushed data,
+	// and reporting a truncated manifest as a successful build is worse than
+	// failing loudly.
+	return mf.Close()
 }
 
 func (b *Builder) writeAnchors(dir string, man *Manifest) error {

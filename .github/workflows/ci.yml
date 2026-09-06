@@ -1,0 +1,130 @@
+# Fast checks on every push and pull request.
+#
+# Split by directory and path-filtered, so a change to the TypeScript server
+# does not re-run the Go build and vice versa. Neither job needs a built index:
+# the Go tests are self-contained, and the TypeScript suite skips the
+# integration tests when there is no artifact, leaving the unit tests — folding,
+# geometry, the k-d tree — which are the ones a code change is likely to break.
+#
+# Building a real index and running the full suite against it is the separate
+# `pipeline` workflow, because it costs a download and several minutes.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      server: ${{ steps.filter.outputs.server }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'ingest/**'
+              - 'config/**'
+              - '.github/workflows/ci.yml'
+            server:
+              - 'server/**'
+              - '.github/workflows/ci.yml'
+
+  go:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingest
+    env:
+      # No cgo anywhere: the ingest binaries are static and need no C toolchain.
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ingest/go.mod
+          cache-dependency-path: ingest/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt'd:"; echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: ingest
+
+      - name: test
+        run: go test -race -count=1 ./...
+
+      - name: build every command
+        run: go build ./...
+
+  server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm exec tsc --noEmit -p tsconfig.test.json
+
+      - name: lint
+        run: pnpm exec eslint .
+
+      - name: test
+        # Integration tests skip without an artifact; the unit tests — folding,
+        # geometry, the k-d tree — all run.
+        run: pnpm exec vitest run
+
+      - name: build
+        run: pnpm exec tsc -p tsconfig.json
+
+  # A single required check, so branch protection has one name to point at
+  # however the path filters resolve.
+  ci:
+    if: always()
+    needs: [go, server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: verify no job failed
+        run: |
+          echo "go=${{ needs.go.result }} server=${{ needs.server.result }}"
+          [ "${{ contains(needs.*.result, 'failure') }}" = "false" ] || exit 1
+          [ "${{ contains(needs.*.result, 'cancelled') }}" = "false" ] || exit 1

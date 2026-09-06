@@ -1,0 +1,107 @@
+# End-to-end: fetch a real extract, run the whole pipeline, and test the server
+# against the artifact it produced.
+#
+# Separate from `ci` because it costs a ~0.9GB download and several minutes,
+# which is too slow to sit in front of every push. It is the check that would
+# catch the failures unit tests structurally cannot: a change to the record
+# schema that the index builder mis-reads, a format version bump applied on one
+# side only, an artifact the server refuses to load.
+#
+# Czechia alone, because it exercises the awkward parts — 47% of its addresses
+# have no street, so it covers the polymorphic anchor — at a thirtieth of the
+# size of the full European set. Tests that name Polish places declare that
+# dependency and skip here rather than failing.
+name: pipeline
+
+on:
+  pull_request:
+    paths:
+      - 'ingest/**'
+      - 'server/src/artifact.ts'
+      - 'config/**'
+      - '.github/workflows/pipeline.yml'
+  schedule:
+    # Weekly, so drift in OSM tagging surfaces on its own rather than during a
+    # change. Geofabrik rebuilds daily and the extract cache is monthly, so this
+    # also exercises a genuinely fresh download once a month.
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: 'COUNTRIES selection (code, @group, or a mix)'
+        default: 'cz'
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  end-to-end:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: '0'
+      COUNTRIES: ${{ github.event.inputs.countries || 'cz' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ingest/go.mod
+          cache-dependency-path: ingest/go.sum
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: resolve the selection
+        id: sel
+        run: |
+          echo "codes=$(./scripts/resolve-countries.sh codes "$COUNTRIES")" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      # Extracts are large and change daily; a monthly key keeps the cache warm
+      # without pinning CI to data that never refreshes.
+      - name: cache extracts
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: extracts-${{ steps.sel.outputs.codes }}-${{ steps.sel.outputs.month }}
+
+      - name: fetch
+        run: make fetch COUNTRIES="$COUNTRIES"
+
+      - name: extract
+        run: make records COUNTRIES="$COUNTRIES"
+
+      - name: index
+        run: make index
+
+      - name: report what was built
+        run: |
+          echo '### Index built' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat build/index/manifest.json | head -30 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -sh build/index >> "$GITHUB_STEP_SUMMARY"
+
+      - name: install server dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: server
+
+      - name: full suite against the real artifact
+        run: pnpm exec vitest run
+        working-directory: server
+
+      - name: the server actually serves
+        run: |
+          INDEX_DIR=../build/index PORT=3000 pnpm exec tsx src/index.ts &
+          for i in $(seq 1 60); do curl -sf localhost:3000/health >/dev/null && break; sleep 1; done
+          curl -sf localhost:3000/health | tee /dev/stderr | grep -q '"status":"ok"'
+          # One query in each direction, so a broken artifact cannot pass as healthy.
+          curl -sf 'localhost:3000/v1/geocode?q=Praha&limit=1' | grep -q '"place_name"'
+          curl -sf 'localhost:3000/v1/geocode?lat=50.0813&lon=14.4262&limit=1' | grep -q '"place_name"'
+        working-directory: server

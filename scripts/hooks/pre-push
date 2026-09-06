@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Deliberately minimal.
+#
+# Running the test suite here was considered and rejected: it taxes every push
+# to catch what CI catches a minute later, and the habitual response to a slow
+# push hook is --no-verify, which removes the protection entirely. Tests belong
+# where they are cheap — run locally when you think you broke something, and in
+# GitHub Actions where a failure is caught without costing you the wait.
+#
+# What is left is the one thing CI cannot tell you afterwards for free: whether
+# the thing even builds.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+if [ -d ingest ]; then
+  CGO_ENABLED=0 GOTOOLCHAIN=local go -C ingest build ./... || {
+    echo "pre-push: the Go build is broken. Bypass with: git push --no-verify"
+    exit 1
+  }
+fi

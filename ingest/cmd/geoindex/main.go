@@ -138,10 +138,14 @@ func run(inPath, outDir string) error {
 	if err != nil {
 		return err
 	}
-	defer mf.Close()
 	e := json.NewEncoder(mf)
 	e.SetIndent("", "  ")
 	if err := e.Encode(man); err != nil {
+		_ = mf.Close() // already failing; this error adds nothing
+		return err
+	}
+	// Checked, not deferred: a failed Close on a writer means unflushed data.
+	if err := mf.Close(); err != nil {
 		return err
 	}
 

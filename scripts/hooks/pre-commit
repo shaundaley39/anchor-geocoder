@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Fast static checks on staged files only. Deliberately no tests.
+#
+# A hook that runs the suite taxes every commit to catch something CI catches
+# anyway, and the usual result is that people learn to pass --no-verify. This
+# aims to stay under a second or two: formatting, vet, typecheck — the things
+# that are annoying to discover in CI precisely because they are trivial.
+#
+# Install with `make hooks`. Bypass a single commit with `git commit -n`.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+fail=0
+note() { printf '  %s\n' "$*"; }
+
+if grep -q '^ingest/.*\.go$' <<<"$staged"; then
+  echo "pre-commit: go"
+  # gofmt on staged files only, so an unrelated file elsewhere cannot block you.
+  unformatted=$(grep '^ingest/.*\.go$' <<<"$staged" | xargs gofmt -l 2>/dev/null || true)
+  if [ -n "$unformatted" ]; then
+    note "not gofmt'd (run: gofmt -w $unformatted)"; note "$unformatted"; fail=1
+  fi
+  # vet is fast on a warm build cache and catches the mistakes that are
+  # embarrassing to find in CI.
+  ( cd ingest && CGO_ENABLED=0 GOTOOLCHAIN=local go vet ./... ) || fail=1
+fi
+
+if grep -qE '^server/(src|test)/.*\.ts$' <<<"$staged"; then
+  echo "pre-commit: typescript"
+  if [ -d server/node_modules ]; then
+    ( cd server && ./node_modules/.bin/tsc --noEmit -p tsconfig.test.json ) || fail=1
+  else
+    note "server/node_modules missing; skipping typecheck (run: make install)"
+  fi
+fi
+
+# The country catalog is read by both the Go build and the Makefile, so a
+# malformed row breaks the pipeline in a confusing place. It is cheap to check.
+if grep -q '^config/' <<<"$staged"; then
+  echo "pre-commit: config"
+  ./scripts/resolve-countries.sh codes "@europe" >/dev/null || fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "pre-commit failed. Fix, or bypass once with: git commit -n"
+  exit 1
+fi

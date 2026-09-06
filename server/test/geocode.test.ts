@@ -10,7 +10,7 @@
  * on a fresh clone before `make all` has run.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
 import { forward, parseQuery, findHouseNumber, haversineMetres } from '../src/forward.js';
@@ -20,12 +20,33 @@ import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
 import type { FastifyInstance } from 'fastify';
 
-const INDEX_DIR = fileURLToPath(new URL('../../build/index', import.meta.url));
+// Overridable so CI can point at an index built somewhere else, and so a
+// smaller corpus can be checked without disturbing the local one.
+const INDEX_DIR = process.env['INDEX_DIR']
+  ?? fileURLToPath(new URL('../../build/index', import.meta.url));
 const haveIndex = existsSync(`${INDEX_DIR}/manifest.json`);
 const maybe = haveIndex ? describe : describe.skip;
 
+/**
+ * Which countries the built index actually contains.
+ *
+ * Most of what follows is structural and holds for any corpus, but some tests
+ * name real places, and those can only run where that country was built. CI
+ * builds Czechia alone — 0.9GB rather than 30 — so a test naming Warszawa has
+ * to skip rather than fail. Stating the dependency also documents it: a test
+ * that silently requires one dataset is testing the dataset.
+ */
+const covered: Record<string, number> = haveIndex
+  ? (JSON.parse(readFileSync(`${INDEX_DIR}/manifest.json`, 'utf8')) as
+      { country_ids: Record<string, number> }).country_ids
+  : {};
+
+/** `needs('cz','pl')('...', fn)` runs only where both were built. */
+const needs = (...cc: string[]) =>
+  (cc.every((c) => c in covered) ? it : it.skip);
+
 describe('rate limiting', () => {
-  it('returns 429 with Retry-After once the window is exhausted', async () => {
+  needs('cz')('returns 429 with Retry-After once the window is exhausted', async () => {
     if (!haveIndex) return;
     const a = await loadArtifact(INDEX_DIR);
     // A tiny index slice is enough; the limiter runs before the handler.
@@ -179,13 +200,13 @@ maybe('against the built index', () => {
   describe('forward geocoding', () => {
     const top = (q: string, opts = {}) => forward(a, q, { limit: 5, ...opts })[0];
 
-    it('finds a major city by exact name', () => {
+    needs('cz', 'pl')('finds a major city by exact name', () => {
       expect(top('Praha')?.name).toBe('Praha');
       expect(top('Warszawa')?.name).toBe('Warszawa');
       expect(top('Brno')?.name).toBe('Brno');
     });
 
-    it('is diacritic-insensitive in both directions', () => {
+    needs('cz', 'pl')('is diacritic-insensitive in both directions', () => {
       expect(top('Lodz')?.name).toBe('Łódź');
       expect(top('Łódź')?.name).toBe('Łódź');
       expect(top('Plzen')?.name).toBe('Plzeň');
@@ -202,7 +223,7 @@ maybe('against the built index', () => {
      * cz+pl index and only appeared on a cz-only build, so this asserts the
      * invariant rather than one index's happened-to-work ordering.
      */
-    it('ranks an exact name above a longer prefix sibling', () => {
+    needs('cz')('ranks an exact name above a longer prefix sibling', () => {
       for (const city of ['Praha', 'Plzen', 'Brno', 'Ostrava', 'Liberec', 'Olomouc']) {
         const got = top(city)?.name ?? '';
         const asciiFolded = got.normalize('NFD').replace(/\p{Mn}/gu, '').toLowerCase();
@@ -220,7 +241,7 @@ maybe('against the built index', () => {
      * but incidental context, and a POI called "Prague College" outranked the
      * capital. Ranking now scores every name variant and keeps the best.
      */
-    it('resolves exonyms to the native-language place', () => {
+    needs('cz', 'pl')('resolves exonyms to the native-language place', () => {
       expect(top('Prague')?.name).toBe('Praha');
       expect(top('Warsaw')?.name).toBe('Warszawa');
       expect(top('Pilsen')?.name).toBe('Plzeň');
@@ -228,7 +249,7 @@ maybe('against the built index', () => {
       expect(top('Danzig')?.name).toBe('Gdańsk');
     });
 
-    it('ranks the city above POIs that merely mention the exonym', () => {
+    needs('cz')('ranks the city above POIs that merely mention the exonym', () => {
       // 338 anchors carry the term "prague"; almost all are POIs with it in
       // their name, and one of them is literally "Prague College".
       const r = forward(a, 'Prague', { limit: 3 })[0]!;
@@ -236,36 +257,36 @@ maybe('against the built index', () => {
       expect(r.name).toBe('Praha');
     });
 
-    it('matches an exonym on a feature that is not a settlement', () => {
+    needs('cz')('matches an exonym on a feature that is not a settlement', () => {
       const r = top('Wenceslas Square');
       expect(r?.name).toBe('Václavské náměstí');
     });
 
-    it('finds a POI by brand or operator, not just its own name', () => {
+    needs('cz', 'pl')('finds a POI by brand or operator, not just its own name', () => {
       expect(top('Zabka', { proximity: { lat: 52.2297, lon: 21.0122 } })?.layer).toBe('poi');
       const post = top('Ceska posta', { proximity: { lat: 50.0755, lon: 14.4378 } });
       expect(post?.category).toBe('amenity=post_office');
     });
 
-    it('does not let a long alias list dilute a short exact match', () => {
+    needs('cz', 'pl')('does not let a long alias list dilute a short exact match', () => {
       // Kraków carries 26 alternate names. Scoring the union of them as one
       // long name would make it rank worse the better it is documented.
       expect(top('Krakow')?.name).toBe('Kraków');
       expect(top('Krakau')?.name).toBe('Kraków');
     });
 
-    it('supports prefix autocomplete on the final token', () => {
+    needs('cz', 'pl')('supports prefix autocomplete on the final token', () => {
       expect(top('Warsz')?.name).toBe('Warszawa');
       expect(top('Krak')?.name).toBe('Kraków');
     });
 
-    it('resolves a street address to an address point', () => {
+    needs('cz', 'pl')('resolves a street address to an address point', () => {
       const r = top('Marszalkowska 12');
       expect(r?.layer).toBe('address');
       expect(r?.houseNumber).toBe('12');
     });
 
-    it('resolves a Czech composed house number', () => {
+    needs('cz')('resolves a Czech composed house number', () => {
       const r = top('Prazska 248/39');
       expect(r?.layer).toBe('address');
       // Either the exact composed form or the numeric match is acceptable;
@@ -273,20 +294,20 @@ maybe('against the built index', () => {
       expect(r?.houseNumber?.startsWith('248')).toBe(true);
     });
 
-    it('resolves a place-anchored village address with no street', () => {
+    needs('cz')('resolves a place-anchored village address with no street', () => {
       const r = top('Velka Upa 299');
       expect(r?.layer).toBe('address');
       expect(r?.houseNumber).toBe('299');
       expect(r?.name).toBe('Velká Úpa');
     });
 
-    it('honours the country filter', () => {
+    needs('cz', 'pl')('honours the country filter', () => {
       const pl = forward(a, 'Nowa Wies', { limit: 5, country: 'pl' });
       expect(pl.length).toBeGreaterThan(0);
       expect(pl.every((r) => r.country === 'pl')).toBe(true);
     });
 
-    it('biases toward the proximity point', () => {
+    needs('cz')('biases toward the proximity point', () => {
       // Nádražní is one of the commonest Czech street names (575 of them).
       const nearBrno = forward(a, 'Nadrazni', {
         limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
@@ -295,7 +316,7 @@ maybe('against the built index', () => {
       expect(d).toBeLessThan(30_000);
     });
 
-    it('finds points of interest by name', () => {
+    needs('cz')('finds points of interest by name', () => {
       expect(top('Prazsky hrad')?.layer).toBe('poi');
       expect(top('Karluv most')?.name).toBe('Karlův most');
       const station = top('Brno hlavni nadrazi');
@@ -310,7 +331,7 @@ maybe('against the built index', () => {
      * named Nádražní, because relevance was measured against name *length*
      * rather than whether the name matched.
      */
-    it('ranks a street above a POI that merely sits on it', () => {
+    needs('cz')('ranks a street above a POI that merely sits on it', () => {
       const r = forward(a, 'Nadrazni', {
         limit: 3, proximity: { lat: 49.1951, lon: 16.6068 },
       })[0]!;
@@ -324,19 +345,19 @@ maybe('against the built index', () => {
      * a street to 7.0 for an airport. A single overall cut therefore deletes
      * the lowest-prior layer wholesale, so the cut is per layer.
      */
-    it('never lets one layer crowd another out of the candidate set', () => {
+    needs('cz')('never lets one layer crowd another out of the candidate set', () => {
       const layers = new Set(forward(a, 'Nadrazni', { limit: 20 }).map((r) => r.layer));
       expect(layers.has('street')).toBe(true);
     });
 
-    it('collapses duplicate mappings of one place', () => {
+    needs('cz')('collapses duplicate mappings of one place', () => {
       // Karlův most is mapped as an attraction more than once along its length.
       const rs = forward(a, 'Karluv most', { limit: 5 })
         .filter((r) => r.layer === 'poi' && r.name === 'Karlův most');
       expect(rs.length).toBe(1);
     });
 
-    it('keeps genuinely distinct branches of a chain', () => {
+    needs('cz', 'pl')('keeps genuinely distinct branches of a chain', () => {
       const rs = forward(a, 'Biedronka', { limit: 5 }).filter((r) => r.layer === 'poi');
       expect(rs.length).toBeGreaterThan(1);
     });
@@ -389,7 +410,9 @@ maybe('against the built index', () => {
   describe('reverse geocoding', () => {
     it('returns the containing address for a known point', () => {
       // A point taken from the index itself must resolve to (almost) itself.
-      const i = 5_000_000;
+      // Derived from the corpus size rather than hardcoded, or it overruns a
+      // smaller build.
+      const i = Math.floor(a.manifest.num_addresses / 2);
       const lat = toDeg(a.addrLat[i]!);
       const lon = toDeg(a.addrLon[i]!);
       const rs = reverse(a, rev, lat, lon, { limit: 1 });
@@ -397,7 +420,7 @@ maybe('against the built index', () => {
       expect(rs[0]!.distance).toBeLessThan(1);
     });
 
-    it('orders the proximity tier by increasing distance', () => {
+    needs('cz')('orders the proximity tier by increasing distance', () => {
       const rs = reverse(a, rev, 50.0813, 14.4262, { limit: 10 })
         .filter((r) => !r.containing);
       expect(rs.length).toBeGreaterThan(1);
@@ -518,7 +541,7 @@ maybe('against the built index', () => {
      * *address* in the result rather than the first result overall, because a
      * containing region legitimately outranks it at distance zero.
      */
-    it('agrees with brute force on the nearest address', () => {
+    needs('cz')('agrees with brute force on the nearest address', () => {
       const qLat = 50.0813, qLon = 14.4262;
       let bestI = -1, bestD = Infinity;
       const n = a.manifest.num_addresses;
@@ -558,10 +581,20 @@ maybe('against the built index', () => {
      * it and absent otherwise, rather than faked from a radius.
      */
     it('carries a bbox on results that have extent, for the UI to zoom to', async () => {
-      const body = (await get('/v1/geocode?q=Englischer+Garten&limit=1')).json();
-      const f = body.features[0];
-      expect(f.bbox).toBeDefined();
-      const [minLon, minLat, maxLon, maxLat] = f.bbox;
+      // Search for a feature the index actually holds a ring for, rather than
+      // naming one: which parks exist depends on which countries were built.
+      let named = '';
+      for (let id = 0; id < a.manifest.num_anchors && !named; id += 3) {
+        if (!hasShape(a, id) || a.geomClosed[id] !== 1) continue;
+        if (ringAreaM2(a, id) < 50_000) continue;
+        const n = a.strings.get(a.anchorName[id]!);
+        if (n.length > 4 && !/\d/.test(n)) named = n;
+      }
+      expect(named).not.toBe('');
+      const body = (await get(`/v1/geocode?q=${encodeURIComponent(named)}&limit=5`)).json();
+      const f = body.features.find((x: { bbox?: unknown }) => x.bbox);
+      expect(f, `no result with a bbox for ${named}`).toBeDefined();
+      const [minLon, minLat, maxLon, maxLat] = f.bbox as [number, number, number, number];
       expect(minLon).toBeLessThan(maxLon);
       expect(minLat).toBeLessThan(maxLat);
       // The point must lie inside its own box.
@@ -571,13 +604,13 @@ maybe('against the built index', () => {
       expect(f.center[1]).toBeLessThanOrEqual(maxLat);
     });
 
-    it('omits bbox rather than faking one for a feature with no extent', async () => {
+    needs('cz')('omits bbox rather than faking one for a feature with no extent', async () => {
       // Berlin is a place=city *node* in OSM; the boundary is a relation.
       const f = (await get('/v1/geocode?q=Berlin&limit=1')).json().features[0];
       expect(f.bbox).toBeUndefined();
     });
 
-    it('serves forward geocoding as GeoJSON', async () => {
+    needs('cz')('serves forward geocoding as GeoJSON', async () => {
       const res = await get('/v1/geocode?q=Praha&limit=2');
       expect(res.statusCode).toBe(200);
       const body = res.json();
@@ -591,7 +624,7 @@ maybe('against the built index', () => {
       expect(f.geometry.coordinates[1]).toBeCloseTo(50.08, 1);
     });
 
-    it('serves reverse geocoding from the same endpoint', async () => {
+    needs('cz')('serves reverse geocoding from the same endpoint', async () => {
       const res = await get('/v1/geocode?lat=50.0813&lon=14.4262&limit=2');
       expect(res.statusCode).toBe(200);
       const body = res.json();
@@ -636,7 +669,7 @@ maybe('against the built index', () => {
      * transposes them. For Czechia and Poland that lands off Somalia and
      * returns nothing, with no indication why.
      */
-    it('flags transposed coordinates instead of silently returning nothing', async () => {
+    needs('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
       const res = await get('/v1/geocode?lat=16.6148&lon=49.2012');
       expect(res.statusCode).toBe(200); // outside coverage is not an error
       const body = res.json();
@@ -644,20 +677,20 @@ maybe('against the built index', () => {
       expect(body.query.hint).toMatch(/transposed/);
     });
 
-    it('does not second-guess a genuine query from outside coverage', async () => {
+    needs('cz')('does not second-guess a genuine query from outside coverage', async () => {
       // Mid-Atlantic: neither orientation is inside the indexed area.
       const body = (await get('/v1/geocode?lat=30&lon=-40')).json();
       expect(body.features).toEqual([]);
       expect(body.query.hint).toBeUndefined();
     });
 
-    it('does not flag a valid in-coverage query that simply found nothing', async () => {
+    needs('cz')('does not flag a valid in-coverage query that simply found nothing', async () => {
       // Inside the bbox but in open water off the Polish coast, tight radius.
       const body = (await get('/v1/geocode?lat=54.8&lon=18.4&radius=100')).json();
       expect(body.query.hint).toBeUndefined();
     });
 
-    it('sets CORS headers so a browser autocomplete can call it', async () => {
+    needs('cz')('sets CORS headers so a browser autocomplete can call it', async () => {
       const res = await app.inject({
         method: 'OPTIONS', url: '/v1/geocode?q=Praha',
         headers: { origin: 'https://example.com', 'access-control-request-method': 'GET' },

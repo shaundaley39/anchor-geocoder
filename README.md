@@ -190,13 +190,49 @@ boot (or read it from a shared read-only volume). That keeps images small,
 decouples index rebuilds from code deploys, and lets N replicas share one build.
 It is not implemented here.
 
+### Checks and CI
+
+```bash
+make lint           # exactly what CI runs: gofmt, go vet, golangci-lint, tsc, eslint
+make test           # both suites
+make hooks          # install the local git hooks
+```
+
+Two GitHub Actions workflows:
+
+- **`ci`** — every push and pull request, path-filtered so a TypeScript change
+  does not re-run the Go build. Formatting, `go vet`, golangci-lint, `go test
+  -race`, `tsc --noEmit`, ESLint, `vitest`. No artifact needed: the integration
+  tests skip without one, leaving the unit tests — folding, geometry, the k-d
+  tree — which are what a code change is most likely to break. Typically a
+  minute or two.
+- **`pipeline`** — end to end. Fetches Czechia, runs extract and index, runs the
+  full suite against the artifact it produced, then boots the server and queries
+  it in both directions. On pull requests touching `ingest/`, weekly, and on
+  demand with any `COUNTRIES` selection. It catches what unit tests structurally
+  cannot: a record-schema change the index builder mis-reads, a format version
+  bumped on one side only, an artifact the server refuses to load.
+
+The integration tests declare which countries they need
+(`needs('cz','pl')(...)`), so the pipeline job can build Czechia alone — 0.9 GB
+rather than 30 — and the tests naming Polish places skip rather than fail. A
+test that silently requires one dataset is testing the dataset.
+
+**Local hooks are static checks only, and deliberately do not run tests.**
+`pre-commit` is gofmt, `go vet` and `tsc` on the staged directories, about a
+second; `pre-push` only checks that the Go build is not broken. Running the
+suite on push taxes every push to catch what CI catches a minute later, and the
+habitual response to a slow hook is `--no-verify`, which removes the protection
+altogether. Bypass either with `-n` / `--no-verify`.
+
 ### Other targets
 
 ```bash
-make test           # Go + TypeScript suites (44 TS tests, needs a built index)
+make test           # Go + TypeScript suites
 make bench          # query latency percentiles
 make verify         # report real OSM tag distributions in an extract
 make fold-vectors   # regenerate the Go->TS normalization fixtures
+make countries      # every country and group the pipeline can ingest
 make clean          # remove build/ (keeps the downloaded extracts)
 make docker         # build the slim image
 make docker-bundled # build the self-contained image
