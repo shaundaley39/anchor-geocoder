@@ -194,6 +194,7 @@ func addAnchor(b *index.Builder, r *model.Record) {
 		}
 	}
 	a.Real = true
+	a.NameTokens = shortestNameTokens(name, r.AltNames)
 	setGeometry(a, r)
 	a.NameID = b.Strings.Intern(name)
 	a.LocalID = b.Strings.Intern(r.City)
@@ -262,6 +263,25 @@ func poiScore(r *model.Record) float32 {
 // Importance prior for a settlement, on a scale where a street is 1.
 // Population dominates when tagged, class is the fallback, and both are
 // compressed so Warsaw does not outscore every street by six orders.
+// The token count of the shortest name an anchor is known by, which is what
+// bounds relevance server-side. Clamped into a byte; anything longer than 255
+// tokens is not a name anyone types.
+func shortestNameTokens(name string, alts []string) uint8 {
+	shortest := len(norm.Tokens(name))
+	for _, alt := range alts {
+		if n := len(norm.Tokens(alt)); n > 0 && (shortest == 0 || n < shortest) {
+			shortest = n
+		}
+	}
+	if shortest < 1 {
+		shortest = 1
+	}
+	if shortest > 255 {
+		shortest = 255
+	}
+	return uint8(shortest)
+}
+
 // Copies a record's outline and box onto its anchor, in fixed point.
 func setGeometry(a *index.Anchor, r *model.Record) {
 	a.Closed = r.Closed

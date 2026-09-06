@@ -51,7 +51,7 @@ peaks around 2 GB.
 ```bash
 make fetch       # 3.5 GB from Geofabrik, md5-verified per file
 make records     # 3m27s -> build/records.ndjson.gz     (16M records)
-make index       # 1m42s -> build/index/                (459 MB artifact)
+make index       # 1m42s -> build/index/                (461 MB artifact)
 make install     # server dependencies
 make serve       # boots in 118 ms, listens on 127.0.0.1:3000
 ```
@@ -331,7 +331,7 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
-| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **459 MB**. Peak 5.5 GB RSS |
+| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **461 MB**. Peak 5.5 GB RSS |
 | boot | **118 ms** | **609 MB RSS** |
 
 **Full region** (all fourteen), for comparison:
@@ -361,15 +361,17 @@ Query latency, 16-core M-series laptop, measured by `make bench`:
 
 | query | p50 | p95 | p99 |
 |---|---|---|---|
-| exact city name | 0.569 ms | 0.998 ms | 1.235 ms |
-| 3-char autocomplete prefix | 1.276 ms | 1.747 ms | 1.912 ms |
-| street + house number | 0.095 ms | 0.118 ms | 0.213 ms |
-| two-token street + number | 0.933 ms | 1.229 ms | 1.387 ms |
-| reverse, dense area, k=5 | 0.020 ms | 0.078 ms | 0.178 ms |
-| reverse, sparse (~5 km) | 0.021 ms | 0.380 ms | 1.219 ms |
+| exact city name | 1.130 ms | 2.749 ms | 2.994 ms |
+| 3-char autocomplete prefix | 1.195 ms | 1.865 ms | 2.196 ms |
+| street + house number | 0.109 ms | 0.136 ms | 0.206 ms |
+| two-token street | 0.487 ms | 0.641 ms | 0.727 ms |
+| reverse, dense area, k=5 | 0.015 ms | 0.043 ms | 0.083 ms |
+| reverse, sparse (~5 km) | 0.018 ms | 0.206 ms | 0.558 ms |
 
 Latency is essentially flat against a 5x larger corpus: candidate lists grew,
-but the per-layer cut bounds the reranking work regardless of index size.
+but the search bound below terminates the rerank on evidence rather than on
+index size. The exact-city figure roughly doubled when that bound replaced a
+fixed cut, which is the cost of the guarantee it buys.
 Reverse doubled from 10 to 20 microseconds when containment and exact geometry
 were added, which is the entire cost of the refine step.
 
@@ -605,22 +607,25 @@ rather than a scan of 127,039 terms. Address runs are sorted by the house
 number's leading integer, so finding number 248 on a street with thousands of
 addresses is a binary search.
 
-### Retrieve, then rerank
+### Retrieve, then rerank, with a bound that makes pruning safe
 
 Ranking happens in two stages, and the split is not premature optimisation — it
 fixes a real failure. The term `praha` has **3,665 postings**, every street whose
 locality is Praha, all sharing one text weight. Truncating that to a candidate
 set by text score alone leaves an arbitrary slice of a 3,665-way tie, and Praha
 itself falls out of it. So the coarse stage multiplies in the importance prior
-(one array read, no string decoding), and only the top 400 survivors get scored
-properly.
+(one array read, no string decoding), and the survivors get scored properly.
 
 The rerank adds two things the coarse pass cannot afford:
 
 - **Name coverage.** Without it, `Pražská` scores identically against `Pražská`,
   `Nová Pražská` and `Pražská brána`, and the street the user meant is lost among
-  its longer namesakes. Coverage is `min(queryTokens, nameTokens) / nameTokens`,
-  squared.
+  its longer namesakes. Query and name tokens are matched as *multisets*, each
+  name token claimed at most once, so `Baden Baden` still matches both halves of
+  `Baden-Baden` while `Praha Praha Praha` cannot match the one-token name three
+  times over. Before that, repeats reinforced instead of diluting: `Praha`,
+  `Praha Praha` and `Praha Praha Praha` scored 200, 577 and 1881, and the last
+  two returned junk.
 - **House-number resolution.** An anchor that actually has the requested number
   is boosted 6x over one that merely shares the street name, and 18x when the
   written number matches exactly rather than just numerically. Czech addresses
@@ -629,6 +634,61 @@ The rerank adds two things the coarse pass cannot afford:
   happen before truncating to `limit`, because the right street can sit well
   down the coarse ranking; that was the bug that made `Pražská 248/39` return
   streets instead of the address.
+
+#### Why the cut used to be a guess, and is not any more
+
+The rerank is the expensive half, so it cannot run over every candidate: `Pra`
+retrieves 23,251. The original answer was a fixed cut — keep the top 400 by
+coarse score per layer, discard the rest. That is fast and usually right, and
+there is no way to know when it is wrong. Every ranking bug found during this
+build was of the form *the correct answer was cut before anything looked at it*.
+
+So the cut is now an **admissible bound**, the A\* idea applied to ranking.
+Alongside each candidate's coarse score the server computes a ceiling on what
+that candidate could reach if the expensive factors all broke its way, then
+walks candidates in descending ceiling order. When the best remaining ceiling
+falls below the worst score already retained, nothing left can displace the
+retained set, and the scan stops — **provably**, not heuristically.
+
+Making the ceiling true meant fixing the factors that had no ceiling. Relevance
+is `(explained × (0.1 + 0.9 × nameUsed))²`, at most 1 before the 2.5x
+exact-match bonus — but only once a query token cannot be spent twice on the
+same name token, which is what the multiset matching above guarantees.
+
+A ceiling that is *true* is easy; one that is *tight* is the work. Bounding
+relevance by its global maximum of 2.5 is sound and useless: for `Praha` it
+claims each of 9,496 candidates might be an exact match, when most are
+three-word POIs merely located in Praha, and the scan never terminates early. So
+the artifact carries one byte per anchor — the token count of the shortest name
+it is known by. A q-token query can cover at most `min(q, n) / n` of an n-token
+name, and only an n = q name can match exactly, which puts those POIs at 0.16
+instead of 2.5. One byte, 2 MB over the whole index:
+
+| query | candidates | fully scored | |
+|---|---|---|---|
+| `Matterhorn` | 36 | 12 | |
+| `Nadrazni` | 1,147 | 109 | |
+| `Pra` | 23,251 | 79 | a 3-character prefix, 0.3% scored |
+| `Praha` | 9,496 | 971 | |
+| `Warszawa` | 16,253 | 8,639 | the honest worst case |
+
+`Warszawa` is worth keeping in view. Over half its candidates have short names
+the term matches, and a sound bound cannot tell `Warszawa` from `Warszawska`
+without folding the name — so 8,639 full scorings is what correctness costs
+there, not a defect to tune away. A hard ceiling of 10,000 still backstops the
+scan, and `SearchStats.cappedByLimit` records whether the guarantee held; no
+query in the benchmark set reaches it.
+
+Two smaller things fell out of this. Ordering by ceiling rather than score meant
+sorting 23,251 candidates to consume 79, so the sort became a heap over parallel
+typed arrays — O(n) to build, O(log n) per pop — taking `Pra` from 3.91 ms to
+1.38 ms. And because a heap has no stable order, ties now break on anchor id:
+Wenceslas Square is mapped as two ways with identical scores, and the API should
+return them in the same order every time.
+
+Tests assert the bound rather than the outcome: that no candidate's true score
+ever exceeds its ceiling (over 10,000 checks, with and without proximity), and
+that pruning returns the same top result as an exhaustive scan.
 
 **Completeness on the final token** is the other load-bearing piece. IDF alone
 makes a rare term beat a common one by ~3x, which swamps any flat exact-match

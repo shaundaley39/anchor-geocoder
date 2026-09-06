@@ -25,6 +25,8 @@
 //	geom_off.bin     uint32[n_anchors+1] vertex offsets into geom.bin
 //	geom_closed.bin  uint8 per anchor: 1 = ring that can contain a point,
 //	                 0 = open point set (a street), only distances apply
+//	anchor_ntok.bin  uint8 shortest name-variant token count, which lets the
+//	                 server bound relevance without folding the name
 //	kd_perm.bin      uint32 point ids in k-d tree order: ids below n_addresses
 //	                 index the address arrays, at or above them the anchors
 //	cell_*.bin       containment grid, sorted cell keys with a CSR of anchor ids
@@ -40,7 +42,7 @@ package index
 
 // Bumped whenever the layout changes; the server refuses an artifact it does
 // not recognise rather than misreading it.
-const Version = 6
+const Version = 7
 
 // Layer codes, packed into the low nibble of anchor_flags.
 const (

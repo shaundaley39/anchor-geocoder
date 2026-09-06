@@ -86,6 +86,11 @@ type Anchor struct {
 	// Closed marks a ring, which can contain a click, as against a street's
 	// sampled points, which can only be measured to.
 	Closed bool
+	// NameTokens is the token count of the *shortest* name this anchor is known
+	// by. The server bounds relevance with it: a query of q tokens can use at
+	// most min(q, n)/n of an n-token name, and only an equal-length name can be
+	// an exact match. Shortest, because relevance takes the best variant.
+	NameTokens uint8
 }
 
 // One address point, in a run belonging to a single anchor.
@@ -291,6 +296,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 	score := make([]float32, n)
 	cat := make([]uint32, n)
 	alt := make([]uint32, n)
+	ntok := make([]byte, n)
 	start := make([]uint32, n)
 	count := make([]uint32, n)
 
@@ -302,6 +308,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		score[i] = a.Score
 		cat[i] = a.CatID
 		alt[i] = a.AltID
+		ntok[i] = a.NameTokens
 
 		minLat[i], minLon[i] = a.MinLat, a.MinLon
 		maxLat[i], maxLon[i] = a.MaxLat, a.MaxLon
@@ -318,7 +325,7 @@ func (b *Builder) writeAnchors(dir string, man *Manifest) error {
 		"anchor_lat": lat, "anchor_lon": lon,
 		"anchor_flags": flags, "anchor_country": country,
 		"anchor_score": score, "anchor_cat": cat,
-		"anchor_alt":    alt,
+		"anchor_alt": alt, "anchor_ntok": ntok,
 		"anchor_minlat": minLat, "anchor_minlon": minLon,
 		"anchor_maxlat": maxLat, "anchor_maxlon": maxLon,
 		"anchor_addr_start": start, "anchor_addr_count": count,
@@ -542,6 +549,7 @@ func (b *Builder) NewSynthetic(name, locality string, country, layer uint8,
 		Score:   1,
 		Tokens:  tokens,
 		MinLat:  lat, MaxLat: lat, MinLon: lon, MaxLon: lon,
+		NameTokens: 1,
 	})
 	return id
 }

@@ -17,7 +17,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 6;
+export const SUPPORTED_VERSION = 7;
 
 export interface Manifest {
   version: number;
@@ -126,6 +126,11 @@ export interface Artifact {
   anchorCat: Uint32Array;
   /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
   anchorAlt: Uint32Array;
+  /**
+   * Token count of the shortest name each anchor is known by. Lets the ranking
+   * bound relevance without folding the name, which is the expensive part.
+   */
+  anchorNameTokens: Uint8Array;
 
   /** Bounding box per anchor, degenerate to its point when there is no extent. */
   anchorMinLat: Int32Array;
@@ -203,7 +208,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
   const [
     stringsBin, stringsIdx, termsBin, termsIdx,
     postOff, post,
-    aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt,
+    aName, aLocal, aLat, aLon, aFlags, aCountry, aScore, aCat, aAlt, aNTok,
     aMinLat, aMinLon, aMaxLat, aMaxLon, gGeom, gOff, gClosed,
     kdPerm, cKey, cStart, cCount, cItems,
     aStart, aCount,
@@ -217,6 +222,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     view(dir, 'anchor_flags.bin'), view(dir, 'anchor_country.bin'),
     view(dir, 'anchor_score.bin'),
     view(dir, 'anchor_cat.bin'), view(dir, 'anchor_alt.bin'),
+    view(dir, 'anchor_ntok.bin'),
     view(dir, 'anchor_minlat.bin'), view(dir, 'anchor_minlon.bin'),
     view(dir, 'anchor_maxlat.bin'), view(dir, 'anchor_maxlon.bin'),
     view(dir, 'geom.bin'), view(dir, 'geom_off.bin'), view(dir, 'geom_closed.bin'),
@@ -246,6 +252,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     anchorScore: asF32(aScore),
     anchorCat: asU32(aCat),
     anchorAlt: asU32(aAlt),
+    anchorNameTokens: new Uint8Array(aNTok.buffer, aNTok.byteOffset, aNTok.byteLength),
     anchorMinLat: asI32(aMinLat),
     anchorMinLon: asI32(aMinLon),
     anchorMaxLat: asI32(aMaxLat),

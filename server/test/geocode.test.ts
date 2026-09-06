@@ -10,7 +10,10 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
-import { forward, parseQuery, findHouseNumber, haversineMetres } from '../src/forward.js';
+import {
+  forward, parseQuery, findHouseNumber, haversineMetres,
+  scoreBound, scoreExact, candidatesFor, lastSearchStats,
+} from '../src/forward.js';
 import { hasShape, ringAreaM2, containsPoint } from '../src/geometry.js';
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
@@ -354,6 +357,101 @@ maybe('against the built index', () => {
       for (let i = 1; i < rs.length; i++) {
         expect(rs[i]!.score).toBeLessThanOrEqual(rs[i - 1]!.score);
       }
+    });
+  });
+
+  /**
+   * The cheap pass cannot compute relevance or resolve a house number, so it
+   * scores an upper bound instead and visits candidates in bound order,
+   * stopping once the retained set beats the next bound. That is only sound if
+   * the bound is never exceeded — so assert it, rather than trusting the
+   * arithmetic.
+   */
+  describe('the score bound is admissible', () => {
+    const QUERIES = [
+      'Praha', 'Warszawa', 'Nadrazni', 'Nowa Wies', 'Marszalkowska 12',
+      'Prazska 248/39', 'Velka Upa 299', 'Zurich', 'Prague', 'Sarajevo',
+      'Bahnhofstrasse 1', 'War', 'Pra', 'Bern', 'Matterhorn',
+      'Praha Praha', 'Praha Praha Praha', 'Baden Baden',
+    ];
+
+    it('is never exceeded by the exact score, for any candidate', () => {
+      let checked = 0;
+      for (const q of QUERIES) {
+        for (const parsed of parseQuery(q)) {
+          if (parsed.nameTokens.length === 0) continue;
+          const cands = candidatesFor(a, parsed.nameTokens);
+          for (const [id, text] of cands) {
+            const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length);
+            const exact = scoreExact(a, id, text, parsed);
+            // Tolerance for floating-point association only.
+            expect(exact, `${q} / anchor ${id}`).toBeLessThanOrEqual(bound * (1 + 1e-9));
+            checked++;
+          }
+        }
+      }
+      expect(checked).toBeGreaterThan(10_000);
+    }, 120_000);
+
+    it('holds when proximity is applied, which scales both sides', () => {
+      const opts = { proximity: { lat: 50.0755, lon: 14.4378 } };
+      for (const parsed of parseQuery('Nadrazni')) {
+        if (parsed.nameTokens.length === 0) continue;
+        for (const [id, text] of candidatesFor(a, parsed.nameTokens)) {
+          const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length, opts);
+          const exact = scoreExact(a, id, text, parsed, opts);
+          expect(exact).toBeLessThanOrEqual(bound * (1 + 1e-9));
+        }
+      }
+    }, 60_000);
+
+    /**
+     * A repeated query token used to match the same name token once per
+     * repetition, so relevance climbed instead of falling: "Praha", "Praha
+     * Praha" and "Praha Praha Praha" scored 200, 577 and 1881, and the last two
+     * returned junk. Matching as multisets makes each extra repeat pure noise,
+     * which is what it is — and the bound depends on it, since a name cannot be
+     * used more than once over.
+     */
+    it('treats a repeated token as noise rather than reinforcement', () => {
+      let prev = Infinity;
+      for (const q of ['Praha', 'Praha Praha', 'Praha Praha Praha']) {
+        const top = forward(a, q, { limit: 1 })[0]!;
+        expect(top.name, q).toBe('Praha');
+        expect(top.score, q).toBeLessThan(prev);
+        prev = top.score;
+      }
+    });
+
+    /**
+     * The point of the bound is that pruning cannot lose a winner, so the
+     * result must not depend on how deep the scan went.
+     */
+    it('gives the same top result as an exhaustive scan', () => {
+      for (const q of QUERIES) {
+        const top = forward(a, q, { limit: 1 })[0];
+        if (!top) continue;
+
+        let bestId = -1, bestScore = -Infinity;
+        for (const parsed of parseQuery(q)) {
+          if (parsed.nameTokens.length === 0) continue;
+          for (const [id, text] of candidatesFor(a, parsed.nameTokens)) {
+            const sc = scoreExact(a, id, text, parsed);
+            if (sc > bestScore) { bestScore = sc; bestId = id; }
+          }
+          if (bestId >= 0) break; // forward takes the first reading that matches
+        }
+        expect(top.score, `${q}: pruning changed the winner`)
+          .toBeCloseTo(bestScore, 4);
+      }
+    }, 120_000);
+
+    it('prunes rather than scanning everything', () => {
+      forward(a, 'Praha', { limit: 5 });
+      const s = lastSearchStats;
+      expect(s.candidates).toBeGreaterThan(100);
+      expect(s.reranked).toBeLessThan(s.candidates);
+      expect(s.cappedByLimit).toBe(false);
     });
   });
 

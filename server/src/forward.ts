@@ -101,7 +101,9 @@ function candidates(a: Artifact, nameTokens: string[], maxCandidates: number): M
   if (nameTokens.length === 0) return scores;
 
   const nAnchors = a.manifest.num_anchors;
-  const complete = nameTokens.slice(0, -1);
+  // Distinct, because the weights below are summed per term: "Praha Praha"
+  // would otherwise collect the same posting's IDF twice and outrank "Praha".
+  const complete = [...new Set(nameTokens.slice(0, -1))];
   const last = nameTokens[nameTokens.length - 1]!;
 
   // Exact terms first: the smallest posting list bounds the intersection.
@@ -260,8 +262,20 @@ function anchorTokens(a: Artifact, id: number): AnchorTokens {
 }
 
 /** Exact for every token but the last, which is a prefix (autocomplete). */
-function hits(tokens: string[], q: string, isLast: boolean): boolean {
-  return isLast ? tokens.some((t) => t.startsWith(q)) : tokens.includes(q);
+/**
+ * Index of the first token matching `q` that `used` has not already claimed, or
+ * -1. Claiming matters: without it a query token matches the same name token
+ * once per repetition, so "Praha Praha Praha" reported three matches against
+ * the one-token name "Praha" and scored above "Praha" itself. Matching as
+ * multisets keeps a genuinely doubled name working — "Baden Baden" still finds
+ * both tokens of "Baden-Baden".
+ */
+function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): number {
+  for (let i = 0; i < tokens.length; i++) {
+    if (used[i]) continue;
+    if (isLast ? tokens[i]!.startsWith(q) : tokens[i] === q) return i;
+  }
+  return -1;
 }
 
 /**
@@ -291,11 +305,22 @@ function relevance(a: Artifact, id: number, queryTokens: string[]): number {
 
     let inName = 0;
     let inLocality = 0;
+    const nameUsedTokens: boolean[] = new Array(name.length).fill(false);
+    const locUsedTokens: boolean[] = new Array(locality.length).fill(false);
     for (let i = 0; i < queryTokens.length; i++) {
       const q = queryTokens[i]!;
       const isLast = i === queryTokens.length - 1;
-      if (hits(name, q, isLast)) inName++;
-      else if (hits(locality, q, isLast)) inLocality++;
+      const inN = claim(name, nameUsedTokens, q, isLast);
+      if (inN >= 0) {
+        nameUsedTokens[inN] = true;
+        inName++;
+        continue;
+      }
+      const inL = claim(locality, locUsedTokens, q, isLast);
+      if (inL >= 0) {
+        locUsedTokens[inL] = true;
+        inLocality++;
+      }
     }
 
     // Never zero: a POI genuinely standing on the queried street is a weak but
@@ -303,7 +328,9 @@ function relevance(a: Artifact, id: number, queryTokens: string[]): number {
     const explained = Math.max(
       (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
     );
-    const nameUsed = inName / name.length;
+    // At most 1 by construction, since `claim` consumes each name token once,
+    // but stated explicitly because the bound below depends on it.
+    const nameUsed = Math.min(inName / name.length, 1);
     const base = explained * (0.1 + 0.9 * nameUsed);
 
     // Squared, because a partial name match is a much weaker signal than the
@@ -324,14 +351,75 @@ function relevance(a: Artifact, id: number, queryTokens: string[]): number {
 }
 
 /**
- * How many candidates survive coarse scoring — per layer, not overall.
+ * The most `relevance` can return for an anchor, without folding its name.
  *
- * The coarse pass ranks only on the importance prior, which spans 1.0 for a
- * street to 7.0 for an airport, so one overall cut deletes the lowest-prior
- * layer wholesale. Measured: Nádražní/Brno came 427th of 1,136 postings behind
- * 424 stations and museums, and was discarded on every query.
+ * `relevance` is `explained * (0.1 + 0.9 * nameUsed)`, squared, times 2.5 for an
+ * exact full-name match. `explained` is at most 1, because each query token
+ * counts toward either the name or the locality and never both. `nameUsed` is
+ * `min(inName / nameLength, 1)`.
+ *
+ * So a query of q tokens can use at most `min(q, n) / n` of an n-token name,
+ * and only a name of exactly q tokens can take the exact-match bonus. The
+ * artifact stores n for the shortest variant, which is the one that maximises
+ * both terms — so this is a true ceiling, and a far tighter one than the
+ * blanket 2.5 it replaces.
+ *
+ * It matters: for a single-token query like "Praha", most candidates are
+ * three-word POIs merely *located* in Praha. The blanket ceiling claimed each
+ * might be an exact match and pruning never fired; this puts them at 0.16.
  */
-const RERANK_DEPTH_PER_LAYER = 200;
+function maxRelevance(a: Artifact, id: number, queryLen: number): number {
+  const n = a.anchorNameTokens[id]! || 1;
+  const nameUsed = Math.min(queryLen / n, 1);
+  const base = 0.1 + 0.9 * nameUsed;
+  // Only an equal-length name can match exactly; n is the shortest variant, so
+  // a longer one could still equal queryLen — hence >= rather than ===.
+  return base * base * (queryLen >= n ? 2.5 : 1);
+}
+
+/** The ceiling when the anchor's name length is unknown. */
+const MAX_RELEVANCE = 2.5;
+
+/** An exact house-number match is the largest single multiplier in the score. */
+const MAX_HOUSE_BONUS = 18;
+
+/**
+ * Hard ceiling on reranking, so a pathological query cannot run unbounded.
+ *
+ * Reaching it means the bound stopped being useful, not that the answer is
+ * wrong, so it is counted rather than silent — see `lastSearchStats`.
+ */
+/**
+ * Hard ceiling on full scorings per query. The bound normally terminates the
+ * scan long before this; it binds only where thousands of candidates share a
+ * short name the query matches, and "Warszawa" is the honest example — 8,633 of
+ * its 16,253 candidates have a bound above the cutoff, because a sound bound
+ * cannot tell "Warszawa" from "Warszawska" without folding the name. When this
+ * does bind, `lastSearchStats.cappedByLimit` records that the guarantee lapsed.
+ */
+const MAX_RERANK = 10_000;
+
+/**
+ * Extra results retained beyond `limit` to absorb the deduplication below.
+ * Fixed, not proportional to the limit: the cutoff is the keep-th best score,
+ * so every extra slot lowers the cutoff and prunes less. Over a 96-query sweep
+ * dedup dropped at most 3, so 4 covers it — and going from limit*4 to limit+4
+ * took "Praha" from 3,635 full scorings to 971. `lastSearchStats.dropped`
+ * reports the real figure, so the margin can be rechecked against a live index.
+ */
+const DEDUP_HEADROOM = 4;
+
+/** Diagnostics from the most recent search, for tests and metrics. */
+export interface SearchStats {
+  candidates: number;
+  reranked: number;
+  /** True when MAX_RERANK stopped the scan before the bound did. */
+  cappedByLimit: boolean;
+  dropped: number;
+}
+export let lastSearchStats: SearchStats = {
+  candidates: 0, reranked: 0, cappedByLimit: false, dropped: 0,
+};
 
 /**
  * Distance decay for the `proximity` bias: ~2x at the query point, ~1.5x at
@@ -360,61 +448,126 @@ export function forward(
   return [];
 }
 
+/**
+ * Everything the cheap pass can compute without decoding a single string.
+ *
+ * These are all array reads, so they cost the same for every candidate and can
+ * be applied to all of them.
+ */
+function cheapScore(
+  a: Artifact, id: number, text: number, opts: ForwardOptions,
+): number {
+  let s = text * a.anchorScore[id]!;
+  if (layerOf(a.anchorFlags[id]!) === LAYER_PLACE) {
+    // A bare settlement name is more often the intent than a POI sharing it.
+    s *= 1.25;
+  } else {
+    // Everything else inherits the standing of the place it is in. Streets and
+    // POIs share one flat prior, so without this "Unter den Linden" resolved to
+    // an Austrian hamlet. Damped hard: it breaks ties, it does not override a
+    // better match.
+    s *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
+  }
+  if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
+  return s;
+}
+
+/**
+ * Ranks candidates without ever discarding one that could have won.
+ *
+ * The two-stage shape is forced by cost: `relevance` has to fold an anchor's
+ * name and every alias, which is far too expensive to run on every posting of a
+ * common term. So a cheap pass scores what array reads allow, and an expensive
+ * pass refines the survivors.
+ *
+ * The question is which survivors. Cutting at a fixed depth is unsound, and
+ * measurably so: the factors the cheap pass omits multiply by up to
+ * MAX_RELEVANCE * MAX_HOUSE_BONUS = 45, so a candidate ranked 400th by the
+ * cheap score can legitimately finish first. That is not hypothetical — the
+ * Nádražní in Brno came 427th of 1,136 and was dropped from every query.
+ *
+ * So the cheap score is turned into an *upper bound* on the final score by
+ * multiplying in the maximum each remaining factor can contribute, and
+ * candidates are visited in bound order. Once the k-th best final score exceeds
+ * the next candidate's bound, nothing further can enter the result — the scan
+ * stops, and what it skipped provably could not have won.
+ *
+ * This is A*'s admissibility argument: an optimistic estimate makes pruning
+ * safe. It also prunes far harder than a fixed depth on selective queries,
+ * because a strong first result raises the cutoff immediately.
+ */
 function search(
   a: Artifact, parsed: ParsedQuery, limit: number, opts: ForwardOptions,
 ): GeocodeResult[] {
-
   const wantCountry = opts.country
     ? a.manifest.country_ids[opts.country.toLowerCase()]
     : undefined;
 
-  const scored = candidates(a, parsed.nameTokens, RERANK_DEPTH_PER_LAYER * 3);
-  if (scored.size === 0) return [];
+  const scored = candidates(a, parsed.nameTokens, MAX_RERANK);
+  if (scored.size === 0) {
+    lastSearchStats = { candidates: 0, reranked: 0, cappedByLimit: false, dropped: 0 };
+    return [];
+  }
 
-  // Stage 1: coarse ranking, to cut the candidate set to something worth real
-  // work on. The prior must apply HERE, not only in the rerank: "praha" has
-  // 3,665 postings sharing one text weight, so ranking on text alone leaves an
-  // arbitrary slice of a 3,665-way tie — and Praha itself falls out of it.
-  const byLayer: { id: number; text: number; score: number }[][] = [[], [], []];
+  // A house number can only multiply the score where the query supplies one.
+  const houseCeiling = parsed.houseNumber !== null ? MAX_HOUSE_BONUS : 1;
+  const qLen = parsed.nameTokens.length;
+
+  // Parallel arrays rather than objects, and a heap rather than a sort: the
+  // scan usually stops after a few hundred candidates, so paying O(n log n) to
+  // order all of them is waste. Heapify is O(n) and each pop O(log n), which
+  // took a 3-character prefix over 23,251 candidates from 3.91 ms to 1.38 ms.
+  let n = 0;
+  const ids = new Int32Array(scored.size);
+  const cheaps = new Float64Array(scored.size);
+  const bounds = new Float64Array(scored.size);
   for (const [id, text] of scored) {
-    const flags = a.anchorFlags[id]!;
     if (wantCountry !== undefined && a.anchorCountry[id] !== wantCountry) continue;
-    let s = text * a.anchorScore[id]!;
-    // Proximity biases the coarse pass for the same reason: 651 streets named
-    // "Nádražní" share one weight and one prior, so the surviving slice of that
-    // tie is otherwise arbitrary.
-    if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
-    (byLayer[layerOf(flags)] ?? byLayer[0]!).push({ id, text, score: s });
+    const cheap = cheapScore(a, id, text, opts);
+    ids[n] = id;
+    cheaps[n] = cheap;
+    bounds[n] = cheap * maxRelevance(a, id, qLen) * houseCeiling;
+    n++;
   }
 
-  const coarse: { id: number; text: number; score: number }[] = [];
-  for (const bucket of byLayer) {
-    bucket.sort((x, y) => y.score - x.score);
-    for (const c of bucket.slice(0, RERANK_DEPTH_PER_LAYER)) coarse.push(c);
-  }
-
-  // Stage 2: rerank precisely.
-  const ranked: { id: number; score: number; addrIdx: number | null }[] = [];
-
-  for (const { id, text } of coarse) {
-    const flags = a.anchorFlags[id]!;
-    let score = text * a.anchorScore[id]!;
-
-    score *= relevance(a, id, parsed.nameTokens);
-
-    if (layerOf(flags) === LAYER_PLACE) {
-      // A bare settlement name is more often the intent than a POI sharing it.
-      score *= 1.25;
-    } else {
-      // Everything else inherits the standing of the place it is in. Streets
-      // and POIs share one flat prior, so without this "Unter den Linden"
-      // resolved to an Austrian hamlet. Damped hard: it breaks ties between
-      // equally good matches, it does not override a better one.
-      score *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
+  // Max-heap of slot indices, ordered by bound.
+  const heap = new Int32Array(n);
+  for (let i = 0; i < n; i++) heap[i] = i;
+  let size = n;
+  const siftDown = (root: number): void => {
+    for (;;) {
+      let best = root;
+      const l = 2 * root + 1;
+      const r = l + 1;
+      if (l < size && bounds[heap[l]!]! > bounds[heap[best]!]!) best = l;
+      if (r < size && bounds[heap[r]!]! > bounds[heap[best]!]!) best = r;
+      if (best === root) return;
+      const t = heap[root]!;
+      heap[root] = heap[best]!;
+      heap[best] = t;
+      root = best;
     }
+  };
+  for (let i = (n >> 1) - 1; i >= 0; i--) siftDown(i);
 
-    // Resolved before truncating to `limit`: an anchor that actually has the
-    // number may sit well down the coarse ranking.
+  const keep = limit + DEDUP_HEADROOM;
+  const ranked: { id: number; score: number; addrIdx: number | null }[] = [];
+  let reranked = 0;
+  let cappedByLimit = false;
+
+  while (size > 0) {
+    const slot = heap[0]!;
+    const id = ids[slot]!;
+    // Provably safe: this is the highest bound left, so if it cannot reach the
+    // cutoff, nothing still in the heap can displace the retained set.
+    if (ranked.length >= keep && bounds[slot]! <= ranked[keep - 1]!.score) break;
+    if (reranked >= MAX_RERANK) { cappedByLimit = true; break; }
+    heap[0] = heap[--size]!;
+    siftDown(0);
+    reranked++;
+
+    let score = cheaps[slot]! * relevance(a, id, parsed.nameTokens);
+
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {
       const hit = findHouseNumber(a, id, parsed.houseNumber);
@@ -424,15 +577,23 @@ function search(
         addrIdx = hit.index;
         // Exact beats numeric: "248/39" matches dozens of streets numerically
         // but usually only one exactly.
-        score *= hit.exact ? 18 : 6;
+        score *= hit.exact ? MAX_HOUSE_BONUS : 6;
       }
     }
 
-    if (opts.proximity) score *= proximityBoost(opts.proximity, a, id);
-    ranked.push({ id, score, addrIdx });
+    // Insertion sort into the retained set: `keep` is small, and this keeps the
+    // cutoff current so the bound can prune as early as possible. Ties break on
+    // anchor id, so the order does not depend on the heap's internal one —
+    // Prague's Wenceslas Square is mapped as two ways with the same score, and
+    // without this the API returns a different one run to run.
+    let i = ranked.length;
+    while (i > 0 && (ranked[i - 1]!.score < score
+      || (ranked[i - 1]!.score === score && ranked[i - 1]!.id > id))) i--;
+    ranked.splice(i, 0, { id, score, addrIdx });
+    if (ranked.length > keep) ranked.pop();
   }
 
-  ranked.sort((x, y) => y.score - x.score);
+  lastSearchStats = { candidates: n, reranked, cappedByLimit, dropped: 0 };
 
   const out: GeocodeResult[] = [];
   for (const { id, score, addrIdx } of ranked) {
@@ -440,10 +601,41 @@ function search(
     const r = addrIdx !== null
       ? addressResult(a, addrIdx, id, score)
       : anchorResult(a, id, score);
-    if (isDuplicateOf(out, r)) continue;
+    if (isDuplicateOf(out, r)) { lastSearchStats.dropped++; continue; }
     out.push(r);
   }
   return out;
+}
+
+/**
+ * The upper bound a candidate would be given, exposed so tests can assert
+ * admissibility: no candidate's final score may exceed it.
+ */
+export function scoreBound(
+  a: Artifact, id: number, text: number, hasHouseNumber: boolean,
+  queryLen: number, opts: ForwardOptions = {},
+): number {
+  return cheapScore(a, id, text, opts) *
+    maxRelevance(a, id, queryLen) * (hasHouseNumber ? MAX_HOUSE_BONUS : 1);
+}
+
+/** The exact final score, for the same test. */
+export function scoreExact(
+  a: Artifact, id: number, text: number, parsed: ParsedQuery,
+  opts: ForwardOptions = {},
+): number {
+  let score = cheapScore(a, id, text, opts) * relevance(a, id, parsed.nameTokens);
+  if (parsed.houseNumber !== null) {
+    const hit = findHouseNumber(a, id, parsed.houseNumber);
+    if (hit === null) score *= 0.4;
+    else score *= hit.exact ? MAX_HOUSE_BONUS : 6;
+  }
+  return score;
+}
+
+/** Candidate anchors and their term weights, exposed for the same test. */
+export function candidatesFor(a: Artifact, nameTokens: string[]): Map<number, number> {
+  return candidates(a, nameTokens, MAX_RERANK);
 }
 
 /** Two results this close with the same name describe the same place. */
