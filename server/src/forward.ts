@@ -11,32 +11,12 @@
  *   3. rank anchors
  *   4. if a house number was given, resolve it inside the best anchors' runs
  */
-import {
-  type Artifact, layerOf, toDeg, LAYER_PLACE, LAYER_POI, ALT_SEP,
-} from './artifact.js';
-import { tokens as foldTokens } from './normalize.js';
+import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
+import { type GeocodeResult, anchorResult, addressResult } from './result.js';
 
-export interface GeocodeResult {
-  id: string;
-  layer: 'address' | 'street' | 'place' | 'poi';
-  name: string;
-  locality: string;
-  houseNumber?: string;
-  country: string;
-  /** OSM classification for POIs, e.g. "amenity=restaurant". */
-  category?: string;
-  lat: number;
-  lon: number;
-  score: number;
-  /** Metres from the query point; reverse geocoding only. */
-  distance?: number;
-  /** True when the query point falls inside this feature's outline. */
-  containing?: boolean;
-  /** Area of the containing region in m², which is what orders tier one. */
-  areaM2?: number;
-  /** Bounding box as [minLon, minLat, maxLon, maxLat], for the UI to zoom to. */
-  bbox?: [number, number, number, number];
-}
+export type { GeocodeResult } from './result.js';
+export { anchorBBox } from './result.js';
+import { tokens as foldTokens } from './normalize.js';
 
 export interface ForwardOptions {
   limit?: number;
@@ -288,59 +268,6 @@ export function findHouseNumber(
     if (numericMatch === null) numericMatch = i;
   }
   return numericMatch === null ? null : { index: numericMatch, exact: false };
-}
-
-/**
- * The anchor's extent as a GeoJSON bbox, or undefined when it has none.
- *
- * Degenerate boxes — every anchor without a shape stores its own point twice —
- * are suppressed: a zero-area bbox tells a UI nothing and would make it zoom to
- * a pinpoint.
- */
-export function anchorBBox(
-  a: Artifact, id: number,
-): [number, number, number, number] | undefined {
-  const minLat = a.anchorMinLat[id]!;
-  const maxLat = a.anchorMaxLat[id]!;
-  const minLon = a.anchorMinLon[id]!;
-  const maxLon = a.anchorMaxLon[id]!;
-  if (minLat === maxLat && minLon === maxLon) return undefined;
-  return [toDeg(minLon), toDeg(minLat), toDeg(maxLon), toDeg(maxLat)];
-}
-
-function anchorResult(a: Artifact, id: number, score: number): GeocodeResult {
-  const flags = a.anchorFlags[id]!;
-  const code = layerOf(flags);
-  const layer = code === LAYER_PLACE ? 'place' : code === LAYER_POI ? 'poi' : 'street';
-  const category = code === LAYER_POI ? a.strings.get(a.anchorCat[id]!) : undefined;
-  return {
-    id: `anchor:${id}`,
-    layer,
-    name: a.strings.get(a.anchorName[id]!),
-    locality: a.strings.get(a.anchorLocal[id]!),
-    country: a.countryByID[a.anchorCountry[id]!] ?? '',
-    ...(category ? { category } : {}),
-    lat: toDeg(a.anchorLat[id]!),
-    lon: toDeg(a.anchorLon[id]!),
-    score,
-    ...(anchorBBox(a, id) ? { bbox: anchorBBox(a, id)! } : {}),
-  };
-}
-
-function addressResult(
-  a: Artifact, addrIdx: number, anchorID: number, score: number,
-): GeocodeResult {
-  return {
-    id: `addr:${addrIdx}`,
-    layer: 'address',
-    name: a.strings.get(a.anchorName[anchorID]!),
-    locality: a.strings.get(a.anchorLocal[anchorID]!),
-    houseNumber: a.strings.get(a.addrNum[addrIdx]!),
-    country: a.countryByID[a.anchorCountry[anchorID]!] ?? '',
-    lat: toDeg(a.addrLat[addrIdx]!),
-    lon: toDeg(a.addrLon[addrIdx]!),
-    score,
-  };
 }
 
 /**

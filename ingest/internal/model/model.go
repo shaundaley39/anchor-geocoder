@@ -21,21 +21,6 @@ const (
 	LayerPOI     Layer = "poi"
 )
 
-// LayerRank gives the ranking prior for a layer. Higher wins.
-func LayerRank(l Layer) float64 {
-	switch l {
-	case LayerAddress:
-		return 3
-	case LayerPOI:
-		return 2.5
-	case LayerStreet:
-		return 2
-	case LayerPlace:
-		return 1
-	}
-	return 0
-}
-
 // AnchorKind records which field a record's address hangs off.
 type AnchorKind string
 

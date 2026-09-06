@@ -1,0 +1,12 @@
+{
+  "altSep": "\u001f",
+  "cellDeg": 0.05,
+  "cellOrigin": 4096,
+  "cellStride": 16384,
+  "coordScale": 10000000,
+  "kdNodeSize": 64,
+  "layerPOI": 2,
+  "layerPlace": 1,
+  "layerStreet": 0,
+  "version": 6
+}

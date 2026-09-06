@@ -17,11 +17,9 @@ CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
 
 .PHONY: all fetch records index test test-go test-server clean verify countries \
         fold-vectors serve bench install docker docker-bundled docker-run \
-        docker-run-bundled hooks lint lint-go lint-server
+        docker-run-bundled hooks lint lint-go lint-server fixtures format-constants
 
 all: fetch records index
-
-comma := ,
 
 # Map the COUNTRIES list onto extract filenames so `make fetch COUNTRIES=cz`
 # downloads only what that build will actually read.
@@ -57,10 +55,15 @@ records:
 index:
 	cd ingest && $(GO) run ./cmd/geoindex -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
 
-## fold-vectors: regenerate the Go->TS normalization contract fixtures
+## fixtures: regenerate the cross-language contract fixtures
+fixtures: fold-vectors format-constants
+
 fold-vectors:
 	cd ingest && $(GO) run ./cmd/foldvectors \
 	  -in ../$(BUILD)/records.ndjson.gz -out ../server/test/fold-vectors.json
+
+format-constants:
+	cd ingest && $(GO) run ./cmd/formatconsts -out ../server/test/format-constants.json
 
 ## install: install server dependencies
 install:

@@ -79,6 +79,14 @@ jobs:
       - name: test
         run: go test -race -count=1 ./...
 
+      # The TypeScript side asserts against constants Go publishes. If the
+      # committed fixture is stale, the contract test is checking history.
+      - name: format-constant fixture is current
+        run: |
+          go run ./cmd/formatconsts -out /tmp/format-constants.json
+          diff -u ../server/test/format-constants.json /tmp/format-constants.json \
+            || { echo "::error::run 'make format-constants' and commit the result"; exit 1; }
+
       - name: build every command
         run: go build ./...
 

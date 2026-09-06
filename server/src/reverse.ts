@@ -33,8 +33,9 @@
  * would not do: a diagonal or crescent-shaped feature fills a fraction of it.
  */
 import { PointIndex } from './pointindex.js';
-import { type Artifact, toDeg, anchorOfAddress, layerOf, LAYER_PLACE } from './artifact.js';
-import { type GeocodeResult, haversineMetres, anchorBBox } from './forward.js';
+import { type Artifact, toDeg, anchorOfAddress } from './artifact.js';
+import { haversineMetres } from './forward.js';
+import { type GeocodeResult, anchorResult, addressResult } from './result.js';
 import {
   containsPoint, distanceToShape, distanceToBBox, hasShape, ringAreaM2,
 } from './geometry.js';
@@ -53,6 +54,11 @@ export interface BBox {
 const EXTENT_CELL_DEG = 0.05;   // ~5.5km
 const CELL_ORIGIN = 4096;
 const CELL_STRIDE = 16384;
+
+/** Exposed so the format contract test can assert these against the Go writer. */
+export const CELL_CONSTANTS = {
+  deg: EXTENT_CELL_DEG, origin: CELL_ORIGIN, stride: CELL_STRIDE,
+} as const;
 
 export interface ReverseIndex {
   tree: PointIndex;
@@ -258,30 +264,15 @@ export function reverse(
 }
 
 function toResult(a: Artifact, c: Candidate): GeocodeResult {
-  const anchorID = c.anchorID;
-  const flags = a.anchorFlags[anchorID]!;
-  const isAddr = c.addrIdx >= 0;
-  const layer = isAddr
-    ? 'address' as const
-    : layerOf(flags) === LAYER_PLACE ? 'place' as const
-      : layerOf(flags) === 2 ? 'poi' as const : 'street' as const;
-  const category = !isAddr && layerOf(flags) === 2
-    ? a.strings.get(a.anchorCat[anchorID]!)
-    : undefined;
-
-  return {
-    id: isAddr ? `addr:${c.addrIdx}` : `anchor:${anchorID}`,
-    layer,
-    name: a.strings.get(a.anchorName[anchorID]!),
-    locality: a.strings.get(a.anchorLocal[anchorID]!),
-    ...(isAddr ? { houseNumber: a.strings.get(a.addrNum[c.addrIdx]!) } : {}),
-    country: a.countryByID[a.anchorCountry[anchorID]!] ?? '',
-    ...(category ? { category } : {}),
-    lat: isAddr ? toDeg(a.addrLat[c.addrIdx]!) : toDeg(a.anchorLat[anchorID]!),
-    lon: isAddr ? toDeg(a.addrLon[c.addrIdx]!) : toDeg(a.anchorLon[anchorID]!),
-    score: c.containing ? 1000 / (1 + c.area / 1e4) : 1 / (1 + c.distance),
+  // Containing regions are ordered by area, everything else by distance, so the
+  // two tiers need different scores; both are monotonically decreasing.
+  const score = c.containing ? 1000 / (1 + c.area / 1e4) : 1 / (1 + c.distance);
+  const extra: Partial<GeocodeResult> = {
+    score,
     distance: Math.round(c.distance * 10) / 10,
     ...(c.containing ? { containing: true, areaM2: Math.round(c.area) } : {}),
-    ...(isAddr ? {} : anchorBBox(a, anchorID) ? { bbox: anchorBBox(a, anchorID)! } : {}),
   };
+  return c.addrIdx >= 0
+    ? addressResult(a, c.addrIdx, c.anchorID, score, extra)
+    : anchorResult(a, c.anchorID, score, extra);
 }

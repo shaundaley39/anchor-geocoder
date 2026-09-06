@@ -126,17 +126,17 @@ const (
 	// MinExtentM is the size below which a feature is found by the k-d tree
 	// anyway and need not be in the containment grid.
 	MinExtentM = 30
-	// cellOrigin keeps cell coordinates non-negative so the key packs cleanly.
-	cellOrigin = 4096
-	cellStride = 16384
+	// CellOrigin keeps cell coordinates non-negative so the key packs cleanly.
+	CellOrigin = 4096
+	CellStride = 16384
 )
 
 // CellKey packs a cell coordinate pair into one integer. The server computes it
 // identically.
 func CellKey(lat, lon float64) int32 {
-	x := int32(floorDiv(lon, CellDeg)) + cellOrigin
-	y := int32(floorDiv(lat, CellDeg)) + cellOrigin
-	return y*cellStride + x
+	x := int32(floorDiv(lon, CellDeg)) + CellOrigin
+	y := int32(floorDiv(lat, CellDeg)) + CellOrigin
+	return y*CellStride + x
 }
 
 func floorDiv(v, by float64) float64 {
@@ -179,7 +179,7 @@ func BuildCellGrid(anchors []Anchor) CellGrid {
 		for y := int32(floorDiv(lo, CellDeg)); y <= int32(floorDiv(hi, CellDeg)); y++ {
 			for x := int32(floorDiv(lw, CellDeg)); x <= int32(floorDiv(hw, CellDeg)); x++ {
 				entries = append(entries, entry{
-					key: (y+cellOrigin)*cellStride + (x + cellOrigin),
+					key: (y+CellOrigin)*CellStride + (x + CellOrigin),
 					id:  uint32(id),
 				})
 			}

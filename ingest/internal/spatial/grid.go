@@ -62,50 +62,6 @@ func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
 	return 2 * earthRadiusKm * math.Asin(math.Sqrt(a))
 }
 
-// Nearest returns the index of the closest indexed point within maxKm.
-//
-// It scans rings of cells outward from the query cell. Crucially it does not
-// stop at the first ring containing a point: a point just across a cell
-// boundary in the next ring out can be closer than one in the far corner of the
-// current ring. It therefore continues until the ring's guaranteed minimum
-// distance exceeds the best found so far.
-func (g *Grid) Nearest(lat, lon, maxKm float64) (id int32, distKm float64, ok bool) {
-	if len(g.lats) == 0 {
-		return 0, 0, false
-	}
-	center := g.cellOf(lat, lon)
-
-	// Cell width in km shrinks with latitude; use the smaller of the two axes
-	// so the ring lower bound stays conservative.
-	kmPerDegLat := 111.32
-	kmPerDegLon := 111.32 * math.Cos(lat*math.Pi/180)
-	cellKm := g.cellDeg * math.Min(kmPerDegLat, math.Max(kmPerDegLon, 1e-6))
-
-	best := math.MaxFloat64
-	bestID := int32(-1)
-
-	maxRing := int32(math.Ceil(maxKm/math.Max(cellKm, 1e-9))) + 1
-	for r := int32(0); r <= maxRing; r++ {
-		// Every cell in ring r is at least (r-1)*cellKm away. Once that floor
-		// exceeds the best distance found, no further ring can improve it.
-		if bestID >= 0 && float64(r-1)*cellKm > best {
-			break
-		}
-		for _, c := range ring(center, r) {
-			for _, pid := range g.buckets[c] {
-				d := DistanceKm(lat, lon, g.lats[pid], g.lons[pid])
-				if d < best {
-					best, bestID = d, pid
-				}
-			}
-		}
-	}
-	if bestID < 0 || best > maxKm {
-		return 0, 0, false
-	}
-	return bestID, best, true
-}
-
 // ring returns the cells whose Chebyshev distance from c is exactly r.
 func ring(c cell, r int32) []cell {
 	if r == 0 {
