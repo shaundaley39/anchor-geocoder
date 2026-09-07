@@ -122,6 +122,13 @@ export interface Artifact {
   /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
   anchorAlt: Uint32Array;
   /**
+   * Lazily folded name and locality tokens per anchor, memoized here rather
+   * than in a module-level map. Keyed by anchor id, such a map returns one
+   * artifact's names for another's ids as soon as a process holds two — which
+   * is exactly what a comparison harness does, and it cost an afternoon.
+   */
+  tokenCache: Map<number, unknown>;
+  /**
    * Token count of the shortest name each anchor is known by. Lets the ranking
    * bound relevance without folding the name, which is the expensive part.
    */
@@ -241,6 +248,7 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
     terms: new StringTable(termsBin, asU32(termsIdx)),
     termsRev: new StringTable(termsRevBin, asU32(termsRevIdx)),
     termRevId: asU32(termRevId),
+    tokenCache: new Map(),
     postOff: asU32(postOff),
     post: asU32(post),
     anchorName: asU32(aName),

@@ -53,10 +53,12 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats, memberWays []int64)
 		// would keep it, and its vertices are the relation's only geometry.
 		member := search(memberWays, int64(w.ID)) >= 0
 		if e.PlacesOnly {
-			if !place {
+			// Members stay: a place mapped as a multipolygon has no geometry
+			// without them, and dropping them cost four Czech settlements.
+			if !place && !member {
 				continue
 			}
-			addressed, street, poi, member = false, false, false, false
+			addressed, street, poi = false, false, false
 		} else if !addressed && !place && !street && !poi && !member {
 			continue
 		}

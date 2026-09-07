@@ -20,17 +20,16 @@ export interface RankingOptions {
   proximity?: { lat: number; lon: number };
 }
 
-/** Memoized rather than stored in the artifact: only reranked candidates need
- * it, so shipping it would cost several MB for nothing. */
+/** Memoized on the artifact rather than stored in it: only reranked candidates
+ * need it, so shipping it would cost several MB for nothing. */
 interface AnchorTokens {
   /** Canonical name first, then each alternate, folded separately. */
   names: string[][];
   locality: string[];
 }
-const anchorTokenCache = new Map<number, AnchorTokens>();
 
 function anchorTokens(a: Artifact, id: number): AnchorTokens {
-  const hit = anchorTokenCache.get(id);
+  const hit = a.tokenCache.get(id) as AnchorTokens | undefined;
   if (hit !== undefined) return hit;
 
   const names = [foldTokens(a.strings.get(a.anchorName[id]!))];
@@ -42,7 +41,7 @@ function anchorTokens(a: Artifact, id: number): AnchorTokens {
     }
   }
   const t: AnchorTokens = { names, locality: foldTokens(a.strings.get(a.anchorLocal[id]!)) };
-  if (anchorTokenCache.size < 200_000) anchorTokenCache.set(id, t);
+  if (a.tokenCache.size < 200_000) a.tokenCache.set(id, t);
   return t;
 }
 
