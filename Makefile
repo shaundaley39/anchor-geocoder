@@ -16,6 +16,7 @@ GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
 
 .PHONY: all fetch records index test test-go test-server clean verify countries \
+        demo demo-index \
         fold-vectors serve bench install docker docker-bundled docker-run \
         docker-run-bundled hooks lint lint-go lint-server fixtures format-constants
 
@@ -69,6 +70,18 @@ format-constants:
 install:
 	pnpm install
 	pnpm -r --filter "./packages/*" build
+
+## demo: serve the committed Liechtenstein index — no download, no build
+demo:
+	cd server && INDEX_DIR=../demo/index pnpm exec tsx src/index.ts
+
+## demo-index: regenerate the committed demo index (after a format change)
+demo-index: $(RAW)/liechtenstein-latest.osm.pbf
+	@mkdir -p $(BUILD)/demo
+	cd ingest && $(GO) run ./cmd/geoingest -countries li -raw ../$(RAW) -out ../$(BUILD)/demo
+	cd ingest && $(GO) run ./cmd/geoindex -in ../$(BUILD)/demo/records.ndjson.gz -out ../$(BUILD)/demo/index
+	rm -rf demo/index && cp -r $(BUILD)/demo/index demo/index
+	@echo "  demo/index regenerated ($$(du -sh demo/index | cut -f1))"
 
 ## serve: run the API server (INDEX_DIR, PORT, HOST are overridable)
 ##         OpenAPI at /openapi.json, docs at /docs

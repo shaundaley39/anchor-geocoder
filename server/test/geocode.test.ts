@@ -799,10 +799,12 @@ maybe('against the built index', () => {
     });
 
     it('rejects a country outside the index', async () => {
-      // From the manifest, not hardcoded: the covered set grows.
+      // The catalogue is Europe-only, so a non-European code is absent from any
+      // build of it. Naming European countries here broke the moment the index
+      // grew to all 41.
       const covered = new Set(Object.keys(a.manifest.country_ids));
-      const absent = ['fr', 'es', 'pt', 'se', 'no'].find((c) => !covered.has(c));
-      expect(absent).toBeDefined();
+      const absent = ['jp', 'br', 'au', 'za'].find((c) => !covered.has(c));
+      expect(absent, 'no absent country to test with').toBeDefined();
       const res = await get(`/v1/geocode?q=Praha&country=${absent}`);
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('bad_request');
@@ -854,17 +856,23 @@ maybe('against the built index', () => {
       const b = (await get('/health')).json().bbox;
       expect(b.minLat).toBeLessThan(b.maxLat);
       expect(b.minLon).toBeLessThan(b.maxLon);
-      // Somewhere in Europe, not the whole globe.
-      expect(b.minLat).toBeGreaterThan(30);
-      expect(b.maxLat).toBeLessThan(60);
-      expect(b.minLon).toBeGreaterThan(0);
-      expect(b.maxLon).toBeLessThan(30);
-      // And it must actually contain a place the index returns.
-      const praha = forward(a, 'Praha', { limit: 1 }).results[0]!;
-      expect(praha.lat).toBeGreaterThanOrEqual(b.minLat);
-      expect(praha.lat).toBeLessThanOrEqual(b.maxLat);
-      expect(praha.lon).toBeGreaterThanOrEqual(b.minLon);
-      expect(praha.lon).toBeLessThanOrEqual(b.maxLon);
+      // Tight around the data rather than the whole globe, checked against the
+      // artifact's own extent. Hardcoding European bounds broke when the index
+      // grew to include Iceland and northern Norway.
+      let loLat = 90, hiLat = -90, loLon = 180, hiLon = -180;
+      for (let k = 0; k < 5_000; k++) {
+        const i = (k * 104_729) % a.manifest.num_addresses;
+        const lat = toDeg(a.addrLat[i]!), lon = toDeg(a.addrLon[i]!);
+        loLat = Math.min(loLat, lat); hiLat = Math.max(hiLat, lat);
+        loLon = Math.min(loLon, lon); hiLon = Math.max(hiLon, lon);
+      }
+      expect(b.minLat).toBeLessThanOrEqual(loLat);
+      expect(b.maxLat).toBeGreaterThanOrEqual(hiLat);
+      expect(b.minLon).toBeLessThanOrEqual(loLon);
+      expect(b.maxLon).toBeGreaterThanOrEqual(hiLon);
+      // Not the whole globe: a coverage box is only useful if it excludes things.
+      expect(b.maxLat - b.minLat).toBeLessThan(120);
+      expect(b.maxLon - b.minLon).toBeLessThan(180);
     });
 
     it('reports health', async () => {

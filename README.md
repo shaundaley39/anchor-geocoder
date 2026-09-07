@@ -75,7 +75,29 @@ limitations](#known-limitations) is what I would fix next.
 
 ## Sixty-second demo
 
-Three calls against the default build, with their actual output.
+Nothing to download and nothing to build — a Liechtenstein index (12,547
+addresses, 672 KB) is committed to this repository for exactly this:
+
+```bash
+make install && make demo
+```
+
+```
+loading index from ../demo/index ...
+  2,287 anchors, 12,547 addresses, 2,544 terms (2ms)
+ready on http://127.0.0.1:3000 — boot 56ms, rss 249MB
+```
+
+```bash
+curl 'localhost:3000/v1/geocode?q=Landstrasse+1'      # -> Landstrasse 1, Vaduz, LI
+curl 'localhost:3000/v1/geocode?lat=47.1410&lon=9.5250'  # -> Känzile, 73.8m
+```
+
+A committed build artifact is a deliberate exception, and
+`server/test/demo-index.test.ts` loads it in CI so a format change cannot ship
+past it. `make demo-index` regenerates it.
+
+The rest of this section is the default four-country build, with actual output.
 
 **A Czech address with no street.** 47% of Czech addresses hang off `addr:place`
 rather than a street, and the query is typed without diacritics:
