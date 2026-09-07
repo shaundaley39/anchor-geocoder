@@ -4,10 +4,10 @@
 #
 #   builder  compiles the TypeScript and resolves production dependencies
 #   runtime  slim image, ~expects the index mounted at /index  (default)
-#   bundled  runtime + the 254 MB index baked in, self-contained
+#   bundled  runtime + the 473 MB index baked in, self-contained
 #
-# The index is deliberately NOT built inside Docker. Building it needs 2.8 GB of
-# OSM extracts and ~6 minutes of CPU, which does not belong in an image build:
+# The index is deliberately NOT built inside Docker. Building it needs 3.5 GB of
+# OSM extracts and ~5 minutes of CPU, which does not belong in an image build:
 # it is a data pipeline with its own cadence, and the artifact it produces is
 # immutable and shared by every replica. Build it once on the host or in CI
 # (`make index`), then either mount it or bake it in.
@@ -57,7 +57,9 @@ COPY --from=builder --chown=node:node /app/packages ./packages
 USER node
 EXPOSE 3000
 
-# The k-d tree build makes boot a second or two; give it room before probing.
+# Boot is a read and a cast — 119 ms for the default index, under a second for
+# all of Europe — but the start period stays generous, since it is sized for the
+# largest index someone might mount rather than the one used in testing.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

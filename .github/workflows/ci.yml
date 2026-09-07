@@ -144,6 +144,24 @@ jobs:
       - name: build the server
         run: cd server && pnpm exec tsc -p tsconfig.json
 
+      # The image is a deliverable and nothing else builds it, so a change to
+      # the Node version or the dependency purge would otherwise only be found
+      # by hand. Only the runtime target: `bundled` copies build/index, which a
+      # runner does not have. Then boot it against the committed demo index and
+      # make it answer, since an image that builds is not the same as one that
+      # runs.
+      - name: container builds and serves
+        run: |
+          docker build --target runtime -t anchor-geocoder:ci .
+          docker run -d --name ci-check -p 3000:3000 \
+            -v "$PWD/demo/index:/index:ro" anchor-geocoder:ci
+          for i in $(seq 30); do
+            curl -sf localhost:3000/health >/dev/null && break || sleep 1
+          done
+          curl -sf localhost:3000/health | grep -q '"status":"ok"'
+          curl -sf 'localhost:3000/v1/geocode?q=Vaduz&limit=1' | grep -q Vaduz
+          docker rm -f ci-check
+
       # A spec that does not match the code is worse than none, so it is
       # generated here and checked rather than committed.
       - name: OpenAPI document is well-formed

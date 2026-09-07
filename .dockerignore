@@ -1,5 +1,5 @@
-# The extracts are 2.8 GB and are only ever read by the Go build, which runs on
-# the host. Never ship them into a build context.
+# The extracts are 3.5 GB by default and 30 GB for Europe, and are only ever
+# read by the Go build, which runs on the host. Never ship them into a context.
 data/
 build/records.ndjson.gz
 
