@@ -262,7 +262,11 @@ maybe('against the built index', () => {
     });
 
     needs('cz', 'pl')('finds a POI by brand or operator, not just its own name', () => {
-      expect(top('Zabka', { proximity: { lat: 52.2297, lon: 21.0122 } })?.layer).toBe('poi');
+      // Asserted over the top few, not the top one: what is under test is that
+      // a brand tag is indexed at all, and whether a chain outranks the village
+      // sharing its name is a separate question about importance priors.
+      const zabka = forward(a, 'Zabka', { limit: 5, proximity: { lat: 52.2297, lon: 21.0122 } });
+      expect(zabka.results.some((r) => r.layer === 'poi')).toBe(true);
       const post = top('Ceska posta', { proximity: { lat: 50.0755, lon: 14.4378 } });
       expect(post?.category).toBe('amenity=post_office');
     });

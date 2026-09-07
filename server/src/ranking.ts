@@ -6,7 +6,7 @@
  * ceiling on `relevance` computable from cheap data alone, which is how the
  * search stops early without losing a winner.
  */
-import { type Artifact, layerOf, toDeg, LAYER_PLACE, ALT_SEP } from './artifact.js';
+import { type Artifact, layerOf, toDeg, LAYER_PLACE, LAYER_STREET, ALT_SEP } from './artifact.js';
 import { tokens as foldTokens } from '@anchor-geocoder/core';
 import { haversineMetres } from './geometry.js';
 import type { ParsedQuery } from './query.js';
@@ -172,13 +172,28 @@ export function cheapScore(
   a: Artifact, id: number, text: number, opts: RankingOptions,
 ): number {
   let s = text * a.anchorScore[id]!;
-  if (layerOf(a.anchorFlags[id]!) === LAYER_PLACE) {
+  const layer = layerOf(a.anchorFlags[id]!);
+  if (layer === LAYER_PLACE) {
     // A bare settlement name is more often the intent than a POI sharing it.
     s *= 1.25;
-  } else {
-    // Everything else inherits the standing of the place it is in. Streets and
-    // POIs share one flat prior, so without this "Unter den Linden" resolved to
-    // an Austrian hamlet. Damped hard, so it breaks ties and nothing more.
+  } else if (layer === LAYER_STREET) {
+    // A street inherits the standing of the place it runs through. Streets all
+    // share one flat prior, so without this "Unter den Linden" resolved to an
+    // Austrian hamlet.
+    //
+    // Not applied to POIs, and that is a judgement rather than an oversight.
+    // "Is in an important settlement" is a fair proxy for a street's importance
+    // and a bad one for a landmark's, because landmarks are frequently in no
+    // settlement at all. Once POI localities were assigned spatially the proxy
+    // began to dominate and three Czech rocks named Matterhorn beat the Swiss
+    // one 194 to 132 — identical category priors, so the boost was the only
+    // discriminator, and the real mountain has no village.
+    //
+    // Treating an absent locality as middling rather than zero swaps one wrong
+    // answer for another: it restores shop chains against same-named villages
+    // and breaks Barcelona's Sagrada Família again. No constant fixes both,
+    // because the missing signal is per-feature importance — a Wikidata or
+    // pagerank join — and locality is standing in for it.
     s *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
   }
   if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
