@@ -154,6 +154,24 @@ maybe('against the built index', () => {
     });
   }, 120_000);
 
+  /**
+   * Names the loaded index actually contains. The ranking properties below hold
+   * for any corpus, so the queries exercising them should not be tied to one:
+   * CI has only the committed demo index, and hardcoded Czech names meant the
+   * tests that matter most were the ones that never ran there.
+   */
+  const sampleNames = (want: number): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let id = 0; id < a.manifest.num_anchors && out.length < want; id += 3) {
+      const nm = a.strings.get(a.anchorName[id]!);
+      if (nm.length < 4 || /\d/.test(nm) || seen.has(nm)) continue;
+      seen.add(nm);
+      out.push(nm);
+    }
+    return out;
+  };
+
   describe('artifact integrity', () => {
     it('has consistent anchor address ranges', () => {
       // Every anchor's run must lie inside the address arrays, and the runs
@@ -171,7 +189,8 @@ maybe('against the built index', () => {
         }
         checked++;
       }
-      expect(checked).toBeGreaterThan(1000);
+      // Every anchor the stride reaches, so the bar is set by the stride.
+      expect(checked).toBe(Math.ceil(a.manifest.num_anchors / 97));
     });
 
     it('keeps each address run sorted by house number', () => {
@@ -396,16 +415,20 @@ maybe('against the built index', () => {
    * arithmetic.
    */
   describe('the score bound is admissible', () => {
-    const QUERIES = [
+    const queries = () => [
       'Praha', 'Warszawa', 'Nadrazni', 'Nowa Wies', 'Marszalkowska 12',
       'Prazska 248/39', 'Velka Upa 299', 'Zurich', 'Prague', 'Sarajevo',
       'Bahnhofstrasse 1', 'War', 'Pra', 'Bern', 'Matterhorn',
       'Praha Praha', 'Praha Praha Praha', 'Baden Baden',
+      // Sampled from the index, so these properties are checkable on any corpus.
+      ...sampleNames(40),
+      ...sampleNames(3).map((n) => `${n} ${n}`),
+      ...sampleNames(3).map((n) => n.slice(0, 3)),
     ];
 
     it('is never exceeded by the exact score, for any candidate', () => {
       let checked = 0;
-      for (const q of QUERIES) {
+      for (const q of queries()) {
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
           const cands = candidates(a, parsed.nameTokens, 10_000);
@@ -418,7 +441,7 @@ maybe('against the built index', () => {
           }
         }
       }
-      expect(checked).toBeGreaterThan(10_000);
+      expect(checked).toBeGreaterThan(100);
     }, 120_000);
 
     it('holds when proximity is applied, which scales both sides', () => {
@@ -442,10 +465,11 @@ maybe('against the built index', () => {
      * used more than once over.
      */
     it('treats a repeated token as noise rather than reinforcement', () => {
+      const name = sampleNames(1)[0]!;
       let prev = Infinity;
-      for (const q of ['Praha', 'Praha Praha', 'Praha Praha Praha']) {
+      for (const q of [name, `${name} ${name}`, `${name} ${name} ${name}`]) {
         const top = forward(a, q, { limit: 1 }).results[0]!;
-        expect(top.name, q).toBe('Praha');
+        expect(top.name, q).toBe(name);
         expect(top.score, q).toBeLessThan(prev);
         prev = top.score;
       }
@@ -456,9 +480,11 @@ maybe('against the built index', () => {
      * result must not depend on how deep the scan went.
      */
     it('gives the same top result as an exhaustive scan', () => {
-      for (const q of QUERIES) {
-        const top = forward(a, q, { limit: 1 }).results[0];
-        if (!top) continue;
+      for (const q of queries()) {
+        const out = forward(a, q, { limit: 1 });
+        const top = out.results[0];
+        // A correction searched different tokens than the scan below uses.
+        if (!top || out.corrected !== null) continue;
 
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
@@ -475,8 +501,14 @@ maybe('against the built index', () => {
     }, 120_000);
 
     it('prunes rather than scanning everything', () => {
-      const s = forward(a, 'Praha', { limit: 5 }).stats;
-      expect(s.candidates).toBeGreaterThan(100);
+      // The widest prefix available: on a small index one arbitrary name's
+      // prefix can match a single anchor, which proves nothing about pruning.
+      const best = sampleNames(30)
+        .map((n) => forward(a, n.slice(0, 3), { limit: 5 }).stats)
+        .reduce((x, y) => (y.candidates > x.candidates ? y : x));
+      expect(best.candidates).toBeGreaterThan(5);
+      expect(best.reranked).toBeLessThanOrEqual(best.candidates);
+      const s = best;
       expect(s.reranked).toBeLessThan(s.candidates);
       expect(s.cappedByLimit).toBe(false);
     });
@@ -540,7 +572,7 @@ maybe('against the built index', () => {
      * quietly rewritten into a more popular one.
      */
     it('never rewrites a query that matched as typed', () => {
-      for (const q of ['Praha', 'Brno', 'Nadrazni', 'Pra', 'Marszalkowska 12']) {
+      for (const q of sampleNames(8)) {
         const out = forward(a, q, { limit: 3 });
         expect(out.results.length, q).toBeGreaterThan(0);
         expect(out.corrected, q).toBeNull();
@@ -903,7 +935,7 @@ maybe('against the built index', () => {
     it('reports health', async () => {
       const body = (await get('/health')).json();
       expect(body.status).toBe('ok');
-      expect(body.addresses).toBeGreaterThan(1_000_000);
+      expect(body.addresses).toBe(a.manifest.num_addresses);
     });
   });
 });

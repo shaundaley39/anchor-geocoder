@@ -12,10 +12,9 @@ import (
 // A named multipolygon worth indexing, and the outer member ways its ring is
 // split across.
 type multipolygon struct {
-	id      int64
-	tags    map[string]string
-	outers  []int64
-	members []memberWay
+	id     int64
+	tags   map[string]string
+	outers []int64
 }
 
 // One member way's geometry, kept with its end node ids so rings can be

@@ -136,7 +136,7 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 			if !place {
 				continue
 			}
-			addressed, poi = false, false
+			addressed = false
 		} else if !addressed && !place && !poi {
 			continue
 		}

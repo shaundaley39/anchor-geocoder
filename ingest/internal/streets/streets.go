@@ -106,10 +106,6 @@ var catchmentKm = map[string]float64{
 	"neighbourhood": 1.2, "hamlet": 1.2, "isolated_dwelling": 0.4,
 }
 
-// Bounds the lookup: anything beyond the largest catchment is fetched only to
-// be discarded. Scanning 30km examined four times the area for no change.
-const searchRadiusKm = 15
-
 // Group assigns each buffered segment to a settlement, then merges segments
 // sharing a (country, name, locality) key.
 //

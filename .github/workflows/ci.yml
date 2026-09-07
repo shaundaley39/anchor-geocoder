@@ -28,7 +28,7 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       server: ${{ steps.filter.outputs.server }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -60,8 +60,8 @@ jobs:
       # No cgo anywhere: the ingest binaries are static and need no C toolchain.
       CGO_ENABLED: '0'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: ingest/go.mod
           cache-dependency-path: ingest/go.sum
@@ -79,7 +79,7 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           working-directory: ingest
@@ -103,11 +103,11 @@ jobs:
     if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -129,9 +129,13 @@ jobs:
         run: cd server && pnpm exec eslint .
 
       - name: test
-        # Integration tests skip without an artifact; the unit tests — folding,
-        # geometry, the k-d tree, the client — all run.
+        # Against the committed demo index. build/ is gitignored, so without
+        # this the whole geocode suite skips and a green tick means only that it
+        # compiles. Tests naming a specific country still skip; the rest — the
+        # search bound, spelling correction, reverse, the HTTP endpoint — run.
         run: pnpm -r test
+        env:
+          INDEX_DIR: ${{ github.workspace }}/demo/index
 
       - name: build the server
         run: cd server && pnpm exec tsc -p tsconfig.json

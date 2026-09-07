@@ -103,8 +103,11 @@ lint: lint-go lint-server
 lint-go:
 	cd ingest && $(GO) vet ./...
 	@cd ingest && u=$$(gofmt -l .); test -z "$$u" || (echo "not gofmt'd:"; echo "$$u"; exit 1)
-	@command -v golangci-lint >/dev/null && (cd ingest && CGO_ENABLED=0 golangci-lint run ./...) \
-	  || echo "  golangci-lint not installed; skipped (brew install golangci-lint)"
+	@if command -v golangci-lint >/dev/null; then \
+	  cd ingest && CGO_ENABLED=0 golangci-lint run ./...; \
+	else \
+	  echo "  golangci-lint not installed; skipped (brew install golangci-lint)"; \
+	fi
 
 lint-server:
 	pnpm -r --filter "./packages/*" build
