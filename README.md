@@ -467,19 +467,24 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 29.6 GB of extracts, md5-verified |
-| extract | **1h23m** | 118M records — 97,171,286 addresses, 10,417,125 POIs, 8,871,902 streets, 1,784,728 places. 183,803 of 184,036 multipolygons stitched into closed rings (99.9%). Peak 32.7 GB RSS |
-| index | **13m42s** | 23,297,843 anchors, 90,103,638 addresses, 4,423,316 terms, 91,815,428 postings — **4.37 GB**. Whole-build peak **35.25 GB RSS** |
-| boot | **907 ms** | **4.8 GB RSS** |
+| places prepass | 4m58s | 1,790,143 settlements over every extract |
+| extract | **28m37s** | 118M records — 97,171,286 addresses, 10,414,499 POIs, 8,872,001 streets. 183,803 of 184,036 multipolygons stitched into closed rings (99.9%). Peak 20.9 GB RSS |
+| index | **14m08s** | 23,296,622 anchors, 90,103,638 addresses, 4,423,307 terms, 100,406,052 postings — **4.40 GB** |
+| **whole build** | **42m47s** | peak **31.1 GB RSS** |
+| boot | **908 ms** | **4.86 GB RSS** |
 
-Serving that is comfortable; building it is not. Peak memory scales with the
-whole corpus rather than the largest extract, because records accumulate across
-all 41 before any are written, and 35 GB only survived here because macOS
-compresses memory under pressure. A container with a hard 24 GB limit kills this
-build. That is the concrete argument for the sharded build described under
-[Scaling to the planet](#scaling-to-the-planet), and it is measured rather than
-projected.
+Serving that is comfortable. Building it is the constraint, and the shape of the
+constraint moved: holding one country at a time took the *extract* from 32.7 GB
+to 20.9 GB and from 1h23m to 28m, which then made the **index** stage the
+ceiling at 31 GB. It still holds every anchor and address row in memory before
+writing, and has not been restructured. So the whole-build peak improved only
+12% while its largest component improved 36% — fixing one stage revealed the
+other.
 
-**Full region** (all fourteen), for comparison:
+That is the concrete argument for the sharded build under [Scaling to the
+planet](#scaling-to-the-planet), measured rather than projected.
+
+**Full region** (all fourteen), for comparison:**Full region** (all fourteen), for comparison:
 
 | stage | time | output |
 |---|---|---|
@@ -507,23 +512,24 @@ sizes 6.4x apart:
 
 | query | 14.0M addresses | 90.1M addresses |
 |---|---|---|
-| exact city name | 1.093 ms | **0.977 ms** |
-| street + house number | 0.109 ms | **0.104 ms** |
+| street + house number | 0.109 ms | **0.120 ms** |
 | reverse, dense area, k=5 | 0.014 ms | **0.024 ms** |
-| two-token street | 0.487 ms | **1.736 ms** |
-| 3-char autocomplete prefix | 1.169 ms | **4.946 ms** (p99 11.0 ms) |
+| exact city name | 1.093 ms | **1.635 ms** |
+| two-token street | 0.487 ms | **2.211 ms** |
+| 3-char autocomplete prefix | 1.169 ms | **6.923 ms** (p99 16.7 ms) |
 
-Exact lookups are flat, which is the design working: the search bound
-terminates the rerank on evidence rather than on index size, and a house number
-is a binary search inside one anchor whatever else the index holds.
+House-number lookup and reverse are flat, which is the design working: a number
+is a binary search inside one anchor whatever else the index holds, and the k-d
+tree walk depends on local density rather than corpus size.
 
-Prefix queries are not flat, and that is the honest result. A 3-character
-prefix over 4.4M terms expands to roughly twice the term range it did over 2.1M,
-and every expansion's posting list is longer, so the coarse pass does more work
-before the bound can prune anything. 4.2x slower for 6.4x the data is
-sub-linear, but it is the query shape autocomplete depends on and the one that
-would need attention first — the cheapest fix is capping the expansion by
-posting count rather than by candidate count.
+Prefix queries are not flat, and that is the honest result. A 3-character prefix
+over 4.4M terms expands to roughly twice the term range it did over 2.1M, and
+every expansion's posting list is longer, so the coarse pass does more work
+before the bound can prune anything. 5.9x slower for 6.4x the data is barely
+sub-linear, and it is the query shape autocomplete depends on — the first thing
+that would need attention. Assigning POI localities cost some of this directly:
+postings went from 91.8M to 100.4M because a POI now carries its settlement as
+a searchable token.
 
 One case is much slower and is called out under Future improvements: a reverse
 query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
@@ -659,7 +665,15 @@ block of cells, roughly 2,400 distance checks against France's 556,582 places,
 about fifteen million times over. But a hamlet only ever claims a point within
 1.2 km. Splitting the grid by catchment class and searching each only as far as
 its own class reaches drops that to about 70 checks, and Czechia's
-post-processing from ~30 s to ~6 s.
+post-processing from ~30 s to ~6 s. Norway's went from hanging to 5 s, after a
+stitched ring with cancelling areas produced a latitude of 94.2 — whose cosine
+is negative, which collapsed the grid's cell size and turned a bounded ring walk
+into ten million iterations.
+
+Together: the extract went from 1h23m and 32.7 GB to **28m37s and 20.9 GB**.
+Which then made the index stage the ceiling, since it still holds every anchor
+and address row before writing. The next thing to restructure, not a solved
+problem.
 
 ### Representative points
 

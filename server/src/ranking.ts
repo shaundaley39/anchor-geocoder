@@ -189,11 +189,13 @@ export function cheapScore(
     // one 194 to 132 — identical category priors, so the boost was the only
     // discriminator, and the real mountain has no village.
     //
-    // Treating an absent locality as middling rather than zero swaps one wrong
-    // answer for another: it restores shop chains against same-named villages
-    // and breaks Barcelona's Sagrada Família again. No constant fixes both,
-    // because the missing signal is per-feature importance — a Wikidata or
-    // pagerank join — and locality is standing in for it.
+    // Treating an absent locality as middling rather than zero was the obvious
+    // middle and is wrong in both directions: it breaks Barcelona's Sagrada
+    // Família again, and it promotes a shop chain over the village sharing its
+    // name — which is backwards, since a village is the better answer to a bare
+    // "Zabka" with no locality context. Distinguishing landmarks from namesakes
+    // wants per-feature importance, a Wikidata or pagerank join; distinguishing
+    // a nearby branch from a distant village wants the caller's viewport.
     s *= 1 + a.localityScore[a.anchorLocal[id]!]! / 10;
   }
   if (opts.proximity) s *= proximityBoost(opts.proximity, a, id);
