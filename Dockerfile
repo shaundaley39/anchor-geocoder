@@ -13,7 +13,7 @@
 # (`make index`), then either mount it or bake it in.
 
 # ---------------------------------------------------------------- builder ----
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@10.28.1 --activate
@@ -40,7 +40,7 @@ RUN rm -rf node_modules server/node_modules packages/*/node_modules \
  && pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # ---------------------------------------------------------------- runtime ----
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     INDEX_DIR=/index \
