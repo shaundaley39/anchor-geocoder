@@ -54,7 +54,11 @@ func (e *Extractor) scanRelations(ctx context.Context, st *Stats) ([]*multipolyg
 			continue
 		}
 		_, poi := isPOI(tags)
-		if !poi && !isPlace(tags) {
+		if e.PlacesOnly {
+			if !isPlace(tags) {
+				continue
+			}
+		} else if !poi && !isPlace(tags) {
 			continue
 		}
 		mp := &multipolygon{id: int64(r.ID), tags: tags}

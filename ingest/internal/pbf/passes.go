@@ -52,7 +52,12 @@ func (e *Extractor) scanWays(ctx context.Context, st *Stats, memberWays []int64)
 		// A relation member usually carries no tags of its own, so nothing else
 		// would keep it, and its vertices are the relation's only geometry.
 		member := search(memberWays, int64(w.ID)) >= 0
-		if !addressed && !place && !street && !poi && !member {
+		if e.PlacesOnly {
+			if !place {
+				continue
+			}
+			addressed, street, poi, member = false, false, false, false
+		} else if !addressed && !place && !street && !poi && !member {
 			continue
 		}
 		if len(w.Nodes) == 0 {
@@ -125,7 +130,12 @@ func (e *Extractor) scanNodes(ctx context.Context, st *Stats, needed []int64, lo
 		addressed := isAddressed(tags)
 		place := isPlace(tags)
 		_, poi := isPOI(tags)
-		if !addressed && !place && !poi {
+		if e.PlacesOnly {
+			if !place {
+				continue
+			}
+			addressed, poi = false, false
+		} else if !addressed && !place && !poi {
 			continue
 		}
 		switch {

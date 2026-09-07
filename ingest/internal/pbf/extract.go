@@ -69,6 +69,12 @@ func findWay(wanted []int64, id int64) (needsAllVertices, ok bool) {
 
 // Extractor pulls features out of one country extract.
 type Extractor struct {
+	// PlacesOnly restricts extraction to settlements. It exists so the places
+	// map can be completed over every extract before any country's streets are
+	// grouped, which is what lets the rest of the pipeline hold one country at a
+	// time instead of all of them.
+	PlacesOnly bool
+
 	Path    string
 	Country string
 	// Emit is called for every extracted raw feature. It must be safe to call from

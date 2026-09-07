@@ -115,18 +115,47 @@ func run(sources []source, outDir string) error {
 		// Packed int64 keys, not "osm:n123" strings: ~70M entries at fourteen
 		// countries, where string keys cost ~90 bytes each against 16.
 		seenOSM = make(map[int64]struct{}, 16_000_000)
-		segs    []streets.Segment
-		orphans []streets.Segment // addresses with no locality tag of any kind
 		places  = map[string]*model.Record{}
-		pois    = map[string]*model.Record{}
 		counts  = map[string]int{}
 		stats   = map[string]any{}
+
+		// Per country, cleared after each. Holding all 41 at once is what took
+		// peak memory to 35 GB: 19.2M street segments, 25.2M orphan addresses
+		// and 10.4M POIs, each a full record, all live simultaneously.
+		segs    []streets.Segment
+		orphans []streets.Segment // addresses with no locality tag of any kind
+		pois    = map[string]*model.Record{}
 	)
 
 	writeRec := func(r *model.Record) error {
 		counts[string(r.Layer)]++
 		return enc.Encode(r)
 	}
+
+	// Settlements first, over every extract. Street and address localities are
+	// derived spatially, so grouping one country needs places from its
+	// neighbours — including neighbours later in the list. Collecting them up
+	// front is what lets the main loop hold one country at a time.
+	//
+	// A cheap pass: places are a rounding error next to addresses, so this reads
+	// the same bytes but decodes almost nothing.
+	for _, src := range sources {
+		ex := &pbf.Extractor{Path: src.path, Country: src.country, PlacesOnly: true}
+		ex.Emit = func(rf pbf.RawFeature) error {
+			for _, r := range model.FromTags(rf.OSMType, rf.OSMID, rf.Category,
+				rf.Tags, rf.Lat, rf.Lon, src.country, rf.Ring, rf.RingClosed) {
+				if r.Layer == model.LayerPlace {
+					addPlace(places, r, src.country, counts)
+				}
+			}
+			return nil
+		}
+		if _, err := ex.Run(context.Background()); err != nil {
+			return fmt.Errorf("places prepass %s: %w", src.country, err)
+		}
+	}
+	log.Printf("places prepass: %d settlements across %d extracts", len(places), len(sources))
+	cat := streets.NewCatchment(places)
 
 	for _, src := range sources {
 		log.Printf("[%s] extracting %s", src.country, filepath.Base(src.path))
@@ -179,18 +208,7 @@ func run(sources []source, outDir string) error {
 				return nil
 
 			case model.LayerPlace:
-				// Often mapped as both node and area; collapse on name plus a ~1km cell,
-				// keeping the higher-ranked class.
-				k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
-					strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
-				if prev, ok := places[k]; ok {
-					if settlementRank(r) <= settlementRank(prev) {
-						counts["dedup_place"]++
-						return nil
-					}
-					counts["dedup_place"]++
-				}
-				places[k] = r
+				addPlace(places, r, country, counts)
 				return nil
 			}
 			// 3.6% of Czech addresses have neither addr:city nor addr:place, so nothing
@@ -210,49 +228,40 @@ func run(sources []source, outDir string) error {
 		}
 		stats[src.country] = st
 		log.Printf("[%s] extract stats: %+v", src.country, st)
-	}
 
-	// One catchment index over every place seen, shared by all three
-	// assignments below. Building it per caller is what left POIs out.
-	cat := streets.NewCatchment(places)
+		// Everything this country deferred is resolved and written now, then
+		// released. The places map is already complete from the prepass, so
+		// nothing here needs a later country. Doing it once at the end instead
+		// meant holding all 41 countries' segments, orphans and POIs at once.
+		grouped := streets.Group(segs, cat, counts)
+		streets.ResolveOrphanAddresses(orphans, cat, counts)
+		streets.ResolvePOILocalities(pois, cat, counts)
+		log.Printf("[%s] %d segments -> %d streets, %d orphan addresses, %d POIs",
+			src.country, len(segs), len(grouped), len(orphans), len(pois))
 
-	grouped := streets.Group(segs, cat, counts)
-
-	// Locality-less addresses get the same treatment, minus the grouping: each
-	// stays its own result, it just gains a city for display and search.
-	streets.ResolveOrphanAddresses(orphans, cat, counts)
-	log.Printf("resolved locality for %d/%d orphan addresses",
-		counts["address_locality_resolved"], len(orphans))
-	for i := range orphans {
-		if err := writeRec(orphans[i].Rec); err != nil {
-			return err
+		for i := range orphans {
+			if err := writeRec(orphans[i].Rec); err != nil {
+				return err
+			}
 		}
-	}
-
-	// And POIs, which had been left out: only the 41.3% carrying addr:city had
-	// a locality, so the prior could not break ties between namesakes.
-	streets.ResolvePOILocalities(pois, cat, counts)
-	log.Printf("resolved locality for %d/%d POIs without one",
-		counts["poi_locality_resolved"], len(pois))
-
-	// Stable order, so builds are reproducible.
-	log.Printf("grouping %d street segments -> %d streets, %d places",
-		len(segs), len(grouped), len(places))
-	for _, k := range streets.SortedKeys(grouped) {
-		agg := grouped[k]
-		agg.Finalize()
-		counts["street_segments_merged"] += agg.Segments() - 1
-		if err := writeRec(agg.Rec); err != nil {
-			return err
+		// Stable order, so builds are reproducible.
+		for _, k := range streets.SortedKeys(grouped) {
+			agg := grouped[k]
+			agg.Finalize()
+			counts["street_segments_merged"] += agg.Segments() - 1
+			if err := writeRec(agg.Rec); err != nil {
+				return err
+			}
 		}
+		for _, k := range streets.SortedKeysRec(pois) {
+			if err := writeRec(pois[k]); err != nil {
+				return err
+			}
+		}
+		segs, orphans, pois = nil, nil, map[string]*model.Record{}
 	}
 	for _, k := range streets.SortedKeysRec(places) {
 		if err := writeRec(places[k]); err != nil {
-			return err
-		}
-	}
-	for _, k := range streets.SortedKeysRec(pois) {
-		if err := writeRec(pois[k]); err != nil {
 			return err
 		}
 	}
@@ -306,11 +315,24 @@ func packOSMKey(osmType byte, id int64) int64 {
 	return id<<2 | t
 }
 
-// Ranks duplicate place features so the better mapping survives. Ranks
-// settlement classes so deduplication can keep the better of two records for
-// the same place. Not the ranking prior — that is anchor.placePrior, which is a
-// different curve for a different job. This one only has to order two
-// candidates that are already known to be the same settlement.
+// addPlace collapses a settlement mapped more than once, on name plus a ~1km
+// cell, keeping the higher-ranked class. Shared by the places prepass and the
+// main loop, which both see every settlement.
+func addPlace(places map[string]*model.Record, r *model.Record, country string, counts map[string]int) {
+	k := fmt.Sprintf("%s|%s|%.2f|%.2f", country,
+		strings.Join(norm.Tokens(r.Name), " "), r.Lat, r.Lon)
+	if prev, ok := places[k]; ok {
+		counts["dedup_place"]++
+		if settlementRank(r) <= settlementRank(prev) {
+			return
+		}
+	}
+	places[k] = r
+}
+
+// settlementRank orders two records already known to describe the same place,
+// so deduplication keeps the better mapping. Not the ranking prior — that is
+// anchor.placePrior, a different curve for a different job.
 func settlementRank(r *model.Record) float64 {
 	s := float64(r.Population) / 1e6
 	switch r.PlaceType {

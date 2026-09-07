@@ -248,9 +248,17 @@ maybe('against the built index', () => {
       expect(r.name).toBe('Praha');
     });
 
+    /**
+     * Asserted by location, not by name. Prague's Wenceslas Square is mapped
+     * twice — once as "Václavské náměstí" carrying the English alias, once
+     * canonically in English — so which name comes back is a tie-break between
+     * two records for the same square, not the property under test.
+     */
     needs('cz')('matches an exonym on a feature that is not a settlement', () => {
       const r = top('Wenceslas Square');
-      expect(r?.name).toBe('Václavské náměstí');
+      expect(r).toBeDefined();
+      expect(r!.lat).toBeCloseTo(50.081, 1);
+      expect(r!.lon).toBeCloseTo(14.428, 1);
     });
 
     needs('cz', 'pl')('finds a POI by brand or operator, not just its own name', () => {
@@ -264,6 +272,18 @@ maybe('against the built index', () => {
       // long name would make it rank worse the better it is documented.
       expect(top('Krakow')?.name).toBe('Kraków');
       expect(top('Krakau')?.name).toBe('Kraków');
+    });
+
+    /**
+     * An alias is weaker evidence than the name a feature goes by. A Polish
+     * lake carries "Warsz" as an alt_name, so an exact hit on that outranked a
+     * prefix hit on Warszawa by 0.14% until aliases were discounted — while
+     * exonyms, which are also aliases, still have to work.
+     */
+    needs('cz', 'pl')('prefers the canonical name to an alias, but still ranks exonyms', () => {
+      expect(top('Warsz')?.name).toBe('Warszawa');
+      // Praha matches "Prague" only through an alias, and must still win.
+      expect(top('Prague')?.name).toBe('Praha');
     });
 
     needs('cz', 'pl')('supports prefix autocomplete on the final token', () => {

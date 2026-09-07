@@ -12,6 +12,9 @@ import { haversineMetres } from './geometry.js';
 import type { ParsedQuery } from './query.js';
 import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 
+/** How much a match on an alias is worth against a match on the canonical name. */
+const ALIAS_DISCOUNT = 0.9;
+
 /** The request fields that change a score rather than filter results. */
 export interface RankingOptions {
   proximity?: { lat: number; lon: number };
@@ -75,7 +78,8 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
   // "Prague College" won. Merged, Kraków's 26 alternate names read as one very
   // long name, so the better documented a place is the worse it scores.
   let best = 0;
-  for (const name of names) {
+  for (let v = 0; v < names.length; v++) {
+    const name = names[v]!;
     if (name.length === 0) continue;
 
     let inName = 0;
@@ -116,6 +120,14 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     // to a partial match on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní
     // Předměstí" (2.5).
     if (inName === name.length && inName === queryTokens.length) score *= 2.5;
+
+    // An alias is weaker evidence than the name a feature actually goes by, so
+    // matching one is discounted. Small on purpose: exonyms are aliases, and
+    // scoring them low is what made "Prague" unrankable. But without any
+    // discount an exact hit on a third alt_name beats a prefix hit on something
+    // far more important — a Polish lake carrying "Warsz" as an alias outranked
+    // Warszawa on a 0.14% margin.
+    if (v > 0) score *= ALIAS_DISCOUNT;
 
     if (score > best) best = score;
   }
