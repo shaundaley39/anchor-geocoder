@@ -150,7 +150,10 @@ func Group(segs []Segment, cat *Catchment, counts map[string]int) map[string]*Ag
 		agg.Add(seg.Lat, seg.Lon)
 	}
 
-	counts["street_unassigned_locality"] = unassigned
+	// Accumulated, not assigned: Group runs once per country now, so an
+	// assignment leaves the last country's figure — Malta's zero standing in for
+	// Europe's.
+	counts["street_unassigned_locality"] += unassigned
 	return out
 }
 
