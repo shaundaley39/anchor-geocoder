@@ -8,7 +8,6 @@
 package streets
 
 import (
-	"log"
 	"math"
 	"sort"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/geom"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
-	"github.com/shaundaley39/anchor-geocoder/ingest/internal/spatial"
 )
 
 // Segment is one way of a named street, buffered until the places layer can say
@@ -118,54 +116,16 @@ const searchRadiusKm = 15
 // OSM tags localities on addresses but not roads — four of 241,815 named Czech
 // street ways carry addr:city — so grouping on the tag alone collapsed every
 // "Nadrazni" in the country into one result.
-func Group(segs []Segment, places map[string]*model.Record, counts map[string]int) map[string]*Aggregate {
-	// Sub-city divisions are indexed too, but their small catchments mean they
-	// only win when a street is right on top of them.
-	grids := map[string]*spatial.Grid{}
-	names := map[string][]*model.Record{}
-	for _, k := range SortedKeysRec(places) {
-		p := places[k]
-		if catchmentKm[p.PlaceType] == 0 {
-			continue
-		}
-		g, ok := grids[p.Country]
-		if !ok {
-			g = spatial.NewGrid(0.05)
-			grids[p.Country] = g
-		}
-		g.Add(p.Lat, p.Lon)
-		names[p.Country] = append(names[p.Country], p)
-	}
-	for c, g := range grids {
-		log.Printf("[%s] settlement index: %d places", c, g.Len())
-	}
-
+func Group(segs []Segment, cat *Catchment, counts map[string]int) map[string]*Aggregate {
 	out := map[string]*Aggregate{}
 	var unassigned int
-	var buf []spatial.Neighbour
 
 	for i := range segs {
 		seg := &segs[i]
 		locality := seg.Rec.City // honour an explicit tag when there is one
-
 		if locality == "" {
-			if g := grids[seg.Country]; g != nil {
-				best, bestScore := (*model.Record)(nil), 0.0
-				buf = g.Within(seg.Lat, seg.Lon, searchRadiusKm, buf[:0])
-				for _, n := range buf {
-					cand := names[seg.Country][n.ID]
-					// Lower is better; skip anything outside its catchment.
-					score := n.DistKm / catchmentKm[cand.PlaceType]
-					if score > 1 {
-						continue
-					}
-					if best == nil || score < bestScore {
-						best, bestScore = cand, score
-					}
-				}
-				if best != nil {
-					locality = best.Name
-				}
+			if best := cat.Nearest(seg.Country, seg.Lat, seg.Lon); best != nil {
+				locality = best.Name
 			}
 		}
 		if locality == "" {
@@ -222,47 +182,15 @@ func rebuildTokens(r *model.Record) []string {
 // addr:city nor addr:place. 3.6% of Czechia. Without it they render as a bare
 // "Prazska 248/39", with no way to tell which of 300-odd Prazska streets is
 // meant.
-func ResolveOrphanAddresses(orphans []Segment, places map[string]*model.Record, counts map[string]int) {
-	if len(orphans) == 0 {
-		return
-	}
-	grids := map[string]*spatial.Grid{}
-	names := map[string][]*model.Record{}
-	for _, k := range SortedKeysRec(places) {
-		p := places[k]
-		if catchmentKm[p.PlaceType] == 0 {
-			continue
-		}
-		g, ok := grids[p.Country]
-		if !ok {
-			g = spatial.NewGrid(0.05)
-			grids[p.Country] = g
-		}
-		g.Add(p.Lat, p.Lon)
-		names[p.Country] = append(names[p.Country], p)
-	}
-
+// ResolveOrphanAddresses attaches a locality to addresses carrying neither
+// addr:city nor addr:place. 3.6% of Czechia, 25.2M across Europe. Without it
+// they render as a bare "Prazska 248/39", with no way to tell which of 300-odd
+// Prazska streets is meant.
+func ResolveOrphanAddresses(orphans []Segment, cat *Catchment, counts map[string]int) {
 	resolved := 0
-	var buf []spatial.Neighbour
 	for i := range orphans {
 		o := &orphans[i]
-		g := grids[o.Country]
-		if g == nil {
-			continue
-		}
-		var best *model.Record
-		bestScore := 0.0
-		buf = g.Within(o.Lat, o.Lon, searchRadiusKm, buf[:0])
-		for _, n := range buf {
-			cand := names[o.Country][n.ID]
-			score := n.DistKm / catchmentKm[cand.PlaceType]
-			if score > 1 {
-				continue
-			}
-			if best == nil || score < bestScore {
-				best, bestScore = cand, score
-			}
-		}
+		best := cat.Nearest(o.Country, o.Lat, o.Lon)
 		if best == nil {
 			continue
 		}
@@ -271,9 +199,35 @@ func ResolveOrphanAddresses(orphans []Segment, places map[string]*model.Record, 
 		o.Rec.Tokens = model.SearchTokens(o.Rec)
 		resolved++
 	}
-	counts["address_locality_resolved"] = resolved
-	counts["address_locality_unresolved"] = len(orphans) - resolved
-	log.Printf("resolved locality for %d/%d orphan addresses", resolved, len(orphans))
+	counts["address_locality_resolved"] += resolved
+	counts["address_locality_unresolved"] += len(orphans) - resolved
+}
+
+// ResolvePOILocalities does the same for points of interest, which had been
+// left out entirely.
+//
+// A POI got a locality only from its own addr:city, which 41.3% carry. The
+// other 58.7% had none, so the locality prior could not break ties between
+// same-named features and sometimes inverted them: "Sagrada Familia" returned a
+// railway halt in Ortuella, which had a locality, above Barcelona's station,
+// which did not.
+func ResolvePOILocalities(pois map[string]*model.Record, cat *Catchment, counts map[string]int) {
+	resolved := 0
+	for _, k := range SortedKeysRec(pois) {
+		r := pois[k]
+		if r.City != "" {
+			continue
+		}
+		best := cat.Nearest(r.Country, r.Lat, r.Lon)
+		if best == nil || strings.EqualFold(best.Name, r.Name) {
+			continue
+		}
+		r.City = best.Name
+		r.Display = r.Display + ", " + best.Name
+		r.Tokens = model.SearchTokens(r)
+		resolved++
+	}
+	counts["poi_locality_resolved"] += resolved
 }
 
 func SortedKeys(m map[string]*Aggregate) []string {

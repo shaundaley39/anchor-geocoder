@@ -212,16 +212,28 @@ func run(sources []source, outDir string) error {
 		log.Printf("[%s] extract stats: %+v", src.country, st)
 	}
 
-	grouped := streets.Group(segs, places, counts)
+	// One catchment index over every place seen, shared by all three
+	// assignments below. Building it per caller is what left POIs out.
+	cat := streets.NewCatchment(places)
 
-	// Same treatment for locality-less addresses, minus the grouping: each is
-	// still its own result, it just gains a city for display and search.
-	streets.ResolveOrphanAddresses(orphans, places, counts)
+	grouped := streets.Group(segs, cat, counts)
+
+	// Locality-less addresses get the same treatment, minus the grouping: each
+	// stays its own result, it just gains a city for display and search.
+	streets.ResolveOrphanAddresses(orphans, cat, counts)
+	log.Printf("resolved locality for %d/%d orphan addresses",
+		counts["address_locality_resolved"], len(orphans))
 	for i := range orphans {
 		if err := writeRec(orphans[i].Rec); err != nil {
 			return err
 		}
 	}
+
+	// And POIs, which had been left out: only the 41.3% carrying addr:city had
+	// a locality, so the prior could not break ties between namesakes.
+	streets.ResolvePOILocalities(pois, cat, counts)
+	log.Printf("resolved locality for %d/%d POIs without one",
+		counts["poi_locality_resolved"], len(pois))
 
 	// Stable order, so builds are reproducible.
 	log.Printf("grouping %d street segments -> %d streets, %d places",
