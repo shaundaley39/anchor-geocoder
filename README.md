@@ -574,7 +574,7 @@ This is also why the tag distribution was measured before the schema was
 written. `cmd/tagstat` exists for exactly that, and is kept in the repo because
 the answer will drift as OSM changes.
 
-### Three passes over each extract
+### Four passes over each extract
 
 A pbf file is ordered nodes, then ways, then relations, and ways reference nodes
 by bare ID. Resolving way geometry therefore needs locations already streamed
@@ -586,10 +586,16 @@ Holding every node location is not viable — the Poland extract has 241M nodes,
 and a hash map keyed by int64 OSM IDs runs to tens of gigabytes. Instead:
 
 ```
-pass 1  ways   -> select features, record the node IDs they need
-pass 2  nodes  -> emit address/place nodes; retain only the wanted locations
-pass 3  ways   -> resolve geometry, emit
+pass 0  relations -> select multipolygons, note the member ways they need
+pass 1  ways      -> select features, record the node IDs they need
+pass 2  nodes     -> emit address/place nodes; retain only the wanted locations
+pass 3  ways      -> resolve geometry, emit; keep member geometry for stitching
 ```
+
+Relations come first because pass 1 has to know which extra ways to retain: a
+member way usually carries no tags of its own — an airport perimeter is 68
+untagged segments — so nothing else would select it. The rings are stitched
+afterwards, in memory.
 
 Each pass skips decoding the object types it does not need. The wanted node IDs
 go into a sorted `[]int64` with a hand-rolled binary search rather than a map:
@@ -608,6 +614,52 @@ per selected way buys nothing and costs everything: tens of millions of Go maps
 at several hundred bytes each dominated peak memory. Dropping them took the
 default build's peak from **11.5 GB to 5.5 GB** with no change to build time and
 a byte-identical artifact.
+
+### Stitching multipolygon relations
+
+OSM maps a large feature as a relation whose outer ring is split across member
+ways, in arbitrary order and either direction, wherever tagging changes or ways
+meet. Prague's airport is 68 of them. Only 67% of Czechia's 2,955 named
+multipolygons have a single outer way, so there was no shortcut: the pieces are
+walked, matching end node ids and reversing where needed, until the ring closes.
+Chains that never close are dropped rather than forced shut, since guessing at a
+boundary nobody mapped invents geometry.
+
+**183,803 of 184,036 resolve across Europe — 99.9%.** Deliberately partial: one
+ring per relation, and inner rings ignored.
+
+Two bugs came out of this, both found by running it rather than reading it. A
+`natural=water` centreline was being stored as a *closed* ring, because
+closedness was inferred from a shape merely existing rather than from the way's
+own end nodes — so ray casting joined the Vltava's endpoints into an 11 km lens
+that reported Old Town Square, 300 m inland, as inside the river. And a
+self-intersecting stitched ring has shoelace areas that cancel, which made the
+centroid divisor small without looking degenerate and produced a latitude of
+94.2; that fed a negative cosine into the spatial grid and turned a bounded ring
+walk into ten million iterations, hanging the Norwegian build. The centroid is
+now checked against the ring's own bounding box, which is a validity test rather
+than a magnitude one.
+
+### The build holds one country at a time
+
+Locality is derived spatially, so grouping one country needs settlements from
+its neighbours — including neighbours later in the list. That is why street
+segments, orphan addresses and POIs used to accumulate across all 41 extracts
+before anything was written, and why peak memory tracked the whole corpus rather
+than the largest country: **35.25 GB for a 4.4 GB artifact**.
+
+Settlements are now collected in a places-only prepass over every extract first.
+It is cheap, because places are a rounding error next to addresses — five
+minutes and 1.79M settlements over 30 GB of pbf — and afterwards each country is
+grouped, resolved, written and released.
+
+The catchment lookup needed the same treatment. It held one grid per country and
+searched it to 15 km for every point, because a *city* reaches that far: a 9x9
+block of cells, roughly 2,400 distance checks against France's 556,582 places,
+about fifteen million times over. But a hamlet only ever claims a point within
+1.2 km. Splitting the grid by catchment class and searching each only as far as
+its own class reaches drops that to about 70 checks, and Czechia's
+post-processing from ~30 s to ~6 s.
 
 ### Representative points
 
@@ -1382,16 +1434,11 @@ expected bounding box (0).
 - **Spelling correction stops at one edit, and at 5 characters.** `Prahha`
   resolves; `Prgaa` (two edits) and `Prga` (four characters, below the gate) do
   not. See "A typo should not look like an empty world".
-- **OSM relations are skipped**, which now costs more than it did: large parks,
-  lakes, forests and city boundaries are disproportionately multipolygons, and
-  those are exactly the features the containment tier is for. The Bodensee has
-  no ring for this reason, so a click on open water falls through to the
-  proximity tier. Multipolygon-mapped features are missing entirely.
-  Measured on Czechia and Poland: 36,703 named POI-tagged relations against
-  663,724 indexed POIs, so 5.2% by count, but they skew large. Prague's
-  Letiště Václava Havla is a multipolygon and is absent, while Warsaw Chopin and
-  Kraków-Balice, mapped as ways, are present. Resolving multipolygon geometry
-  needs member ways and then their nodes: two more extraction passes.
+- **Only multipolygon relations are indexed.** `type=boundary` is still
+  skipped, which is why a settlement has no extent and why results carry no
+  administrative hierarchy. One ring per relation, so an archipelago loses its
+  smaller islands, and inner rings are ignored, so a click in a courtyard reads
+  as inside the building around it.
 
 ## Scaling to the planet
 
