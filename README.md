@@ -12,7 +12,7 @@ from a document of its own into a binary search inside the anchor that matched.
 
 The default build covers **Poland, Czechia, Switzerland and Bosnia and
 Herzegovina** — 14.0M addresses, 963k points of interest, 2.0M anchors — and
-takes under four minutes end to end. Those four are chosen to span the
+takes under five minutes end to end. Those four are chosen to span the
 interesting cases rather than to be big: Czechia exercises the polymorphic
 address anchor (47% of its addresses have no street), Poland is the
 street-and-city model at scale, Switzerland brings four languages and dense
@@ -175,10 +175,10 @@ peaks around 2 GB.
 
 ```bash
 make fetch       # 3.5 GB from Geofabrik, md5-verified per file
-make records     # 3m27s -> build/records.ndjson.gz     (16M records)
-make index       # 1m42s -> build/index/                (469 MB artifact)
+make records     # 2m51s -> build/records.ndjson.gz     (16M records)
+make index       # 1m47s -> build/index/                (473 MB artifact)
 make install     # server dependencies
-make serve       # boots in 118 ms, listens on 127.0.0.1:3000
+make serve       # boots in 119 ms, listens on 127.0.0.1:3000
 ```
 
 Or `make all` for the first three. `make serve` runs in the foreground, so open
@@ -459,8 +459,16 @@ Built from the 2026-08-31 Geofabrik extracts.
 | stage | time | output |
 |---|---|---|
 | fetch | — | 3.5 GB of extracts, md5-verified |
-| extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **469 MB**. Peak 5.5 GB RSS |
-| boot | **118 ms** | **609 MB RSS** |
+| extract + index | **4m38s** | 1,972,298 anchors, 13,980,747 addresses, 971,145 POIs — **473 MB**. Peak 5.4 GB RSS |
+| boot | **119 ms** | **752 MB RSS** |
+
+That is 4m38s against 3m27s before multipolygon relations, spatial POI
+localities and the places prepass were added — a third slower for a fourth pass
+over each extract, a fifth places-only pass, and 657k POI locality lookups.
+Worth it: the airport that was missing is indexed, POI locality coverage went
+from 41% to 96%, and three countries stopped folding their own names into
+mixed-script tokens. Resident memory rose with it, 609 MB to 752 MB, because a
+POI now carries its settlement as a searchable token.
 
 **All 41 European countries**, the largest build actually run:
 
@@ -512,11 +520,11 @@ sizes 6.4x apart:
 
 | query | 14.0M addresses | 90.1M addresses |
 |---|---|---|
-| street + house number | 0.109 ms | **0.120 ms** |
-| reverse, dense area, k=5 | 0.014 ms | **0.024 ms** |
-| exact city name | 1.093 ms | **1.635 ms** |
-| two-token street | 0.487 ms | **2.211 ms** |
-| 3-char autocomplete prefix | 1.169 ms | **6.923 ms** (p99 16.7 ms) |
+| street + house number | 0.117 ms | **0.120 ms** |
+| reverse, dense area, k=5 | 0.016 ms | **0.024 ms** |
+| exact city name | 1.556 ms | **1.635 ms** |
+| two-token street | 0.627 ms | **2.211 ms** |
+| 3-char autocomplete prefix | 1.447 ms | **6.923 ms** (p99 16.7 ms) |
 
 House-number lookup and reverse are flat, which is the design working: a number
 is a binary search inside one anchor whatever else the index holds, and the k-d
@@ -1486,11 +1494,11 @@ Not capacity. In order:
 1. **Throughput.** One Node thread at ~0.6 ms is around 1,600 queries a second
    whatever the index holds. This is the real driver, and replicas fix it.
 2. **Blast radius.** One process holding the planet is one process to lose.
-3. **Build parallelism.** Extraction peaks at 5.5 GB for four countries and
+3. **Build parallelism.** Extraction peaks at 5.4 GB for four countries and
    around 11 for fourteen; the planet would want splitting regardless.
 
 Boot is no longer on that list — the spatial structures are precomputed, so a
-replica starts in 118 ms locally and would still be under a second at planet
+replica starts in 119 ms locally and would still be under a second at planet
 scale.
 
 ### How sharding would work
