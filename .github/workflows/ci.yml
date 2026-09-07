@@ -85,7 +85,11 @@ jobs:
           working-directory: ingest
 
       - name: test
+        # The race detector needs cgo, while everything shipped is built without
+        # it. Enabled for the test step only; the binaries stay static.
         run: go test -race -count=1 ./...
+        env:
+          CGO_ENABLED: '1'
 
       # The TypeScript side asserts against constants Go publishes. If the
       # committed fixture is stale, the contract test is checking history.

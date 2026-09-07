@@ -118,7 +118,11 @@ lint-server:
 test: test-go test-server
 
 test-go:
-	cd ingest && $(GO) test ./...
+	# -count=1 because several tests read config/*.tsv, which Go does not track
+	# as an input: a cached pass survived adding a country to the catalogue and
+	# only CI noticed. -race because the extract is heavily concurrent, and it
+	# needs cgo even though nothing shipped is built with it.
+	cd ingest && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 ./...
 
 test-server:
 	pnpm -r --filter "./packages/*" build

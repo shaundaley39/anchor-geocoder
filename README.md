@@ -47,7 +47,7 @@ curl 'localhost:3000/v1/geocode?lat=49.1922&lon=16.6113&limit=1' # -> Brno, CZ, 
 This takes time and resources - it's a stress test, which I ran twice, rather than for quick local development.
 
 ```sh
-make all COUNTRIES=@europe        # all 41, ~30 GB of extracts, 42m47s; building requires 31.1 GB of RAM
+make all COUNTRIES=@europe        # all 42, ~30 GB of extracts, 42m47s; building requires 31.1 GB of RAM
 make serve                        # boots in 908 ms; runnning requires 4.86 GB of RAM
 ```
 
