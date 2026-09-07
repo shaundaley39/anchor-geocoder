@@ -440,6 +440,23 @@ Built from the 2026-08-31 Geofabrik extracts.
 | extract + index | **3m27s** | 1,965,085 anchors, 13,979,530 addresses, 963,136 POIs, 266,783 shapes — **469 MB**. Peak 5.5 GB RSS |
 | boot | **118 ms** | **609 MB RSS** |
 
+**All 41 European countries**, the largest build actually run:
+
+| stage | time | output |
+|---|---|---|
+| fetch | — | 29.6 GB of extracts, md5-verified |
+| extract | **1h23m** | 118M records — 97,171,286 addresses, 10,417,125 POIs, 8,871,902 streets, 1,784,728 places. 183,803 of 184,036 multipolygons stitched into closed rings (99.9%). Peak 32.7 GB RSS |
+| index | **13m42s** | 23,297,843 anchors, 90,103,638 addresses, 4,423,316 terms, 91,815,428 postings — **4.37 GB**. Whole-build peak **35.25 GB RSS** |
+| boot | **907 ms** | **4.8 GB RSS** |
+
+Serving that is comfortable; building it is not. Peak memory scales with the
+whole corpus rather than the largest extract, because records accumulate across
+all 41 before any are written, and 35 GB only survived here because macOS
+compresses memory under pressure. A container with a hard 24 GB limit kills this
+build. That is the concrete argument for the sharded build described under
+[Scaling to the planet](#scaling-to-the-planet), and it is measured rather than
+projected.
+
 **Full region** (all fourteen), for comparison:
 
 | stage | time | output |
@@ -463,23 +480,28 @@ Per country, as indexed:
 | at | 2,469,845 | 548,341 | | | |
 | ch | 2,190,200 | 471,410 | | | |
 
-Query latency, 16-core M-series laptop, measured by `make bench`:
+Query latency, 16-core M-series laptop, measured by `make bench`, at two corpus
+sizes 6.4x apart:
 
-| query | p50 | p95 | p99 |
-|---|---|---|---|
-| exact city name | 1.130 ms | 2.749 ms | 2.994 ms |
-| 3-char autocomplete prefix | 1.195 ms | 1.865 ms | 2.196 ms |
-| street + house number | 0.109 ms | 0.136 ms | 0.206 ms |
-| two-token street | 0.487 ms | 0.641 ms | 0.727 ms |
-| reverse, dense area, k=5 | 0.015 ms | 0.043 ms | 0.083 ms |
-| reverse, sparse (~5 km) | 0.018 ms | 0.206 ms | 0.558 ms |
+| query | 14.0M addresses | 90.1M addresses |
+|---|---|---|
+| exact city name | 1.093 ms | **0.977 ms** |
+| street + house number | 0.109 ms | **0.104 ms** |
+| reverse, dense area, k=5 | 0.014 ms | **0.024 ms** |
+| two-token street | 0.487 ms | **1.736 ms** |
+| 3-char autocomplete prefix | 1.169 ms | **4.946 ms** (p99 11.0 ms) |
 
-Latency is flat against a 5x larger corpus: candidate lists grew,
-but the search bound below terminates the rerank on evidence rather than on
-index size. The exact-city figure roughly doubled when that bound replaced a
-fixed cut, which is the cost of the guarantee it buys.
-Reverse doubled from 10 to 20 microseconds when containment and exact geometry
-were added, which is the entire cost of the refine step.
+Exact lookups are flat, which is the design working: the search bound
+terminates the rerank on evidence rather than on index size, and a house number
+is a binary search inside one anchor whatever else the index holds.
+
+Prefix queries are not flat, and that is the honest result. A 3-character
+prefix over 4.4M terms expands to roughly twice the term range it did over 2.1M,
+and every expansion's posting list is longer, so the coarse pass does more work
+before the bound can prune anything. 4.2x slower for 6.4x the data is
+sub-linear, but it is the query shape autocomplete depends on and the one that
+would need attention first — the cheapest fix is capping the expansion by
+posting count rather than by candidate count.
 
 One case is much slower and is called out under Future improvements: a reverse
 query 12 km offshore with the radius cap raised to 50 km takes **~40 ms**.
@@ -1302,6 +1324,19 @@ expected bounding box (0).
 
 ## Known limitations
 
+- **POIs mostly have no locality, and ranking suffers for it.** The
+  catchment-scored assignment that gives streets a settlement runs over street
+  segments and orphan addresses, never over POIs, so a POI gets one only if it
+  carries `addr:city` itself: **41.3%** do, against 99.2% of streets. The
+  locality prior then cannot break ties, and sometimes inverts them — searching
+  "Sagrada Familia" over the 41-country index returns a railway halt in Ortuella
+  (which has a locality) above Barcelona's station (which does not). Invisible
+  at four countries, constant at forty-one, where the corpus is full of
+  same-named features across borders. The fix is cheap, since the grids and the
+  scoring already exist; the harder half is that category priors alone cannot
+  tell Munich's Englischer Garten from a Swedish park carrying it as a German
+  alt-name. That wants a per-feature importance signal — Wikidata links, or
+  Wikipedia pagerank as Nominatim uses.
 - **Reverse geocoding far from any address is slow.** A query 12 km offshore
   with the radius raised to 50 km takes ~40 ms, because the expanding box finds
   nothing until it is large, then haversines everything inside it. The fix is a
@@ -1309,9 +1344,11 @@ expected bounding box (0).
   distance order and stops at k instead of scanning a box; the default 5 km cap
   keeps this off the common path for now.
 - **Settlements have no extent.** OSM maps a city as a `place=city` *node* and
-  its boundary as a relation, so Berlin returns a point and no `bbox`. The API
-  omits the field rather than faking one from a radius. Relation support would
-  fix it.
+  its boundary as a relation, and only *multipolygon* relations are indexed —
+  administrative boundaries are `type=boundary` and still skipped. So Berlin
+  returns a point and no `bbox`, and the API omits the field rather than faking
+  one from a radius. Boundary relations would also give the administrative
+  hierarchy the results currently lack.
 - **Buildings have no outline.** 32.4M footprints would cost more than they are
   worth when a centroid is already within clicking tolerance, so a click inside
   a building resolves to its address point a few metres away rather than to the
