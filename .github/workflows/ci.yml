@@ -39,6 +39,14 @@ jobs:
               - '.github/workflows/ci.yml'
             server:
               - 'server/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              # The folding contract test lives on this side but breaks when the
+              # Go normalizer moves, so a change there has to run it. Without
+              # this, the one test whose job is catching Go/TypeScript drift is
+              # skipped by exactly the commit that causes drift.
+              - 'ingest/internal/norm/**'
               - '.github/workflows/ci.yml'
 
   go:
