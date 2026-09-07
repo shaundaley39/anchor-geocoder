@@ -301,9 +301,7 @@ func representativePoint(pts [][2]float64, polygon bool) (lat, lon float64) {
 	}
 	area /= 2
 
-	// Degenerate ring (unclosed, collinear, or zero area): fall back to the vertex
-	// mean, which is always defined.
-	if math.Abs(area) < 1e-12 {
+	vertexMean := func() (float64, float64) {
 		var sx, sy float64
 		for _, p := range pts {
 			sy += p[0]
@@ -312,7 +310,33 @@ func representativePoint(pts [][2]float64, polygon bool) (lat, lon float64) {
 		return sy / float64(n), sx / float64(n)
 	}
 
+	// Degenerate ring — unclosed, collinear, zero area.
+	if math.Abs(area) < 1e-12 {
+		return vertexMean()
+	}
+
 	cx /= 6 * area
 	cy /= 6 * area
-	return cy, cx / latScale
+	cLat, cLon := cy, cx/latScale
+
+	// The centroid has to land inside the ring's own box. A self-intersecting
+	// ring has areas that cancel, so the divisor comes out small without being
+	// small enough to trip the check above, and the centroid flies off — one
+	// stitched Norwegian multipolygon produced latitude 94.2, which is not a
+	// latitude. That fed a cos() of the wrong sign into the spatial grid and
+	// turned a bounded ring walk into ten million iterations.
+	b := geom.Bounds(toGeom(pts))
+	if cLat < b.MinLat || cLat > b.MaxLat || cLon < b.MinLon || cLon > b.MaxLon ||
+		math.IsNaN(cLat) || math.IsNaN(cLon) {
+		return vertexMean()
+	}
+	return cLat, cLon
+}
+
+func toGeom(pts [][2]float64) []geom.Point {
+	out := make([]geom.Point, len(pts))
+	for i, p := range pts {
+		out[i] = geom.Point{Lat: p[0], Lon: p[1]}
+	}
+	return out
 }

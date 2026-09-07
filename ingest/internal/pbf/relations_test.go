@@ -63,3 +63,29 @@ func TestAssembleRingsSeparatesTwoRings(t *testing.T) {
 		t.Errorf("largestRing picked the smaller one (area %.1f)", got)
 	}
 }
+
+// A stitched ring can self-intersect, and then the shoelace areas cancel: the
+// divisor comes out small without being small enough to look degenerate, and
+// the centroid flies off the map. One Norwegian multipolygon produced latitude
+// 94.2, whose cosine is negative — enough to turn a bounded spatial walk into
+// ten million iterations.
+func TestRepresentativePointStaysInsideTheRing(t *testing.T) {
+	// A figure-eight: two lobes of opposite winding, so the areas cancel.
+	pts := [][2]float64{
+		{60.0, 5.0}, {60.1, 5.0}, {60.1, 5.1}, {60.0, 5.1},
+		{60.0, 5.0}, {59.9, 5.0}, {59.9, 4.9}, {60.0, 4.9}, {60.0, 5.0},
+	}
+	lat, lon := representativePoint(pts, true)
+	if lat < 59.9 || lat > 60.1 || lon < 4.9 || lon > 5.1 {
+		t.Errorf("centroid (%.4f, %.4f) is outside the ring's own bounds", lat, lon)
+	}
+}
+
+func TestRepresentativePointRejectsImpossibleLatitude(t *testing.T) {
+	// Whatever the geometry, the answer has to be a coordinate.
+	pts := [][2]float64{{89.9, 10.0}, {89.95, 10.001}, {89.9, 10.002}, {89.9, 10.0}}
+	lat, _ := representativePoint(pts, true)
+	if lat > 90 || lat < -90 {
+		t.Errorf("returned latitude %.4f", lat)
+	}
+}

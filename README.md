@@ -1309,7 +1309,7 @@ server/                       TypeScript — online stage
   src/routes.ts               /v1/geocode and /health
   src/server.ts               Fastify instance, plugins, request logging
   src/index.ts                process entry: load, attach indexes, listen
-  test/                       99 tests, run against the real artifact
+  test/                       104 tests, run against the real artifact
 
 build/                        generated artifact (gitignored)
 data/raw/                     downloaded extracts (gitignored)
@@ -1346,19 +1346,13 @@ expected bounding box (0).
 
 ## Known limitations
 
-- **POIs mostly have no locality, and ranking suffers for it.** The
-  catchment-scored assignment that gives streets a settlement runs over street
-  segments and orphan addresses, never over POIs, so a POI gets one only if it
-  carries `addr:city` itself: **41.3%** do, against 99.2% of streets. The
-  locality prior then cannot break ties, and sometimes inverts them — searching
-  "Sagrada Familia" over the 41-country index returns a railway halt in Ortuella
-  (which has a locality) above Barcelona's station (which does not). Invisible
-  at four countries, constant at forty-one, where the corpus is full of
-  same-named features across borders. The fix is cheap, since the grids and the
-  scoring already exist; the harder half is that category priors alone cannot
-  tell Munich's Englischer Garten from a Swedish park carrying it as a German
-  alt-name. That wants a per-feature importance signal — Wikidata links, or
-  Wikipedia pagerank as Nominatim uses.
+- **Importance is per category, not per feature.** A POI's prior comes from its
+  OSM tag, so nothing distinguishes a world landmark from a namesake in the same
+  class: Munich's Englischer Garten loses to a Swedish park carrying the name as
+  a German alt-name, because `tourism=attraction` outranks `leisure=park`.
+  Locality now breaks most such ties — 96% of POIs have one, against 41% before
+  it was assigned spatially — but the underlying signal is missing. It wants
+  Wikidata links or Wikipedia pagerank, which is what Nominatim uses.
 - **Reverse geocoding far from any address is slow.** A query 12 km offshore
   with the radius raised to 50 km takes ~40 ms, because the expanding box finds
   nothing until it is large, then haversines everything inside it. The fix is a

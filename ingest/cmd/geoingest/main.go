@@ -132,6 +132,18 @@ func run(sources []source, outDir string) error {
 		return enc.Encode(r)
 	}
 
+	// A safety net rather than a diagnosis: whatever produces an impossible
+	// coordinate, nothing downstream should have to cope with one. A latitude
+	// past the pole makes cos() change sign, which is enough to turn a bounded
+	// spatial search into an unbounded one.
+	valid := func(r *model.Record) bool {
+		if r.Lat >= -90 && r.Lat <= 90 && r.Lon >= -180 && r.Lon <= 180 {
+			return true
+		}
+		counts["dropped_bad_coordinate"]++
+		return false
+	}
+
 	// Settlements first, over every extract. Street and address localities are
 	// derived spatially, so grouping one country needs places from its
 	// neighbours — including neighbours later in the list. Collecting them up
@@ -176,6 +188,9 @@ func run(sources []source, outDir string) error {
 
 			for _, r := range model.FromTags(rf.OSMType, rf.OSMID, rf.Category,
 				rf.Tags, rf.Lat, rf.Lon, src.country, rf.Ring, rf.RingClosed) {
+				if !valid(r) {
+					continue
+				}
 				if err := route(r, src.country); err != nil {
 					return err
 				}

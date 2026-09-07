@@ -105,14 +105,26 @@ type Neighbour struct {
 // This is the hot loop of the build — millions of calls — so the distance comes
 // back with the id (recomputing it caller-side doubled the slowest phase) and
 // buf is passed in to reuse one allocation.
+// A 15km search over the smallest cell this build uses needs ~30 rings; past a
+// few hundred the answer cannot change and the input is wrong.
+const maxRingCap = 512
+
 func (g *Grid) Within(lat, lon, maxKm float64, buf []Neighbour) []Neighbour {
 	if len(g.lats) == 0 {
 		return buf
 	}
 	center := g.cellOf(lat, lon)
-	kmPerDegLon := 111.32 * math.Cos(lat*math.Pi/180)
+	// Abs, because a latitude past the pole gives a negative cosine, and the
+	// Max below then clamps to 1e-6 rather than to a small distance — which
+	// makes maxRing ten million and the walk unbounded.
+	kmPerDegLon := 111.32 * math.Abs(math.Cos(lat*math.Pi/180))
 	cellKm := g.cellDeg * math.Min(111.32, math.Max(kmPerDegLon, 1e-6))
 	maxRing := int32(math.Ceil(maxKm/math.Max(cellKm, 1e-9))) + 1
+	// Nothing is gained by walking further than the grid extends, and this is
+	// the difference between a bad input costing a query and costing the build.
+	if maxRing > maxRingCap {
+		maxRing = maxRingCap
+	}
 
 	for r := int32(0); r <= maxRing; r++ {
 		for _, c := range ring(center, r) {
