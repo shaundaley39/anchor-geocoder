@@ -19,9 +19,11 @@ import (
 )
 
 type vector struct {
-	In     string   `json:"in"`
-	Fold   string   `json:"fold"`
-	Tokens []string `json:"tokens"`
+	In     string     `json:"in"`
+	Fold   string     `json:"fold"`
+	Tokens []string   `json:"tokens"`
+	Index  []string   `json:"index_tokens"`
+	Query  [][]string `json:"query_variants"`
 }
 
 // Edge cases that must never regress, whatever the current extracts hold.
@@ -34,6 +36,11 @@ var handPicked = []string{
 	"Мостар", "Tuzla", "Њемачка", "Џамија",
 	"248/39", "ev.38", "12A", "2410/8a", "",
 	"  spaced   out  ", "ß straße", "Ø", "ﬁ ligature", "ĂǍÂ", "1/2/3",
+	// German: the umlaut spelled both ways, and ß against a compound boundary.
+	"München", "Muenchen", "Munchen", "Köln", "Düsseldorf", "Städtle",
+	"Fürstentum Liechtenstein", "Äußere Weißgerbergasse", "Grünstraße",
+	"Schloßstraße", "Schlossstraße", "Schlosstraße", "Straße", "Weißenburg",
+	"Neue Aue", "Steuerweg", "Bauernhof", "Michaelgasse", "Mu\u0308nchen",
 }
 
 func main() {
@@ -92,7 +99,17 @@ func main() {
 		if t == nil {
 			t = []string{}
 		}
-		vecs = append(vecs, vector{In: s, Fold: norm.Fold(s), Tokens: t})
+		idx := norm.IndexTokens(s)
+		if idx == nil {
+			idx = []string{}
+		}
+		q := norm.QueryVariants(s)
+		if q == nil {
+			q = [][]string{}
+		}
+		vecs = append(vecs, vector{
+			In: s, Fold: norm.Fold(s), Tokens: t, Index: idx, Query: q,
+		})
 	}
 
 	of, err := os.Create(*out)

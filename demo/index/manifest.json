@@ -1,19 +1,19 @@
 {
   "version": 8,
-  "built_at": "2026-09-07T16:29:50Z",
+  "built_at": "2026-09-09T09:47:33Z",
   "countries": [
     "li"
   ],
   "num_strings": 2826,
   "num_anchors": 2287,
-  "num_addresses": 12547,
-  "num_terms": 2544,
+  "num_addresses": 12548,
+  "num_terms": 2853,
   "num_pois": 920,
   "num_shapes": 376,
   "kd_node_size": 64,
   "num_cells": 18,
   "num_vertices": 2365,
-  "num_postings": 7674,
+  "num_postings": 8338,
   "country_ids": {
     "li": 0
   },
@@ -26,10 +26,10 @@
     "anchor_synthetic_street": 384
   },
   "bytes": {
-    "addr_lat": 50188,
-    "addr_lon": 50188,
-    "addr_num": 50188,
-    "addr_sortkey": 50188,
+    "addr_lat": 50192,
+    "addr_lon": 50192,
+    "addr_num": 50192,
+    "addr_sortkey": 50192,
     "anchor_addr_count": 9148,
     "anchor_addr_start": 9148,
     "anchor_alt": 9148,
@@ -53,13 +53,13 @@
     "geom": 18920,
     "geom_closed": 2287,
     "geom_off": 9152,
-    "kd_perm": 59336,
-    "post": 30696,
-    "post_off": 10180,
+    "kd_perm": 59340,
+    "post": 33352,
+    "post_off": 11416,
     "strings": 48613,
-    "term_rev_id": 10176,
-    "terms": 31151,
-    "terms_rev": 31151
+    "term_rev_id": 11412,
+    "terms": 35662,
+    "terms_rev": 35662
   },
-  "duration": "92ms"
+  "duration": "119ms"
 }

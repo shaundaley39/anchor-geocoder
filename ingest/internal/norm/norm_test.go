@@ -138,3 +138,147 @@ func TestFoldLeavesNoMixedScriptTokens(t *testing.T) {
 		}
 	}
 }
+
+// contains reports whether the variant list holds v.
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// reachable reports whether a query spelling can retrieve a name spelling:
+// some form the query looks up is a term the index stores.
+func reachable(name, query string) bool {
+	indexed := map[string]bool{}
+	for _, t := range IndexTokens(name) {
+		indexed[t] = true
+	}
+	for _, forms := range QueryVariants(query) {
+		hit := false
+		for _, f := range forms {
+			if indexed[f] {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return false
+		}
+	}
+	return true
+}
+
+// The digraph spelling is an alternative, not a replacement: the canonical fold
+// stays first, because it is what an exactly-spelled query hits.
+func TestIndexTokensKeepsCanonicalFirst(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"München", []string{"munchen", "muenchen"}},
+		{"Städtle", []string{"stadtle", "staedtle"}},
+		{"Grünstraße", []string{"grunstrasse", "gruenstrasse"}},
+		// Already digraph-spelled, or no umlaut at all: nothing to add.
+		{"Muenchen", []string{"muenchen"}},
+		{"Praha", []string{"praha"}},
+		// Decomposed input — OSM carries both forms of the same letter.
+		{"München", []string{"munchen", "muenchen"}},
+	}
+	for _, c := range cases {
+		if got := IndexTokens(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("IndexTokens(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// ß expands to ss, and against a compound boundary that makes three. The
+// two-s shortening people actually type is inserted as an extra token.
+func TestIndexTokensInsertsEszettShortening(t *testing.T) {
+	for _, spelling := range []string{"Schloßstraße", "Schlossstraße"} {
+		got := IndexTokens(spelling)
+		if !contains(got, "schlossstrasse") || !contains(got, "schlosstrasse") {
+			t.Errorf("IndexTokens(%q) = %v, want both the ss and the sss form",
+				spelling, got)
+		}
+	}
+	// Two s are left alone: "Strasse" must not become "Strase".
+	if got := IndexTokens("Straße"); !reflect.DeepEqual(got, []string{"strasse"}) {
+		t.Errorf("IndexTokens(%q) = %v, want just the ss form", "Straße", got)
+	}
+}
+
+// The point of the whole exercise: every spelling of a German name reaches it.
+func TestGermanSpellingsAllReachTheName(t *testing.T) {
+	cases := []struct{ name, query string }{
+		{"München", "München"},
+		{"München", "Muenchen"},
+		{"München", "Munchen"},
+		{"Städtle", "Staedtle"},
+		{"Fürstentum Liechtenstein", "Fuerstentum Liechtenstein"},
+		{"Grüßgott", "Gruessgott"},
+		// Digraph in the data, umlaut or digraph typed.
+		{"Muenchen", "München"},
+		{"Muenchen", "Muenchen"},
+		// Eszett, both directions and both compound spellings.
+		{"Schloßstraße", "Schlosstrasse"},
+		{"Schloßstraße", "Schlossstrasse"},
+		{"Schlosstraße", "Schloßstraße"},
+		{"Weißenburg", "Weissenburg"},
+		{"Weissenburg", "Weißenburg"},
+	}
+	for _, c := range cases {
+		if !reachable(c.name, c.query) {
+			t.Errorf("query %q cannot reach %q: index=%v query=%v",
+				c.query, c.name, IndexTokens(c.name), QueryVariants(c.query))
+		}
+	}
+}
+
+// Collapsing ae/oe/ue is a guess, and it must not fire on the vowel pairs that
+// are not written-out umlauts at all.
+func TestQueryVariantsLeaveOrdinaryVowelPairsAlone(t *testing.T) {
+	for _, s := range []string{"Neue", "Aue", "Steuerweg", "Bauernhof", "Museum"} {
+		got := QueryVariants(s)
+		if len(got) != 1 {
+			t.Fatalf("QueryVariants(%q) = %v, want one token", s, got)
+		}
+		if len(got[0]) != 1 {
+			t.Errorf("QueryVariants(%q) = %v, want no alternative spelling", s, got)
+		}
+	}
+}
+
+// Variants widen retrieval only. The counted things — the identity of an anchor
+// and the length of its name — must still see real tokens.
+func TestVariantsDoNotDisturbTokens(t *testing.T) {
+	for _, s := range []string{"München", "Schloßstraße", "Weißenburg"} {
+		if n := len(Tokens(s)); n != 1 {
+			t.Errorf("Tokens(%q) = %v, want a single token", s, Tokens(s))
+		}
+	}
+	if got := QueryVariants(""); got != nil {
+		t.Errorf("QueryVariants(%q) = %v, want nil", "", got)
+	}
+	if got := IndexTokens(""); got != nil {
+		t.Errorf("IndexTokens(%q) = %v, want nil", "", got)
+	}
+}
+
+// A query token's forms are a set: a duplicate would double-count the term's
+// weight on the server.
+func TestQueryVariantsAreDistinct(t *testing.T) {
+	for _, s := range []string{"München", "Straße", "Muenchen", "Schloßstraße"} {
+		for _, forms := range QueryVariants(s) {
+			seen := map[string]bool{}
+			for _, f := range forms {
+				if seen[f] {
+					t.Errorf("QueryVariants(%q) repeats %q in %v", s, f, forms)
+				}
+				seen[f] = true
+			}
+		}
+	}
+}

@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
 import { forward } from '../src/forward.js';
-import { parseQuery } from '../src/query.js';
+import { parseQuery, type ParsedQuery } from '../src/query.js';
 import { candidates } from '../src/terms.js';
 import { scoreBound, scoreExact } from '../src/ranking.js';
 import { findHouseNumber } from '../src/housenumber.js';
@@ -69,8 +69,12 @@ describe('rate limiting', () => {
 });
 
 describe('parseQuery', () => {
+  /** The split itself, without the per-token spellings asserted separately. */
+  const plain = (p: ParsedQuery) => ({
+    nameTokens: p.nameTokens, houseNumber: p.houseNumber,
+  });
   // Candidate readings, best guess first.
-  const first = (q: string) => parseQuery(q)[0]!;
+  const first = (q: string) => plain(parseQuery(q)[0]!);
 
   it('splits a trailing house number off the street name', () => {
     expect(first('Marszalkowska 12')).toEqual({
@@ -108,7 +112,7 @@ describe('parseQuery', () => {
   it('always offers the whole query as a fallback reading', () => {
     const readings = parseQuery('Via Roma 1 Torino');
     expect(readings.length).toBe(2);
-    expect(readings[1]).toEqual({
+    expect(plain(readings[1]!)).toEqual({
       nameTokens: ['via', 'roma', '1', 'torino'], houseNumber: null,
     });
   });
@@ -119,6 +123,29 @@ describe('parseQuery', () => {
 
   it('returns nothing for an empty query', () => {
     expect(first('   ')).toEqual({ nameTokens: [], houseNumber: null });
+  });
+
+  /**
+   * German spells an umlaut two ways and ß two more. The tokens stay one per
+   * word — the alternatives ride alongside, so nothing downstream that counts
+   * query tokens sees a longer query than was typed.
+   */
+  it('carries the alternative German spellings of each token', () => {
+    const p = parseQuery('Muenchen 5')[0]!;
+    expect(p.nameTokens).toEqual(['muenchen']);
+    expect(p.houseNumber).toBe('5');
+    expect(p.nameVariants).toEqual([['muenchen', 'munchen']]);
+
+    expect(parseQuery('München')[0]!.nameVariants)
+      .toEqual([['munchen', 'muenchen']]);
+    expect(parseQuery('Schloßstraße')[0]!.nameVariants)
+      .toEqual([['schlossstrasse', 'schlosstrasse']]);
+  });
+
+  it('leaves a token with one spelling alone', () => {
+    expect(parseQuery('Praha')[0]!.nameVariants).toEqual([['praha']]);
+    // Not every ue is a written-out umlaut.
+    expect(parseQuery('Neue Aue')[0]!.nameVariants).toEqual([['neue'], ['aue']]);
   });
 });
 
@@ -431,7 +458,7 @@ maybe('against the built index', () => {
       for (const q of queries()) {
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          const cands = candidates(a, parsed.nameTokens, 10_000);
+          const cands = candidates(a, parsed.nameVariants, 10_000);
           for (const [id, text] of cands) {
             const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length);
             const exact = scoreExact(a, id, text, parsed);
@@ -448,7 +475,7 @@ maybe('against the built index', () => {
       const opts = { proximity: { lat: 50.0755, lon: 14.4378 } };
       for (const parsed of parseQuery('Nadrazni')) {
         if (parsed.nameTokens.length === 0) continue;
-        for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
+        for (const [id, text] of candidates(a, parsed.nameVariants, 10_000)) {
           const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length, opts);
           const exact = scoreExact(a, id, text, parsed, opts);
           expect(exact).toBeLessThanOrEqual(bound * (1 + 1e-9));
@@ -489,7 +516,7 @@ maybe('against the built index', () => {
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
+          for (const [id, text] of candidates(a, parsed.nameVariants, 10_000)) {
             const sc = scoreExact(a, id, text, parsed);
             if (sc > bestScore) { bestScore = sc; bestId = id; }
           }

@@ -6,9 +6,15 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { fold, tokens } from './normalize.js';
+import { fold, tokens, indexTokens, queryVariants } from './normalize.js';
 
-interface Vector { in: string; fold: string; tokens: string[] }
+interface Vector {
+  in: string;
+  fold: string;
+  tokens: string[];
+  index_tokens: string[];
+  query_variants: string[][];
+}
 
 const vectors: Vector[] = JSON.parse(
   readFileSync(fileURLToPath(new URL('./fold-vectors.json', import.meta.url)), 'utf8'),
@@ -32,6 +38,22 @@ describe('fold/tokens match the Go implementation', () => {
       .filter((v) => JSON.stringify(tokens(v.in)) !== JSON.stringify(v.tokens))
       .slice(0, 20)
       .map((v) => ({ input: v.in, go: v.tokens, ts: tokens(v.in) }));
+    expect(mismatches).toEqual([]);
+  });
+
+  it('reproduces every Go IndexTokens() result', () => {
+    const mismatches = vectors
+      .filter((v) => JSON.stringify(indexTokens(v.in)) !== JSON.stringify(v.index_tokens))
+      .slice(0, 20)
+      .map((v) => ({ input: v.in, go: v.index_tokens, ts: indexTokens(v.in) }));
+    expect(mismatches).toEqual([]);
+  });
+
+  it('reproduces every Go QueryVariants() result', () => {
+    const mismatches = vectors
+      .filter((v) => JSON.stringify(queryVariants(v.in)) !== JSON.stringify(v.query_variants))
+      .slice(0, 20)
+      .map((v) => ({ input: v.in, go: v.query_variants, ts: queryVariants(v.in) }));
     expect(mismatches).toEqual([]);
   });
 });
@@ -64,6 +86,65 @@ describe('folding invariants the index depends on', () => {
   it('never returns an empty token list for a generic-only name', () => {
     expect(tokens('Rynek')).toEqual(['rynek']);
     expect(tokens('Plac')).toEqual(['plac']);
+  });
+});
+
+/**
+ * German writes an umlaut two ways and ß two more, and folding cannot merge
+ * them: "München" and "Muenchen" are different strings that are both correct.
+ * So the index carries the alternatives as extra terms and the query widens to
+ * the ones it can infer, and between them every spelling reaches the name.
+ */
+describe('German spellings all reach the same name', () => {
+  /** Some form the query looks up is a term the index stores, token for token. */
+  const reaches = (name: string, query: string): boolean => {
+    const indexed = new Set(indexTokens(name));
+    return queryVariants(query).every((forms) => forms.some((f) => indexed.has(f)));
+  };
+
+  it('indexes the digraph spelling beside the canonical fold', () => {
+    expect(indexTokens('München')).toEqual(['munchen', 'muenchen']);
+    expect(indexTokens('Städtle')).toEqual(['stadtle', 'staedtle']);
+    // Nothing to add: no umlaut, or already written out.
+    expect(indexTokens('Muenchen')).toEqual(['muenchen']);
+    expect(indexTokens('Praha')).toEqual(['praha']);
+  });
+
+  it('inserts the two-s shortening of an ß compound', () => {
+    expect(indexTokens('Schloßstraße')).toEqual(['schlossstrasse', 'schlosstrasse']);
+    // Two s stay two: "Strasse" must not become "Strase".
+    expect(indexTokens('Straße')).toEqual(['strasse']);
+  });
+
+  it('finds a name however the umlaut was typed', () => {
+    for (const q of ['München', 'Muenchen', 'Munchen']) {
+      expect(reaches('München', q), q).toBe(true);
+    }
+    expect(reaches('Fürstentum Liechtenstein', 'Fuerstentum Liechtenstein')).toBe(true);
+    // Digraph in the data, umlaut typed.
+    expect(reaches('Muenchen', 'München')).toBe(true);
+  });
+
+  it('finds a name however the ß was typed', () => {
+    expect(reaches('Weißenburg', 'Weissenburg')).toBe(true);
+    expect(reaches('Weissenburg', 'Weißenburg')).toBe(true);
+    for (const q of ['Schloßstraße', 'Schlossstrasse', 'Schlosstrasse']) {
+      expect(reaches('Schloßstraße', q), q).toBe(true);
+    }
+    expect(reaches('Schlosstraße', 'Schloßstraße')).toBe(true);
+  });
+
+  it('leaves the vowel pairs that are not umlauts alone', () => {
+    for (const s of ['Neue', 'Aue', 'Steuerweg', 'Bauernhof', 'Museum']) {
+      expect(queryVariants(s), s).toEqual([tokens(s)]);
+    }
+  });
+
+  it('widens retrieval without lengthening the query', () => {
+    // Downstream scoring divides by the token count, so a variant must ride
+    // alongside its token rather than become one.
+    expect(queryVariants('München Straße').length).toBe(tokens('München Straße').length);
+    expect(tokens('München')).toEqual(['munchen']);
   });
 });
 

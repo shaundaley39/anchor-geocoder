@@ -222,7 +222,7 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			b.Counts["address_bound_to_place"]++
 		} else {
 			id = b.NewSynthetic(anchorName, r.City, cc, index.LayerPlace,
-				b.Strings, append(norm.Tokens(anchorName), norm.Tokens(r.City)...),
+				b.Strings, append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...),
 				coord(r.Lat), coord(r.Lon))
 			b.Counts["anchor_synthetic_place"]++
 		}
@@ -239,7 +239,7 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			a.Country = cc
 			a.Layer = index.LayerStreet
 			a.Score = 1
-			a.Tokens = append(norm.Tokens(anchorName), norm.Tokens(r.City)...)
+			a.Tokens = append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...)
 			b.Counts["anchor_synthetic_street"]++
 		}
 	}

@@ -49,11 +49,19 @@ function anchorTokens(a: Artifact, id: number): AnchorTokens {
  * Claiming makes this a multiset match. Without it "Praha Praha Praha" counted
  * three matches against the one-token name "Praha" and outscored "Praha"
  * itself. "Baden Baden" still finds both tokens of "Baden-Baden".
+ *
+ * `forms` is one query token's spellings. Retrieval already treats them as one
+ * token, and so must scoring: an anchor found through the digraph spelling of
+ * its own name would otherwise explain none of the query and score as if the
+ * match were an accident.
  */
-function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): number {
+function claim(tokens: string[], used: boolean[], forms: string[], isLast: boolean): number {
   for (let i = 0; i < tokens.length; i++) {
     if (used[i]) continue;
-    if (isLast ? tokens[i]!.startsWith(q) : tokens[i] === q) return i;
+    const t = tokens[i]!;
+    for (const q of forms) {
+      if (isLast ? t.startsWith(q) : t === q) return i;
+    }
   }
   return -1;
 }
@@ -68,7 +76,7 @@ function claim(tokens: string[], used: boolean[], q: string, isLast: boolean): n
  * explains, locality at partial credit so adding a city helps rather than
  * dilutes; and how much of the name the query used.
  */
-export function relevance(a: Artifact, id: number, queryTokens: string[]): number {
+export function relevance(a: Artifact, id: number, queryVariants: string[][]): number {
   const { names, locality } = anchorTokens(a, id);
   if (names.length === 0) return 0.05;
 
@@ -85,9 +93,9 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     let inLocality = 0;
     const nameUsedTokens: boolean[] = new Array(name.length).fill(false);
     const locUsedTokens: boolean[] = new Array(locality.length).fill(false);
-    for (let i = 0; i < queryTokens.length; i++) {
-      const q = queryTokens[i]!;
-      const isLast = i === queryTokens.length - 1;
+    for (let i = 0; i < queryVariants.length; i++) {
+      const q = queryVariants[i]!;
+      const isLast = i === queryVariants.length - 1;
       const inN = claim(name, nameUsedTokens, q, isLast);
       if (inN >= 0) {
         nameUsedTokens[inN] = true;
@@ -104,7 +112,7 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     // Never zero: a POI standing on the queried street is a weak but legitimate
     // answer, and should rank last rather than vanish.
     const explained = Math.max(
-      (inName + 0.6 * inLocality) / queryTokens.length, 0.05,
+      (inName + 0.6 * inLocality) / queryVariants.length, 0.05,
     );
     // Already at most 1, since `claim` consumes each name token once. Clamped
     // anyway, because maxRelevance is only sound if it is.
@@ -118,7 +126,7 @@ export function relevance(a: Artifact, id: number, queryTokens: string[]): numbe
     // Without this bonus an exactly matched street ("Nádražní", prior 1.0) loses
     // to a partial match on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní
     // Předměstí" (2.5).
-    if (inName === name.length && inName === queryTokens.length) score *= 2.5;
+    if (inName === name.length && inName === queryVariants.length) score *= 2.5;
 
     // An alias is weaker evidence than the name a feature actually goes by, so
     // matching one is discounted. Small on purpose: exonyms are aliases, and
@@ -216,7 +224,7 @@ export function scoreExact(
   a: Artifact, id: number, text: number, parsed: ParsedQuery,
   opts: RankingOptions = {},
 ): number {
-  const score = cheapScore(a, id, text, opts) * relevance(a, id, parsed.nameTokens);
+  const score = cheapScore(a, id, text, opts) * relevance(a, id, parsed.nameVariants);
   if (parsed.houseNumber === null) return score;
   return score * resolveHouseNumber(a, id, parsed.houseNumber).factor;
 }

@@ -16,7 +16,7 @@ import { candidates } from './terms.js';
 import { type RankingOptions, cheapScore, relevance, maxRelevance } from './ranking.js';
 import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 import { correctTokens } from './fuzzy.js';
-import { tokens as foldTokens } from '@anchor-geocoder/core';
+import { tokens as foldTokens, tokenVariants } from '@anchor-geocoder/core';
 
 export type { GeocodeResult } from './result.js';
 export { anchorBBox } from './result.js';
@@ -95,7 +95,10 @@ export function forward(
   for (const parsed of readings) {
     const fixed = correctTokens(a, parsed.nameTokens);
     if (fixed === null) continue;
-    const out = search(a, { ...parsed, nameTokens: fixed }, limit, opts);
+    // The corrected tokens are already folded, so they get the variants a
+    // folded token allows — the same widening the original query had.
+    const corrections = { nameTokens: fixed, nameVariants: fixed.map(tokenVariants) };
+    const out = search(a, { ...parsed, ...corrections }, limit, opts);
     if (out.results.length > 0) {
       const corrected = [...fixed, ...(parsed.houseNumber !== null ? [parsed.houseNumber] : [])]
         .join(' ');
@@ -128,7 +131,7 @@ function search(
     ? a.manifest.country_ids[opts.country.toLowerCase()]
     : undefined;
 
-  const scored = candidates(a, parsed.nameTokens, MAX_RERANK);
+  const scored = candidates(a, parsed.nameVariants, MAX_RERANK);
   if (scored.size === 0) {
     return { results: [], stats: EMPTY_STATS };
   }
@@ -186,7 +189,7 @@ function search(
     siftDown(0);
     reranked++;
 
-    let score = cheaps[slot]! * relevance(a, id, parsed.nameTokens);
+    let score = cheaps[slot]! * relevance(a, id, parsed.nameVariants);
 
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {
