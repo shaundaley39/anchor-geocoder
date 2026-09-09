@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/anchor"
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/buildmem"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/index"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 )
@@ -24,6 +25,7 @@ func main() {
 	in := flag.String("in", "../build/records.ndjson.gz", "record stream from geoingest")
 	out := flag.String("out", "../build/index", "output directory for the artifact")
 	flag.Parse()
+	buildmem.SetLimit()
 	if err := run(*in, *out); err != nil {
 		log.Fatal(err)
 	}
@@ -78,6 +80,7 @@ func run(inPath, outDir string) error {
 		return err
 	}
 	log.Printf("pass 1: %d anchor records -> %d anchors", nAnchor, len(b.Anchors))
+	buildmem.Log("after pass 1")
 
 	// Lets a place-anchored address find its village. Keying on the address's own
 	// addr:city would miss: a village is keyed on its name, while an address in it
@@ -107,6 +110,7 @@ func run(inPath, outDir string) error {
 		return err
 	}
 	log.Printf("pass 2: %d addresses -> %d anchors total", n, len(b.Anchors))
+	buildmem.Log("after pass 2")
 
 	cs := make([]string, 0, len(countries))
 	for c := range countries {

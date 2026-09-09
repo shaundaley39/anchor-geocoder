@@ -54,16 +54,19 @@ make serve-pool                   # the same index, one request thread per core 
 
 ### Build the World
 
-In principle, an index for the whole world should fit into under 8 GB of RAM (calculated, not tested). Building it will require more RAM and time however - I haven't explored how far we can get there with an ordinary laptop.
+An index for the whole world should fit in under 8 GB of RAM (calculated, not tested). Building it is the harder half, and the shape of the build decides whether it fits on a laptop - see [Building Within the RAM You Have](#building-within-the-ram-you-have) for the measurements. The short version: **build it from regional extracts, not from `planet-latest.osm.pbf`**.
+
+The reason is in the extract stage. Resolving way geometry needs the node ids a selected way refers to, and their locations, held while the file streams past: Germany alone needs 131.9M of them, which is 2.1 GB of the two arrays. Those scale with the extract, not with the machine, so one planet file would want tens of gigabytes for that step alone and there is no ceiling that can help - the data has to be live. Regional extracts bound it by the largest region instead.
 
 ```sh
-curl -O https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
-mv planet-latest.osm.pbf data/raw/
-printf 'planet\tplanet\t%s\tPlanet\n' "$(stat -f%z data/raw/planet-latest.osm.pbf)" \
-  >> config/countries.tsv
+# Add the Geofabrik regions outside Europe to the catalogue. Paths are relative
+# to https://download.geofabrik.de/ and sizes are indicative only.
+printf 'af\tafrica\t%s\tAfrica\n' 5000000000 >> config/countries.tsv
+# ...and so on for asia, north-america, south-america, central-america,
+# australia-oceania and russia, then name the set in config/groups.tsv.
 
-make records index COUNTRIES=planet
-make serve
+make all COUNTRIES=@world MEM_GB=26
+make serve-pool
 ```
 
 
@@ -198,6 +201,29 @@ End to end the throughput gain is modest, and the honest reason is that the benc
 - Go sorts the term dictionary by code point; the server binary-searches it with JavaScript's `<`, which compares UTF-16 code units. The two disagree above the BMP, where a surrogate pair begins 0xD800 and sorts below everything from U+E000 up - so a lookup whose path crossed an astral term could take the wrong branch and come back empty. It is the kind of bug that stays invisible in Europe and would have arrived with the first planet build.
 
 Two more turned up in the build itself, both caught by the same assertion: an anchor kept a higher-ranked duplicate's alternate names while its tokens were replaced, so it advertised aliases it was not indexed under; and `geoindex` trusted the token list serialized into the record stream, so a normalizer change needed a re-extract to take effect rather than a re-index. Both are fixed, and the fold-vector fixture keeps its job - it is just no longer the only thing standing between the two implementations.
+
+### Building Within the RAM You Have
+
+The build is the memory-hungry half of this project: the server holds a 5 GB index, the build that produces it held 28 GB. That gap decides whether a planet build is a laptop job or a cloud one, so it is worth the same attention as the query path.
+
+Measured on the 42-country European build, indexing (`geoindex`, the stage that turns 97M records into the artifact):
+
+| | peak resident | peak live heap |
+| --- | ---: | ---: |
+| before | 28.5 GB | 23.1 GB |
+| after | 22.0 GB | 9.9 GB |
+| after, with `MEM_GB=12` | **18.8 GB** | 10.0 GB |
+
+and it is no slower - 15m33 against 16m07. Four changes, in order of how much they were worth:
+
+- **Anchor tokens are ids, not strings.** Five tokens per anchor is five string headers and five allocations, ~200 bytes against 20, across 23.3M anchors. The dictionary has to intern every one of them anyway, so the anchor holds ids into it. Live heap after the first pass: 15.4 GB to 9.0 GB.
+- **The dedup key is hashed, not kept.** "country|folded name|folded locality", built to be compared and then never read again, was 1.6 GB of strings. Two independent 64-bit hashes instead - a collision would silently merge two anchors, so 128 bits, where the odds are 5e-24 at sixty million keys rather than one in 65,000. Live heap after the second pass: 14.1 GB to 9.4 GB. And the map is dropped entirely once the passes are done, which is another 2 GB before the write phase begins.
+- **Columns stream to disk.** Nineteen anchor arrays of 23.3M entries, and four address arrays of 90M, were built in full and then written one after another - 2.9 GB held to do sequentially what a 1 MB buffer does. Same for the posting lists, which were copied into one flat 414 MB slice, and for the per-anchor term ids. Peak live heap through the write phase: 23.1 GB to 9.9 GB.
+- **`MEM_GB`.** Go collects when the heap has doubled, so resident memory settles at about twice what is live. A soft limit inverts that: near the ceiling the collector works harder, trading CPU for memory the machine does not have. Nothing is refused, so an honest overshoot finishes slowly rather than being OOM-killed at the last pass.
+
+Extraction (`geoingest`) is bounded by the largest single extract rather than by the corpus. Germany, the largest in Europe, peaks at 14.1 GB; under `MEM_GB=6` it peaks at 7.8 GB and takes 7m24 instead of 4m49. That is the trade in its clearest form, and it is why the ceiling is a knob rather than a default.
+
+**Does the world fit in 30 GB?** Indexing scales with records, and the planet has roughly twice Europe's addresses and anchors, so ~20 GB live and comfortably inside 30 with `MEM_GB` set. Extraction fits if - and only if - it is fed regional extracts, since its two big arrays scale with the file it is reading rather than with the total. Both halves are extrapolations from the European measurements above; the honest position is that it should fit and has not been run.
 
 ### Container Image
 

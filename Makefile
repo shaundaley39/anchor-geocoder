@@ -48,14 +48,25 @@ $(RAW)/%-latest.osm.pbf:
 	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)" \
 	   && echo "  checksum OK: $*" || (echo "  CHECKSUM MISMATCH: $*" && exit 1)
 
+# MEM_GB: a soft ceiling on the build's heap, in gigabytes. Unset, Go collects
+# when the heap has doubled, so resident memory settles at roughly twice what is
+# live — fine on a machine with room, and the difference between finishing and
+# being OOM-killed on one without. Set it and the collector works harder as it
+# approaches: Europe's index build goes from 22 GB resident to 19 GB at
+# MEM_GB=12, and takes no longer.
+MEM_GB ?=
+
 ## records: extract OSM into the normalized record stream (build/records.ndjson.gz)
 records:
 	@mkdir -p $(BUILD)
-	cd ingest && $(GO) run ./cmd/geoingest -countries $(COUNTRIES) -raw ../$(RAW) -out ../$(BUILD)
+	cd ingest && BUILD_MEM_GB=$(MEM_GB) $(GO) run ./cmd/geoingest \
+	  -countries $(COUNTRIES) -raw ../$(RAW) -out ../$(BUILD)
 
 ## index: turn the record stream into the binary artifact the server loads
+##        (MEM_GB=24 caps the heap on a machine that needs it capped)
 index:
-	cd ingest && $(GO) run ./cmd/geoindex -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
+	cd ingest && BUILD_MEM_GB=$(MEM_GB) $(GO) run ./cmd/geoindex \
+	  -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
 
 ## fixtures: regenerate the cross-language contract fixtures
 fixtures: fold-vectors format-constants

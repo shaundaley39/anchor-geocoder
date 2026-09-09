@@ -73,7 +73,7 @@ func Add(b *index.Builder, r *model.Record) {
 	// anchor's own name would fold to something the dictionary does not hold.
 	// Costs one pass of folding to make a normalizer change need only `make
 	// index` rather than a re-extract.
-	a.Tokens = model.SearchTokens(r)
+	a.Tokens = b.InternTokens(model.SearchTokens(r))
 	a.Layer = layer
 	// Assigned, not merely set when there are alternates: a higher-ranked
 	// duplicate replaces this anchor's tokens, and leaving the loser's AltID
@@ -233,7 +233,8 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			b.Counts["address_bound_to_place"]++
 		} else {
 			id = b.NewSynthetic(anchorName, r.City, cc, index.LayerPlace,
-				b.Strings, append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...),
+				b.Strings,
+				b.InternTokens(append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...)),
 				coord(r.Lat), coord(r.Lon))
 			b.Counts["anchor_synthetic_place"]++
 		}
@@ -250,7 +251,7 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			a.Country = cc
 			a.Layer = index.LayerStreet
 			a.Score = 1
-			a.Tokens = append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...)
+			a.Tokens = b.InternTokens(append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...))
 			b.Counts["anchor_synthetic_street"]++
 		}
 	}

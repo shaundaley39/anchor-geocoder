@@ -9,7 +9,6 @@ import (
 
 // Anchor is a searchable street, place or POI: what text queries match against.
 type Anchor struct {
-	Key      string // country|folded name|folded locality — dedup key only
 	NameID   uint32
 	LocalID  uint32 // locality (city) string id
 	Lat, Lon int32
@@ -20,8 +19,14 @@ type Anchor struct {
 	// AltID is a string id whose value is the anchor's alternate names joined by
 	// AltSep. Stored rather than discarded after tokenizing because ranking has to
 	// know that "Prague" is a *name* of Praha, not incidental context.
-	AltID     uint32
-	Tokens    []string
+	AltID uint32
+	// Tokens is what this anchor is searchable by, as ids into Builder.Terms.
+	//
+	// Ids rather than the strings themselves: five tokens per anchor is five
+	// string headers and five allocations, ~200 bytes against 20, and 23.3M
+	// anchors made that the largest thing in the build by a wide margin. The
+	// dictionary has to intern every one of them anyway.
+	Tokens    []uint32
 	AddrStart uint32
 	AddrCount uint32
 	// Real distinguishes an anchor built from an actual street or place record

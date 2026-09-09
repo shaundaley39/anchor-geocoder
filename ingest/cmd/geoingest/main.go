@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/buildmem"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/catalog"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/model"
 	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
@@ -51,6 +52,7 @@ func main() {
 		configDir = flag.String("config", "../config", "directory holding countries.tsv")
 	)
 	flag.Parse()
+	buildmem.SetLimit()
 
 	cat, err := catalog.Load(*configDir)
 	if err != nil {

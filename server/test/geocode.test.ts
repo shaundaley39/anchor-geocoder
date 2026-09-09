@@ -309,6 +309,22 @@ maybe('against the built index', () => {
       expect(a.manifest.counts['anchor_term_not_in_dictionary'] ?? 0).toBe(0);
     });
 
+    /**
+     * A CSR offset array, which means non-decreasing and ending at the total.
+     * The writer used to leave the final entry at zero, which made the last
+     * anchor's outline invisible — the range [start, 0) is empty — and
+     * undercounted num_shapes by one. Harmless only because the last anchor
+     * happened to have no shape.
+     */
+    it('closes the geometry offsets at the vertex count', () => {
+      const off = a.geomOff;
+      expect(off.length).toBe(a.manifest.num_anchors + 1);
+      expect(off[off.length - 1]).toBe(a.manifest.num_vertices);
+      for (let i = 1; i < off.length; i++) {
+        if (off[i]! < off[i - 1]!) throw new Error(`geom_off decreases at ${i}`);
+      }
+    });
+
     it('stores each posting list in ascending anchor order', () => {
       let checked = 0;
       // Every list would be 100M reads; a stride covers the file for the price
