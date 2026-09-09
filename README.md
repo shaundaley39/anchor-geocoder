@@ -49,6 +49,7 @@ This takes time and resources - it's a stress test, which I ran twice, rather th
 ```sh
 make all COUNTRIES=@europe        # all 42, ~30 GB of extracts, 42m47s; building requires 31.1 GB of RAM
 make serve                        # boots in 908 ms; runnning requires 4.86 GB of RAM
+make serve-pool                   # the same index, one request thread per core — 4.28 GB plus ~73 MB a thread
 ```
 
 ### Build the World
@@ -68,7 +69,7 @@ make serve
 
 ## Architectural Decisions
 
-The server ([`./server`](./server), written in TypeScript) consumes a static index - never mutating it. All expensive operations are done once at build time, in the [`ingest`](ingest) pipeline written in Go: pbf decoding, way geometry resolution, Unicode folding, street grouping, deduplication.
+The server ([`./server`](./server), written in TypeScript) consumes a static index - never mutating it, which is also what lets every request thread share one copy of it in memory. All expensive operations are done once at build time, in the [`ingest`](ingest) pipeline written in Go: pbf decoding, way geometry resolution, Unicode folding, street grouping, deduplication.
 
 ### Ordered Lists over Single Unique Matches
 
@@ -104,6 +105,42 @@ A misspelling gets one retry, and only after an exact search has found nothing (
 
 Reverse geocoding asks two questions and uses a different structure for each. "Is this point within a polygon/ multipolygon?" uses a uniform cell grid for feature bounding boxes lookup, and ray casting on the stored integers ([`server/src/geometry.ts`](server/src/geometry.ts)) confirms whether the point is within the polygon/ place. Those places are the first results returned, since the point is actually within them, ordered from smallest to largest since a particular lake within a park is assumed to be more informative than the park it is in. "What places are near this point?" is answered with a k-d tree search ([`server/src/pointindex.ts`](server/src/pointindex.ts)) from the query point, with places sorted by distance ([`server/src/reverse.ts`](server/src/reverse.ts)).
 
+### Serving on Every Core
+
+A geocode is pure CPU. There is no I/O inside a query to yield on, so one Node thread serves them strictly one at a time and the service tops out at 1 / service time no matter how large the machine is - a few hundred a second for text search.
+
+The fix is a thread per core, and the reason it can be threads rather than processes is the index itself. It is read-only after load and, for the 42 countries, 4.4 GB of it. So [`server/src/artifact.ts`](server/src/artifact.ts) reads each file straight into a `SharedArrayBuffer` and [`server/src/pool.ts`](server/src/pool.ts) hands that bundle to every worker, which wraps it in typed-array views of the same bytes. A thread costs an event loop, a Fastify instance and its own caches of decoded strings and folded tokens - measured at ~73 MB - rather than another copy of the index. Sixteen threads take resident memory from 4.28 GB to 5.37 GB; sixteen processes would have taken it to 68 GB.
+
+(Those caches are worth a word. A decoded string cannot be shared between threads, so the cache for it is per thread and its cost is multiplied by the pool. Caching by array slot - the obvious thing at one thread - is 8 bytes x 13.9M strings whether or not they are ever asked for, which across sixteen threads was 2.5 GB of mostly empty array, more than half the index. A capped map instead pays only for what was used: 7.94 GB down to 5.37 GB at sixteen threads, for a difference in throughput that sits inside the run-to-run noise.)
+
+Each worker runs a complete Fastify instance on its own HTTP server (supplied through Fastify's `serverFactory`), and there is no dispatcher in front of them: the kernel does the balancing. On Linux each worker binds its own socket with `SO_REUSEPORT` and the kernel hashes connections across them. macOS has `SO_REUSEPORT` but does not load-balance it, and Node rejects the option outright, so the pool falls back to the pre-fork model - the first worker binds, the rest accept on its descriptor, which they can because threads share a descriptor table. The strategy is probed at boot, not assumed.
+
+Thread count defaults to `availableParallelism()`, which reads the cgroup quota, so `docker run --cpus=4` starts four threads on a 14-core host rather than fourteen fighting over four. `WORKERS` overrides it, and `WORKERS=1` is the old single-threaded process exactly.
+
+Two consequences worth knowing. A connection belongs to one worker for its lifetime, so load balance is connection balance and a single keep-alive client uses a single thread. And the rate limiter counts per thread, which is deliberate - dividing the budget would throttle a real user mid-word, since keep-alive pins them to one thread - so the aggregate ceiling is now up to `workers x RATE_LIMIT_MAX`.
+
+#### What it actually serves
+
+Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the 42-country index (23.3M anchors, 90.2M addresses) on an M4 Max, 12 performance cores, with the load generator on the same machine. Requests per second, closed-loop at 96 connections:
+
+| query shape | 1 thread | 8 threads | speedup | per thread |
+| --- | ---: | ---: | ---: | ---: |
+| reverse, lat/lon | 10,312 | 79,419 | 7.7x | 0.10 ms |
+| street + house number | 552 | 3,776 | 6.8x | 1.8 ms |
+| full city name | 496 | 3,357 | 6.8x | 2.0 ms |
+| 3-character autocomplete prefix | 104 | 660 | 6.3x | 9.6 ms |
+| mixed traffic | 173 | 1,108 | 6.4x | 5.8 ms |
+| pathological (see below) | 8 | 41 | 5.1x | 125 ms |
+
+Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB.
+
+The same sweep in a container, scaling the CPU allocation rather than the thread count, gives 154, 304, 561, 1010 rps at `--cpus` 1, 2, 4, 8 - so a deployment gets what it pays for, and `docker stats` shows 4.24, 4.37, 4.52, 4.84 GiB, the index being shared rather than replicated.
+
+So the limit is now cores and per-query service time, and the cost per query is the thing worth attacking next. Two specifics:
+
+- **The tail is very long.** "Rue de la Paix" takes ~250ms because every one of its tokens is among the commonest words in French: the posting lists barely narrow each other and the reranker runs to its `MAX_RERANK` cap. Nothing inside a query yields, so one of those occupies a whole thread and everything queued behind it on that thread waits. Capping work by *estimated* cost, or pruning candidates on locality before scoring, would do more for the worst case than more threads.
+- **Reverse is essentially free** and text search is not, by two orders of magnitude. A deployment serving mostly map clicks and one serving mostly autocomplete need very different sizing, which is why the table is per shape and the blended figure carries a stated mix.
+
 ### Container Image
 
 The Dockerfile has a two stage build: the builder compiles the TypeScript and resolves production-only dependencies, and the runtime stage copies just the output across, leaving a 61 MB image with just the node runtime and server. The index is deliberately not built during the runtime image build - that would drag 3.5 GB of extracts and the Go toolchain into a parent layer for an artifact that is immutable once written, and shared by every replica/ deployment. `make docker` leaves the index outside the image, to be mounted from the host at `/index`, while `make docker-bundled` copies it into the image so the container needs no volume - at the cost of carrying an extra 473.
@@ -137,7 +174,9 @@ Many!
 - the current rate limiting should be eliminated, and replaced with API keys/ user-based usage restriction
 - make it possible for a running server to pick up a new index without downtime
 - actually deploy this to a chosen cloud infrastructure (along with some CD setup)
-- we are limited to just hundreds of queries per second currently by a single Node.js thread. So spawning and sharing workload across worker_threads would increase throughput.
+- the pathological text queries above (every token a very common word) cost ~250ms and block a thread for all of it; bounding work by estimated cost would help the tail more than any amount of hardware
+- a worker that dies takes the process down with it, because the listening socket cannot be handed to a replacement without redoing the bind; a supervisor restart covers it, but in-flight requests are lost
+- graceful shutdown drains nothing: under the shared-descriptor fallback the listening socket belongs to all the threads at once, so they are stopped together
 - we could further increase throughput, if we were lucky enough to have to, by setting up horizontal scaling
 - in production, observability beyond structured logs would be nice
 - explore caching and CDN layer (e.g. for handling an autocomplete load)
@@ -145,7 +184,7 @@ Many!
 - more data beyond OSM
 - it would be nice to have a frontend map UI consuming this API - to catch any bugs, get a gauge of its usefulness and prioritize further work
 
-Based on global OSM data alone, and a <8 GB index, it doesn't look like there'd be any need to shard geographically (OVH has servers with 2 TB of RAM, and AWS/ GCP have 32 TB servvers). Cheap generic servers can carry the world. (But note the worker thread & horrizontal scaling points above.)
+Based on global OSM data alone, and a <8 GB index, it doesn't look like there'd be any need to shard geographically (OVH has servers with 2 TB of RAM, and AWS/ GCP have 32 TB servvers). Cheap generic servers can carry the world - and since the index is shared memory rather than a copy per thread, a bigger server is genuinely bought by the core rather than by the core-plus-a-copy-of-the-index.
 
 
 

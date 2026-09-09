@@ -28,6 +28,12 @@ export interface ServerOptions {
   rateLimitMax?: number;
   rateLimitWindow?: string;
   logger?: boolean | Record<string, unknown>;
+  /**
+   * Supplies the HTTP server rather than letting Fastify create one. The worker
+   * threads need the server object itself, because they listen on a descriptor
+   * the pool hands them rather than on a port of their own.
+   */
+  serverFactory?: FastifyServerOptions['serverFactory'];
 }
 
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
@@ -49,6 +55,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     // and the handler's own timing. (Fastify 6 moves this to logController.)
     disableRequestLogging: true,
     trustProxy: true, // honour X-Forwarded-For behind a load balancer
+    ...(options.serverFactory ? { serverFactory: options.serverFactory } : {}),
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   // Registered once and referenced by $id, so the OpenAPI document and the
@@ -87,10 +94,15 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     maxAge: 86_400,
   });
 
-  // The exposure is one client saturating the single Node thread, not the
-  // per-request cost. Sized for autocomplete: a keystroke debounced at 150ms is
-  // 6-7 req/s in bursts, and behind NAT many users share an address. Throttling
-  // someone mid-word is the one thing this must not do.
+  // Sized for autocomplete: a keystroke debounced at 150ms is 6-7 req/s in
+  // bursts, and behind NAT many users share an address. Throttling someone
+  // mid-word is the one thing this must not do.
+  //
+  // The counter is per thread, so with a pool the ceiling is per thread too and
+  // the aggregate a client could reach is up to workers x max. Deliberate: the
+  // limit exists so one client cannot saturate the service, and dividing it
+  // instead would throttle a real user mid-word, since keep-alive pins them to
+  // one thread and they would get a sixteenth of the budget.
   const maxReq = options.rateLimitMax ?? Number(process.env['RATE_LIMIT_MAX'] ?? 600);
   if (maxReq > 0) {
     await app.register(rateLimit, {

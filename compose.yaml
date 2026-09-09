@@ -16,9 +16,16 @@ services:
       INDEX_DIR: /index
       HOST: 0.0.0.0
       PORT: "3000"
-    # The process holds the whole index in typed arrays, plus a k-d tree over
-    # every address point. Across the fourteen indexed countries that is a few
-    # GB resident; the k-d tree alone is ~730 MB for 61M points. Too low a limit
-    # is OOM-killed mid-boot, while the tree is being built.
-    mem_limit: 4g
+      # One request thread per core the container is given, which is what
+      # `cpus` below sets. Uncomment to pin it.
+      # WORKERS: "4"
+    # Sized off the index rather than guessed: the artifact is held as typed
+    # arrays, so resident memory starts at its size on disk — 4.4 GB for the 42
+    # countries — and each request thread adds ~70 MB of decoded strings and
+    # folded tokens on top. Threads share the index itself, so the count barely
+    # moves this number. Too low a limit is an OOM kill during the first read.
+    mem_limit: 8g
+    # Throughput is very nearly linear in this, and nothing else the service
+    # does is a bottleneck before it.
+    cpus: 4
     restart: unless-stopped

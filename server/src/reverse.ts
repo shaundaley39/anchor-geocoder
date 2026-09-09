@@ -65,10 +65,33 @@ function findCell(a: Artifact, key: number): number {
   return -1;
 }
 
+/**
+ * The extent of the data, as a scan over every address point.
+ *
+ * Separate from the index it belongs to because it is the one part of the boot
+ * that is real work — 90M reads — and it is the same answer in every thread, so
+ * the pool computes it once and hands it to the workers.
+ */
+export function coverageBBox(a: Artifact): BBox {
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (let i = 0; i < a.manifest.num_addresses; i++) {
+    const lat = a.addrLat[i]!;
+    const lon = a.addrLon[i]!;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+  return {
+    minLat: toDeg(minLat), maxLat: toDeg(maxLat),
+    minLon: toDeg(minLon), maxLon: toDeg(maxLon),
+  };
+}
+
 /** Both spatial structures arrive precomputed, so this is a scan for the
  * coverage box and nothing else. Building them here cost 5.4s of startup, on
  * every replica on every deploy. */
-export function buildReverseIndex(a: Artifact): ReverseIndex {
+export function buildReverseIndex(a: Artifact, bbox?: BBox): ReverseIndex {
   const nAddr = a.manifest.num_addresses;
 
   // Addresses and anchors in one tree: without the anchors a click can only
@@ -81,24 +104,7 @@ export function buildReverseIndex(a: Artifact): ReverseIndex {
     a.kdPerm, getX, getY, a.manifest.kd_node_size,
   );
 
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-  for (let i = 0; i < nAddr; i++) {
-    const lat = a.addrLat[i]!;
-    const lon = a.addrLon[i]!;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
-    if (lon < minLon) minLon = lon;
-    if (lon > maxLon) maxLon = lon;
-  }
-
-  return {
-    tree,
-    addressCount: nAddr,
-    bbox: {
-      minLat: toDeg(minLat), maxLat: toDeg(maxLat),
-      minLon: toDeg(minLon), maxLon: toDeg(maxLon),
-    },
-  };
+  return { tree, addressCount: nAddr, bbox: bbox ?? coverageBBox(a) };
 }
 
 export function inBBox(b: BBox, lat: number, lon: number): boolean {

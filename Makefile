@@ -16,6 +16,7 @@ GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
 
 .PHONY: all fetch records index test test-go test-server clean verify countries \
+        serve-pool loadtest \
         demo demo-index \
         fold-vectors serve bench install docker docker-bundled docker-run \
         docker-run-bundled hooks lint lint-go lint-server fixtures format-constants
@@ -83,14 +84,27 @@ demo-index: $(RAW)/liechtenstein-latest.osm.pbf
 	rm -rf demo/index && cp -r $(BUILD)/demo/index demo/index
 	@echo "  demo/index regenerated ($$(du -sh demo/index | cut -f1))"
 
-## serve: run the API server (INDEX_DIR, PORT, HOST are overridable)
-##         OpenAPI at /openapi.json, docs at /docs
+## serve: run the API server on one thread, straight from the sources
+##         (INDEX_DIR, PORT, HOST are overridable; docs at /docs)
 serve:
 	cd server && INDEX_DIR=../$(BUILD)/index pnpm exec tsx src/index.ts
+
+## serve-pool: run it the way production does — compiled, one request thread
+##             per core. WORKERS overrides the count.
+serve-pool:
+	pnpm -r --filter "./packages/*" build
+	cd server && pnpm build && INDEX_DIR=../$(BUILD)/index node dist/index.js
 
 ## bench: measure query latency against the built index
 bench:
 	cd server && pnpm exec tsx bench.mts
+
+## loadtest: drive a running server to find what it can actually serve.
+##           Start it with RATE_LIMIT_MAX=0, or the answer is 429s per second.
+LOADTEST ?= --connections 96 --clients 3 --duration 8 \
+            --profile reverse,address,city,autocomplete,mixed,heavy
+loadtest:
+	cd server && node loadtest.mjs $(LOADTEST)
 
 ## hooks: install the local git hooks (fast static checks, no tests)
 hooks:
