@@ -25,8 +25,9 @@ function reading(toks: Token[], houseNumber: string | null): ParsedQuery {
 
 /**
  * Candidate readings, best guess first; the caller takes the first that finds
- * anything. A trailing or medial digit-leading token is a house number, never a
- * leading one — "3 Maja" is a common Polish street name.
+ * anything. A trailing or medial digit-leading token is a house number, and a
+ * leading one is too, but only as a last resort — "3 Maja" is a common Polish
+ * street name and "17 Novembre" a common French one.
  */
 export function parseQuery(raw: string): ParsedQuery[] {
   const toks = foldTokens(raw);
@@ -39,6 +40,24 @@ export function parseQuery(raw: string): ParsedQuery[] {
   if (all.length <= 1) return [reading(all, null)];
 
   const whole = reading(all, null);
+  const readings = split(all, whole);
+
+  /**
+   * "10 Downing Street", "1600 Pennsylvania Avenue": the number leads across
+   * the English-speaking world, and reading it as part of the name asks the
+   * index for a street whose name contains "10", which no street's does.
+   *
+   * Last of the readings, never first. A leading number is more often part of
+   * the name than a house number, so this is reached only once every other
+   * reading has come back with nothing — which for "3 Maja" it does not.
+   */
+  const first = all[0]!;
+  if (/^\d/.test(first.tok)) readings.push(reading(all.slice(1), first.tok));
+  return readings;
+}
+
+/** The trailing and medial house-number readings, in preference order. */
+function split(all: Token[], whole: ParsedQuery): ParsedQuery[] {
   const last = all[all.length - 1]!.tok;
 
   if (/^\d/.test(last)) {

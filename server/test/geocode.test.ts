@@ -145,6 +145,26 @@ describe('parseQuery', () => {
       .toEqual([['schlossstrasse', 'schlosstrasse']]);
   });
 
+  /**
+   * The number leads in the UK, the US and Ireland, and reading it as part of
+   * the name asks the index for a street whose name contains "10". Offered
+   * last, because a leading number is more often part of the name than a house
+   * number and the whole-query reading has to get first refusal.
+   */
+  it('offers a leading house number, but only as a last resort', () => {
+    const shapes = (q: string) => parseQuery(q).map((p) => [p.nameTokens.join(' '), p.houseNumber]);
+
+    expect(shapes('10 Downing Street')).toEqual([['10 downing', null], ['downing', '10']]);
+    expect(shapes('1600 Pennsylvania Avenue'))
+      .toEqual([['1600 pennsylvania', null], ['pennsylvania', '1600']]);
+    // Letter suffixes are house numbers too.
+    expect(shapes('221B Baker Street')).toEqual([['221b baker', null], ['baker', '221b']]);
+
+    // The name reading still comes first, which is what keeps "3 Maja" a street.
+    expect(shapes('3 Maja')[0]).toEqual(['3 maja', null]);
+    expect(shapes('3 Maja Warszawa')[0]).toEqual(['3 maja warszawa', null]);
+  });
+
   it('leaves a token with one spelling alone', () => {
     expect(parseQuery('Praha')[0]!.nameVariants).toEqual([['praha']]);
     // Not every ue is a written-out umlaut.

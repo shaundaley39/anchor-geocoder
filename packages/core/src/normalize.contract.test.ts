@@ -90,6 +90,60 @@ describe('folding invariants the index depends on', () => {
 });
 
 /**
+ * Japanese and Chinese are written without spaces between words, so the
+ * whitespace split cannot find a token boundary and the whole of an address
+ * arrives as one. Overlapping bigrams give a query and a name the same pieces.
+ */
+describe('scripts written without spaces', () => {
+  it('cuts a run of them into overlapping bigrams', () => {
+    expect(tokens('千代田区')).toEqual(['千代', '代田', '田区']);
+    expect(tokens('北京市朝阳区')).toEqual(['北京', '京市', '市朝', '朝阳', '阳区']);
+    // One character has no bigram, so it stands as its own token.
+    expect(tokens('日')).toEqual(['日']);
+  });
+
+  it('makes part of an address reach the whole of it', () => {
+    const whole = new Set(tokens('東京都千代田区千代田1-1'));
+    for (const part of ['千代田区', '東京都', '千代田']) {
+      for (const t of tokens(part)) expect(whole.has(t), `${part} / ${t}`).toBe(true);
+    }
+  });
+
+  it('breaks the run on digits, which is how "2丁目" stays reachable', () => {
+    expect(tokens('新宿区西新宿2丁目8-1'))
+      .toEqual(['新宿', '宿区', '区西', '西新', '新宿', '2', '丁目', '8', '1']);
+  });
+
+  it('leaves Korean alone, since it is written with spaces', () => {
+    expect(tokens('서울특별시 중구')).toEqual(['서울특별시', '중구']);
+  });
+
+  it('leaves everything European alone', () => {
+    expect(tokens('Praha')).toEqual(['praha']);
+    expect(tokens('Nádražní 1')).toEqual(['nadrazni', '1']);
+  });
+});
+
+describe('compatibility forms fold to what a keyboard types', () => {
+  it('normalises width, ligatures and letterlike symbols', () => {
+    expect(fold('１２３')).toBe('123');
+    expect(fold('ｶﾀｶﾅ')).toBe('カタカナ');
+    expect(fold('Ⅻ')).toBe('xii');
+    expect(fold('№ 5')).toBe('no 5');
+    expect(fold('㎡')).toBe('m2');
+    expect(fold('ﬁ')).toBe('fi');
+  });
+
+  /** A dakuten is a combining mark by category and a different sound in fact:
+   * stripping it the way a háček is stripped folds ば onto は. */
+  it('keeps Japanese voicing', () => {
+    expect(fold('ばなな')).not.toBe(fold('はなな'));
+    expect(fold('バナナ')).not.toBe(fold('ハナナ'));
+    expect(fold('ｶﾞ')).toBe(fold('ガ'));
+  });
+});
+
+/**
  * German writes an umlaut two ways and ß two more, and folding cannot merge
  * them: "München" and "Muenchen" are different strings that are both correct.
  * So the index carries the alternatives as extra terms and the query widens to

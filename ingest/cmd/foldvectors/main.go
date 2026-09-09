@@ -48,6 +48,13 @@ var handPicked = []string{
 	"ΒΛΑΧΟΠΟΥΛΟΣ", "Βλαχόπουλος", "ΑΘΗΝΑ", "Αθήνα", "ΟΔΟΣ", "οδός", "L'appartΣ",
 	// Above the BMP, where UTF-16 order and code point order part company.
 	"𑀜𑀸𑀡𑀲𑀁𑀯𑀭", "１月と７月", "🇬🇷 café",
+	// Scripts written without spaces, cut into bigrams; and the compatibility
+	// forms a Japanese address is full of.
+	"東京都千代田区千代田1-1", "千代田区", "東京", "新宿区西新宿2丁目8-1", "日本橋",
+	"北海道札幌市中央区北1条西2丁目", "日", "北京市朝阳区", "서울특별시 중구",
+	"１２３ 全角", "ｶﾀﾞｶﾅ", "ガタカナ", "ばなな", "バナナ", "㎡", "℡ 123", "㎅", "Ⅻ",
+	// The number leads in the English-speaking world.
+	"10 Downing Street", "1600 Pennsylvania Avenue", "221B Baker Street",
 }
 
 func main() {

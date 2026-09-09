@@ -171,6 +171,18 @@ What is *not* expensive, contrary to the obvious guess: clicking on nothing. A p
 
 What remains, and is left alone deliberately: a reverse query that asks for 50 results within 50km from a point in open water near a dense coast really does have to sweep a 100km box, and costs ~16ms of thread time. That is under twice a three-character autocomplete, it needs the client to ask for both the maximum radius and the maximum page size, and every way of capping it - a visit budget, an early cut-off - trades a real result for the saving. The honest containment for that shape is load shedding on event-loop delay rather than second-guessing the query.
 
+### Addresses That Are Not European
+
+Two shapes the folding got wrong, both found by asking rather than assuming.
+
+**The number leads in the English-speaking world.** "10 Downing Street" folded to `[10, downing]` - a name reading, since a leading digit was treated as part of the name on the grounds that "3 Maja" is a Polish street and "17 Novembre" a French one. But no street's *name* contains "10", so the query asked the index for something that cannot exist and got nothing back. Parsing now offers a leading-number reading too, last of the candidates: the whole-query reading still gets first refusal, so "3 Maja" resolves to Plac 3 Maja and "10 Downing Street" to 10 Downing Street, London.
+
+**Japanese and Chinese are written without spaces.** The folder's last pass turns everything that is not a letter or a number into a separator, which finds no boundary at all in 東京都千代田区千代田: the whole address arrived as one token, so a query for 千代田区 would have had to reproduce the entire string to match anything. Runs of Han, Hiragana and Katakana are now cut into overlapping bigrams - 千代, 代田, 田区 - so a part of a name shares tokens with the whole of it, and the ordinary AND across query tokens does the rest. It is what Lucene's CJK analyzer does, and it needs no dictionary, which a geocoder rebuilt from a planet extract cannot carry. Hangul is deliberately left alone: Korean is written with spaces, so the existing split already finds its boundaries.
+
+Two smaller things came with it. Folding moved from NFD to NFKD, so the full-width digits a Japanese address is written with ("１丁目") reach the ASCII ones, half-width katakana reaches full-width, and Ⅻ, ﬁ, ² and № become letters a keyboard can produce rather than characters nobody can type. And the two Japanese voicing marks are now spared from the diacritic strip: they are combining marks by category, but dropping U+3099 folds ば onto は, which is a different word, where dropping a háček is the whole point.
+
+The script ranges are hard-coded rather than taken from `unicode.Is(unicode.Han, r)` and `\p{Script=Han}`, because those are Unicode-version dependent on each side and the two sides have to agree exactly, forever.
+
 ### The Fold Belongs in the Index
 
 Scoring a candidate meant folding its name and every alias it carries - `TextDecoder`, NFD, a regex, a character loop, several allocations deep - and it happened per candidate, per request, per thread. It was expensive enough to need a cache, and that cache was ~140 MB per thread, replicated across the pool, each copy warming from cold independently.

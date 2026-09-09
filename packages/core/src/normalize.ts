@@ -88,6 +88,66 @@ const GENERIC = new Set([
 const COMBINING_MARKS = /\p{Mn}/gu;
 const ALNUM = /[\p{L}\p{N}]/u;
 
+/** ゙ dakuten and ゚ handakuten. */
+const VOICED = '\u3099';
+const SEMI_VOICED = '\u309A';
+
+/**
+ * Scripts written without spaces between words, where a token boundary has to
+ * be invented. Hard-coded ranges rather than \p{Script=Han} and
+ * unicode.Is(unicode.Han, r), because those are Unicode-version dependent on
+ * each side and the two sides have to agree exactly, forever.
+ *
+ * Hangul is deliberately absent: Korean is written with spaces between words,
+ * so folding already finds its boundaries.
+ */
+const UNSPACED_RANGES: [number, number][] = [
+  [0x3040, 0x309F],   // Hiragana
+  [0x30A0, 0x30FF],   // Katakana
+  [0x31F0, 0x31FF],   // Katakana phonetic extensions
+  [0x3400, 0x4DBF],   // CJK Unified Ideographs Extension A
+  [0x4E00, 0x9FFF],   // CJK Unified Ideographs
+  [0xF900, 0xFAFF],   // CJK Compatibility Ideographs
+  [0x20000, 0x3FFFF], // CJK Unified Ideographs Extensions B and beyond
+];
+
+function unspaced(ch: string): boolean {
+  const c = ch.codePointAt(0)!;
+  for (const [lo, hi] of UNSPACED_RANGES) if (c >= lo && c <= hi) return true;
+  return false;
+}
+
+/**
+ * Breaks a folded token on script boundaries and turns each run of an unspaced
+ * script into overlapping bigrams. Null when there is nothing of the kind,
+ * which is every token in a European corpus.
+ *
+ * "東京都千代田区" is one word to this folder and one token to the whitespace
+ * split, so a query for "千代田区" would have to reproduce the whole string to
+ * match. Bigrams give both sides the same two-character pieces — 千代, 代田,
+ * 田区 — and the ordinary AND across query tokens does the rest.
+ */
+function segment(token: string): string[] | null {
+  const cs = [...token];
+  if (!cs.some(unspaced)) return null;
+
+  const out: string[] = [];
+  for (let i = 0; i < cs.length;) {
+    let j = i;
+    if (unspaced(cs[i]!)) {
+      while (j < cs.length && unspaced(cs[j]!)) j++;
+      const run = cs.slice(i, j);
+      if (run.length === 1) out.push(run[0]!);
+      for (let k = 0; k + 1 < run.length; k++) out.push(run[k]! + run[k + 1]!);
+    } else {
+      while (j < cs.length && !unspaced(cs[j]!)) j++;
+      out.push(cs.slice(i, j).join(''));
+    }
+    i = j;
+  }
+  return out;
+}
+
 /** Lowercase ASCII letters and digits, space-separated. */
 export function fold(s: string): string {
   // Expand what NFD cannot handle, and transliterate.
@@ -100,15 +160,27 @@ export function fold(s: string): string {
     out += ch;
   }
 
-  // Drop combining marks: háčky, čárky, ogonki.
-  const folded = out.normalize('NFD').replace(COMBINING_MARKS, '').normalize('NFC');
+  // Drop combining marks: háčky, čárky, ogonki. Compatibility decomposition,
+  // not canonical: NFKD is what makes the full-width digits of a Japanese
+  // address the same as ASCII ones, half-width katakana the same as full-width,
+  // and Ⅱ, ﬁ, ², № into letters a keyboard can produce.
+  //
+  // The two Japanese voicing marks are spared. They are combining marks by
+  // category but they are not accents: dropping U+3099 folds ば onto は, a
+  // different word, where dropping a háček is the whole point.
+  const folded = out.normalize('NFKD')
+    .replace(COMBINING_MARKS, (m) => (m === VOICED || m === SEMI_VOICED ? m : ''))
+    .normalize('NFC');
 
-  // Anything that is not a letter or digit becomes a separator.
+  // Lowercase again — NFKD produces capitals the first pass never saw, № giving
+  // "No" and ℡ "TEL" — and anything that is not a letter or number becomes a
+  // separator. Per character, so that the contextual rule for a word-final Σ
+  // cannot apply on this side and not on Go's.
   let result = '';
   let prevSep = true;
   for (const ch of folded) {
     if (ALNUM.test(ch)) {
-      result += ch;
+      result += ch.toLowerCase();
       prevSep = false;
     } else if (!prevSep) {
       result += ' ';
@@ -123,10 +195,13 @@ export function tokens(s: string): string[] {
   if (folded === '') return [];
 
   const expanded = folded.split(/\s+/).map((t) => ABBREV.get(t) ?? t);
-  const kept = expanded.filter((t) => !GENERIC.has(t));
+  let kept = expanded.filter((t) => !GENERIC.has(t));
 
   // Never erase a feature entirely: a street named "Rynek" must stay findable.
-  return kept.length === 0 ? expanded : kept;
+  if (kept.length === 0) kept = expanded;
+
+  // Last, so that abbreviation expansion and stopword removal see whole words.
+  return kept.flatMap((t) => segment(t) ?? [t]);
 }
 
 /* ------------------------------------------------------------------ German ---

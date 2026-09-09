@@ -98,10 +98,25 @@ var generic = map[string]bool{
 	"osiedle": true, "nabrezi": true, "rynek": true,
 }
 
+// Compatibility decomposition, not canonical: NFKD is what makes the full-width
+// digits of a Japanese address ("１丁目") the same as ASCII ones, half-width
+// katakana the same as full-width, and Ⅱ, ﬁ, ², № into letters a keyboard can
+// produce. NFD leaves every one of those as a character nobody can type.
+//
+// The Mn strip spares the two Japanese voicing marks. They are combining marks
+// by category but they are not accents: dropping U+3099 folds ば onto は, which
+// is a different word, where dropping a háček is the whole point.
 var stripMarks = transform.Chain(
-	norm.NFD,
-	runes.Remove(runes.In(unicode.Mn)), // drop combining diacritical marks
+	norm.NFKD,
+	runes.Remove(runes.Predicate(func(r rune) bool {
+		return r != voicedMark && r != semiVoicedMark && unicode.Is(unicode.Mn, r)
+	})),
 	norm.NFC,
+)
+
+const (
+	voicedMark     = 0x3099 // ゙ dakuten
+	semiVoicedMark = 0x309A // ゚ handakuten
 )
 
 // Fold reduces a string to lowercase ASCII-ish letters and digits, space
@@ -129,7 +144,13 @@ func Fold(s string) string {
 		folded = b.String() // folding is best-effort; never fail ingest on it
 	}
 
-	// Pass 3: everything that is not a letter or number becomes a separator.
+	// Pass 3: lowercase again, and everything that is not a letter or number
+	// becomes a separator.
+	//
+	// Again, because NFKD produces capitals that pass 1 never saw: № decomposes
+	// to "No", ℡ to "TEL", Ⅻ to "XII". Per rune rather than over the string, so
+	// that JavaScript's contextual rule for a word-final Σ cannot apply on one
+	// side and not the other.
 	//
 	// IsNumber, not IsDigit: IsDigit is category Nd alone, where the TypeScript
 	// port's \p{N} is Nd, Nl and No. That gap made "Třeboň Ⅱ" fold to "trebon"
@@ -143,7 +164,7 @@ func Fold(s string) string {
 	for _, r := range folded {
 		switch {
 		case unicode.IsLetter(r) || unicode.IsNumber(r):
-			out.WriteRune(r)
+			out.WriteRune(unicode.ToLower(r))
 			prevSep = false
 		case !prevSep:
 			out.WriteByte(' ')
@@ -153,8 +174,81 @@ func Fold(s string) string {
 	return strings.TrimSpace(out.String())
 }
 
-// Tokens folds s and returns its indexable tokens: abbreviations expanded and
-// generic street-type words removed.
+// Scripts written without spaces between words, where a token boundary has to
+// be invented. Hard-coded ranges rather than unicode.Is(unicode.Han, r) and
+// \p{Script=Han}, because those are Unicode-version dependent on each side and
+// the two sides have to agree exactly, forever.
+var unspacedRanges = [...][2]rune{
+	{0x3040, 0x309F},   // Hiragana
+	{0x30A0, 0x30FF},   // Katakana
+	{0x31F0, 0x31FF},   // Katakana phonetic extensions
+	{0x3400, 0x4DBF},   // CJK Unified Ideographs Extension A
+	{0x4E00, 0x9FFF},   // CJK Unified Ideographs
+	{0xF900, 0xFAFF},   // CJK Compatibility Ideographs
+	{0x20000, 0x3FFFF}, // CJK Unified Ideographs Extensions B and beyond
+}
+
+// Hangul is deliberately absent: Korean is written with spaces between words,
+// so the folding above already finds its boundaries.
+func unspaced(r rune) bool {
+	for _, g := range unspacedRanges {
+		if r >= g[0] && r <= g[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// segment breaks a folded token on script boundaries and turns each run of an
+// unspaced script into overlapping bigrams. Returns nil when there is nothing
+// of the kind, which is every token in a European corpus.
+//
+// "東京都千代田区" is one word to this folder and one token to the whitespace
+// split, so a query for "千代田区" would have to reproduce the whole string
+// exactly to match anything. Bigrams give both sides the same handful of
+// two-character pieces — 千代, 代田, 田区 — and the ordinary AND across query
+// tokens does the rest. It is what Lucene's CJK analyzer does, and it needs no
+// dictionary, which a geocoder rebuilt from a planet extract cannot carry.
+func segment(tok string) []string {
+	rs := []rune(tok)
+	any := false
+	for _, r := range rs {
+		if unspaced(r) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return nil
+	}
+
+	var out []string
+	for i := 0; i < len(rs); {
+		j := i
+		if unspaced(rs[i]) {
+			for j < len(rs) && unspaced(rs[j]) {
+				j++
+			}
+			run := rs[i:j]
+			if len(run) == 1 {
+				out = append(out, string(run))
+			}
+			for k := 0; k+1 < len(run); k++ {
+				out = append(out, string(run[k:k+2]))
+			}
+		} else {
+			for j < len(rs) && !unspaced(rs[j]) {
+				j++
+			}
+			out = append(out, string(rs[i:j]))
+		}
+		i = j
+	}
+	return out
+}
+
+// Tokens folds s and returns its indexable tokens: abbreviations expanded,
+// generic street-type words removed, and unspaced scripts cut into bigrams.
 func Tokens(s string) []string {
 	folded := Fold(s)
 	if folded == "" {
@@ -179,9 +273,19 @@ func Tokens(s string) []string {
 	// Never let stopword removal erase a feature entirely: a street genuinely
 	// named "Rynek" must stay findable.
 	if len(kept) == 0 {
-		return expanded
+		kept = expanded
 	}
-	return kept
+
+	// Last, so that abbreviation expansion and stopword removal see whole words.
+	out := make([]string, 0, len(kept))
+	for _, t := range kept {
+		if seg := segment(t); seg != nil {
+			out = append(out, seg...)
+		} else {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // QueryTokens is deliberately the same code path as Tokens; the two must not

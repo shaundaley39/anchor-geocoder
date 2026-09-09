@@ -282,3 +282,81 @@ func TestQueryVariantsAreDistinct(t *testing.T) {
 		}
 	}
 }
+
+// Japanese, Chinese and Korean addresses, which the whitespace split cannot
+// segment because two of the three do not use whitespace.
+func TestUnspacedScriptsBecomeBigrams(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		// A ward of Tokyo inside a full address, and typed on its own: the two
+		// have to share tokens or the query can never reach the name.
+		{"千代田区", []string{"千代", "代田", "田区"}},
+		{"東京", []string{"東京"}},
+		{"日", []string{"日"}}, // one character has no bigram; it is its own token
+		// Digits break the run, which is what makes "2丁目" reachable inside
+		// "新宿区西新宿2丁目8-1".
+		{"新宿区西新宿2丁目8-1", []string{"新宿", "宿区", "区西", "西新", "新宿", "2", "丁目", "8", "1"}},
+		{"北京市朝阳区", []string{"北京", "京市", "市朝", "朝阳", "阳区"}},
+		// Korean is written with spaces, so it is left alone.
+		{"서울특별시 중구", []string{"서울특별시", "중구"}},
+		// And nothing European moves.
+		{"Praha", []string{"praha"}},
+		{"Nádražní 1", []string{"nadrazni", "1"}},
+	}
+	for _, c := range cases {
+		if got := Tokens(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Tokens(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// The tokens of a part of a name must be a subset of the whole name's, or
+// searching for the part finds nothing.
+func TestBigramsOfAPartAreContainedInTheWhole(t *testing.T) {
+	whole := map[string]bool{}
+	for _, t2 := range Tokens("東京都千代田区千代田1-1") {
+		whole[t2] = true
+	}
+	for _, part := range []string{"千代田区", "東京都", "千代田"} {
+		for _, t2 := range Tokens(part) {
+			if !whole[t2] {
+				t.Errorf("token %q of %q is not in the full address", t2, part)
+			}
+		}
+	}
+}
+
+// Compatibility forms: a Japanese address is written with full-width digits as
+// often as ASCII ones, and half-width katakana turns up in imported data.
+func TestCompatibilityFormsFoldToWhatAKeyboardTypes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"１２３", "123"},
+		{"ｶﾀｶﾅ", "カタカナ"}, // half-width to full-width, then bigrams below
+		{"Ⅻ", "xii"},
+		{"№ 5", "no 5"},
+		{"㎡", "m2"},
+		{"ﬁ", "fi"},
+	}
+	for _, c := range cases {
+		if got := Fold(c.in); got != c.want {
+			t.Errorf("Fold(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Dakuten is a combining mark by category and a different sound in fact.
+// Stripping it the way a háček is stripped folds ば onto は.
+func TestJapaneseVoicingSurvivesFolding(t *testing.T) {
+	if Fold("ばなな") == Fold("はなな") {
+		t.Error("ばなな and はなな folded together; the dakuten was stripped")
+	}
+	if Fold("バナナ") == Fold("ハナナ") {
+		t.Error("バナナ and ハナナ folded together")
+	}
+	// Half-width with a separate voicing mark must reach the composed form.
+	if got, want := Fold("ｶﾞ"), Fold("ガ"); got != want {
+		t.Errorf("half-width ｶﾞ folded to %q, full-width ガ to %q", got, want)
+	}
+}

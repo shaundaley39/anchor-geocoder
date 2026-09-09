@@ -1,20 +1,20 @@
 {
   "version": 9,
-  "built_at": "2026-09-09T18:44:37Z",
+  "built_at": "2026-09-09T19:26:09Z",
   "countries": [
     "li"
   ],
   "num_strings": 2826,
   "num_anchors": 2287,
   "num_addresses": 12548,
-  "num_terms": 2853,
+  "num_terms": 2869,
   "num_pois": 920,
   "num_shapes": 376,
   "kd_node_size": 64,
   "num_cells": 18,
   "num_vertices": 2365,
-  "num_postings": 8338,
-  "num_anchor_terms": 9427,
+  "num_postings": 8358,
+  "num_anchor_terms": 9447,
   "country_ids": {
     "li": 0
   },
@@ -47,7 +47,7 @@
     "anchor_name": 9148,
     "anchor_ntok": 2287,
     "anchor_score": 9148,
-    "anchor_terms": 37708,
+    "anchor_terms": 37788,
     "anchor_terms_off": 9152,
     "cell_count": 72,
     "cell_items": 348,
@@ -57,12 +57,12 @@
     "geom_closed": 2287,
     "geom_off": 9152,
     "kd_perm": 59340,
-    "post": 33352,
-    "post_off": 11416,
+    "post": 33432,
+    "post_off": 11480,
     "strings": 48613,
-    "term_rev_id": 11412,
-    "terms": 35662,
-    "terms_rev": 35662
+    "term_rev_id": 11476,
+    "terms": 35762,
+    "terms_rev": 35762
   },
-  "duration": "140ms"
+  "duration": "146ms"
 }
