@@ -41,6 +41,13 @@ var handPicked = []string{
 	"Fürstentum Liechtenstein", "Äußere Weißgerbergasse", "Grünstraße",
 	"Schloßstraße", "Schlossstraße", "Schlosstraße", "Straße", "Weißenburg",
 	"Neue Aue", "Steuerweg", "Bauernhof", "Michaelgasse", "Mu\u0308nchen",
+	// Categories the two implementations disagreed about: Nl and No are numbers
+	// to \p{N} and not to unicode.IsDigit.
+	"Třeboň Ⅱ", "Ⅳ", "№ 5", "①", "㎡", "½", "Ⅻ",
+	// Greek final sigma: JavaScript lowercases Σ to ς at a word end, Go to σ.
+	"ΒΛΑΧΟΠΟΥΛΟΣ", "Βλαχόπουλος", "ΑΘΗΝΑ", "Αθήνα", "ΟΔΟΣ", "οδός", "L'appartΣ",
+	// Above the BMP, where UTF-16 order and code point order part company.
+	"𑀜𑀸𑀡𑀲𑀁𑀯𑀭", "１月と７月", "🇬🇷 café",
 }
 
 func main() {

@@ -67,8 +67,19 @@ func Add(b *index.Builder, r *model.Record) {
 	a.LocalID = b.Strings.Intern(r.City)
 	a.Lat, a.Lon = coord(r.Lat), coord(r.Lon)
 	a.Country = b.CountryID(r.Country)
-	a.Tokens = r.Tokens
+	// Recomputed, not taken from the record: the extract serializes the tokens
+	// it folded, so an index built from an older stream would put terms in the
+	// dictionary that the current normalizer no longer produces — and then an
+	// anchor's own name would fold to something the dictionary does not hold.
+	// Costs one pass of folding to make a normalizer change need only `make
+	// index` rather than a re-extract.
+	a.Tokens = model.SearchTokens(r)
 	a.Layer = layer
+	// Assigned, not merely set when there are alternates: a higher-ranked
+	// duplicate replaces this anchor's tokens, and leaving the loser's AltID
+	// behind left it advertising names it was no longer indexed under. 135
+	// tokens across Europe, each an alias a user could type and not find.
+	a.AltID = 0
 	if len(r.AltNames) > 0 {
 		a.AltID = b.Strings.Intern(strings.Join(r.AltNames, index.AltSep))
 	}

@@ -2,6 +2,53 @@
 import type { Artifact } from './artifact.js';
 
 /**
+ * One query token, looked up in the dictionary.
+ *
+ * Resolved once per search and used twice — retrieval walks the posting lists,
+ * scoring tests an anchor's own term ids against the same answer — so the
+ * binary searches happen once rather than once per stage, and scoring never
+ * touches a string.
+ */
+export interface ResolvedToken {
+  /** The spellings as typed, so a prefix hit knows how much of a term was. */
+  forms: string[];
+  /** Term id per form, -1 where the dictionary has no such term. */
+  ids: Int32Array;
+  /**
+   * Dictionary ranges the forms cover as a prefix, flat as [lo, hi, ...]. The
+   * last token only: every other token has to match a term exactly.
+   */
+  ranges: number[];
+  /** Which form produced each range, parallel to `ranges` in pairs. */
+  rangeForm: number[];
+}
+
+export interface ResolvedQuery {
+  tokens: ResolvedToken[];
+}
+
+/** Looks a parsed query up in the term dictionary. */
+export function resolveQuery(a: Artifact, nameVariants: string[][]): ResolvedQuery {
+  const last = nameVariants.length - 1;
+  return {
+    tokens: nameVariants.map((forms, i) => {
+      const ids = new Int32Array(forms.length).fill(-1);
+      const ranges: number[] = [];
+      const rangeForm: number[] = [];
+      forms.forEach((f, k) => {
+        if (i === last) {
+          const [lo, hi] = a.terms.prefixRange(f);
+          if (lo < hi) { ranges.push(lo, hi); rangeForm.push(k); }
+        } else {
+          ids[k] = a.terms.find(f);
+        }
+      });
+      return { forms, ids, ranges, rangeForm };
+    }),
+  };
+}
+
+/**
  * Unfloored IDF swings 2.4x between a one-posting term and a 16,000-posting one,
  * swamping a 7x difference in importance: "Warsz" surfaced a shop branded
  * "Warsz" above Warszawa. Below a few hundred postings rarity says nothing more
@@ -52,9 +99,9 @@ function holds(lists: Uint32Array[], anchor: number): boolean {
  * posting count, so splitting a name across two spellings does not make it look
  * rarer than it is.
  */
-export function candidates(a: Artifact, nameVariants: string[][], maxCandidates: number): Map<number, number> {
+export function candidates(a: Artifact, query: ResolvedQuery, maxCandidates: number): Map<number, number> {
   const scores = new Map<number, number>();
-  if (nameVariants.length === 0) return scores;
+  if (query.tokens.length === 0) return scores;
 
   const nAnchors = a.manifest.num_anchors;
   // Distinct: weights are summed per term, so "Praha Praha" would otherwise
@@ -62,23 +109,22 @@ export function candidates(a: Artifact, nameVariants: string[][], maxCandidates:
   // token as typed, which is the first form, so a word repeated in two
   // spellings still counts once.
   const seenToken = new Set<string>();
-  const complete: string[][] = [];
-  for (const forms of nameVariants.slice(0, -1)) {
-    const typed = forms[0]!;
+  const complete: ResolvedToken[] = [];
+  for (const t of query.tokens.slice(0, -1)) {
+    const typed = t.forms[0]!;
     if (seenToken.has(typed)) continue;
     seenToken.add(typed);
-    complete.push(forms);
+    complete.push(t);
   }
-  const last = nameVariants[nameVariants.length - 1]!;
+  const last = query.tokens[query.tokens.length - 1]!;
 
   const lists: Uint32Array[][] = [];
   const sizes: number[] = [];
   const weights: number[] = [];
-  for (const forms of complete) {
+  for (const t of complete) {
     const ls: Uint32Array[] = [];
     let total = 0;
-    for (const f of forms) {
-      const id = a.terms.find(f);
+    for (const id of t.ids) {
       if (id < 0) continue;
       const p = postings(a, id);
       ls.push(p);
@@ -95,10 +141,10 @@ export function candidates(a: Artifact, nameVariants: string[][], maxCandidates:
   // the index, and "Warsz" put a shop branded "Warsz" above Warszawa.
   const ranges: { lo: number; hi: number; typed: string }[] = [];
   let prefixTotal = 0;
-  for (const f of last) {
-    const [lo, hi] = a.terms.prefixRange(f);
-    if (lo >= hi) continue;
-    ranges.push({ lo, hi, typed: f });
+  for (let r = 0; r < last.ranges.length; r += 2) {
+    const lo = last.ranges[r]!;
+    const hi = last.ranges[r + 1]!;
+    ranges.push({ lo, hi, typed: last.forms[last.rangeForm[r / 2]!]! });
     for (let t = lo; t < hi; t++) prefixTotal += a.postOff[t + 1]! - a.postOff[t]!;
   }
   if (ranges.length === 0) return scores;

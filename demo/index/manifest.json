@@ -1,6 +1,6 @@
 {
-  "version": 8,
-  "built_at": "2026-09-09T09:47:33Z",
+  "version": 9,
+  "built_at": "2026-09-09T18:44:37Z",
   "countries": [
     "li"
   ],
@@ -14,6 +14,7 @@
   "num_cells": 18,
   "num_vertices": 2365,
   "num_postings": 8338,
+  "num_anchor_terms": 9427,
   "country_ids": {
     "li": 0
   },
@@ -46,6 +47,8 @@
     "anchor_name": 9148,
     "anchor_ntok": 2287,
     "anchor_score": 9148,
+    "anchor_terms": 37708,
+    "anchor_terms_off": 9152,
     "cell_count": 72,
     "cell_items": 348,
     "cell_key": 72,
@@ -61,5 +64,5 @@
     "terms": 35662,
     "terms_rev": 35662
   },
-  "duration": "119ms"
+  "duration": "140ms"
 }

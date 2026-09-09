@@ -8,5 +8,7 @@
   "layerPOI": 2,
   "layerPlace": 1,
   "layerStreet": 0,
-  "version": 8
+  "termMissing": 4294967294,
+  "termSep": 4294967295,
+  "version": 9
 }

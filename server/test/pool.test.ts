@@ -72,12 +72,12 @@ describe('the index is loaded once and shared', () => {
   it('keeps the per-thread caches per thread', () => {
     const a = artifactFromBundle(bundle);
     const b = artifactFromBundle(bundle);
-    // Warming one must not hand the other a half-built cache; they are separate
-    // objects over the same immutable bytes.
-    forward(a, 'Vaduz', { limit: 5 });
-    expect(a.tokenCache).not.toBe(b.tokenCache);
-    expect(a.tokenCache.size).toBeGreaterThan(0);
-    expect(b.tokenCache.size).toBe(0);
+    // The decoded-string caches are the one piece of per-thread state left, and
+    // they must be separate objects over the same immutable bytes.
+    expect(a.strings).not.toBe(b.strings);
+    expect(a.terms).not.toBe(b.terms);
+    expect(forward(a, 'Vaduz', { limit: 5 }).results)
+      .toEqual(forward(b, 'Vaduz', { limit: 5 }).results);
   });
 
   it('answers identically from either view', () => {

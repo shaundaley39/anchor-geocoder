@@ -999,6 +999,263 @@
   ]
  },
  {
+  "in": "ΒΛΑΧΟΠΟΥΛΟΣ",
+  "fold": "βλαχοπουλοσ",
+  "tokens": [
+   "βλαχοπουλοσ"
+  ],
+  "index_tokens": [
+   "βλαχοπουλοσ"
+  ],
+  "query_variants": [
+   [
+    "βλαχοπουλοσ"
+   ]
+  ]
+ },
+ {
+  "in": "Βλαχόπουλος",
+  "fold": "βλαχοπουλοσ",
+  "tokens": [
+   "βλαχοπουλοσ"
+  ],
+  "index_tokens": [
+   "βλαχοπουλοσ"
+  ],
+  "query_variants": [
+   [
+    "βλαχοπουλοσ"
+   ]
+  ]
+ },
+ {
+  "in": "ΑΘΗΝΑ",
+  "fold": "αθηνα",
+  "tokens": [
+   "αθηνα"
+  ],
+  "index_tokens": [
+   "αθηνα"
+  ],
+  "query_variants": [
+   [
+    "αθηνα"
+   ]
+  ]
+ },
+ {
+  "in": "Αθήνα",
+  "fold": "αθηνα",
+  "tokens": [
+   "αθηνα"
+  ],
+  "index_tokens": [
+   "αθηνα"
+  ],
+  "query_variants": [
+   [
+    "αθηνα"
+   ]
+  ]
+ },
+ {
+  "in": "ΟΔΟΣ",
+  "fold": "οδοσ",
+  "tokens": [
+   "οδοσ"
+  ],
+  "index_tokens": [
+   "οδοσ"
+  ],
+  "query_variants": [
+   [
+    "οδοσ"
+   ]
+  ]
+ },
+ {
+  "in": "οδός",
+  "fold": "οδοσ",
+  "tokens": [
+   "οδοσ"
+  ],
+  "index_tokens": [
+   "οδοσ"
+  ],
+  "query_variants": [
+   [
+    "οδοσ"
+   ]
+  ]
+ },
+ {
+  "in": "L'appartΣ",
+  "fold": "l appartσ",
+  "tokens": [
+   "l",
+   "appartσ"
+  ],
+  "index_tokens": [
+   "l",
+   "appartσ"
+  ],
+  "query_variants": [
+   [
+    "l"
+   ],
+   [
+    "appartσ"
+   ]
+  ]
+ },
+ {
+  "in": "𑀜𑀸𑀡𑀲𑀁𑀯𑀭",
+  "fold": "𑀜𑀡𑀲𑀯𑀭",
+  "tokens": [
+   "𑀜𑀡𑀲𑀯𑀭"
+  ],
+  "index_tokens": [
+   "𑀜𑀡𑀲𑀯𑀭"
+  ],
+  "query_variants": [
+   [
+    "𑀜𑀡𑀲𑀯𑀭"
+   ]
+  ]
+ },
+ {
+  "in": "１月と７月",
+  "fold": "１月と７月",
+  "tokens": [
+   "１月と７月"
+  ],
+  "index_tokens": [
+   "１月と７月"
+  ],
+  "query_variants": [
+   [
+    "１月と７月"
+   ]
+  ]
+ },
+ {
+  "in": "🇬🇷 café",
+  "fold": "cafe",
+  "tokens": [
+   "cafe"
+  ],
+  "index_tokens": [
+   "cafe"
+  ],
+  "query_variants": [
+   [
+    "cafe"
+   ]
+  ]
+ },
+ {
+  "in": "Třeboň Ⅱ",
+  "fold": "trebon ⅱ",
+  "tokens": [
+   "trebon",
+   "ⅱ"
+  ],
+  "index_tokens": [
+   "trebon",
+   "ⅱ"
+  ],
+  "query_variants": [
+   [
+    "trebon"
+   ],
+   [
+    "ⅱ"
+   ]
+  ]
+ },
+ {
+  "in": "Ⅳ",
+  "fold": "ⅳ",
+  "tokens": [
+   "ⅳ"
+  ],
+  "index_tokens": [
+   "ⅳ"
+  ],
+  "query_variants": [
+   [
+    "ⅳ"
+   ]
+  ]
+ },
+ {
+  "in": "№ 5",
+  "fold": "5",
+  "tokens": [
+   "5"
+  ],
+  "index_tokens": [
+   "5"
+  ],
+  "query_variants": [
+   [
+    "5"
+   ]
+  ]
+ },
+ {
+  "in": "①",
+  "fold": "①",
+  "tokens": [
+   "①"
+  ],
+  "index_tokens": [
+   "①"
+  ],
+  "query_variants": [
+   [
+    "①"
+   ]
+  ]
+ },
+ {
+  "in": "㎡",
+  "fold": "",
+  "tokens": [],
+  "index_tokens": [],
+  "query_variants": []
+ },
+ {
+  "in": "½",
+  "fold": "½",
+  "tokens": [
+   "½"
+  ],
+  "index_tokens": [
+   "½"
+  ],
+  "query_variants": [
+   [
+    "½"
+   ]
+  ]
+ },
+ {
+  "in": "Ⅻ",
+  "fold": "ⅻ",
+  "tokens": [
+   "ⅻ"
+  ],
+  "index_tokens": [
+   "ⅻ"
+  ],
+  "query_variants": [
+   [
+    "ⅻ"
+   ]
+  ]
+ },
+ {
   "in": "Józefa Piłsudskiego",
   "fold": "jozefa pilsudskiego",
   "tokens": [

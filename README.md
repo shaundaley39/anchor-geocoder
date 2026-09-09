@@ -89,7 +89,7 @@ The index is a directory of flat little-endian arrays and a small JSON manifest,
 
 The whole shape follows from a single decision: the server never writes to the index, so nothing in it has to support insertion. That's a strong constraint - and it allows us to support autocomplete with fewer datastructures and less RAM.
 
-Sorted arrays do the work of trees, and the same term dictionary serves both exact lookup and prefix range by binary search, which is what makes autocomplete cheap. Offsets do the work of pointers, so a term's posting list is a slice of one long array of ascending anchor ids and a multi-token query is a linear intersection. Anchor fields live in one array each rather than in records, so a query touches only the fields it actually reads. House numbers sit in sorted runs behind their anchor, keyed on the number's leading integer, so finding 248 on a street with thousands of addresses is another binary search. Coordinates are int32 fixed point at roughly a centimetre, which halves the space against float64, keeps comparisons exact, and lets point-in-polygon run directly on the stored integers.
+Sorted arrays do the work of trees, and the same term dictionary serves both exact lookup and prefix range by binary search, which is what makes autocomplete cheap. That dictionary is also how an anchor stores its own name: `anchor_terms.bin` holds the term ids its name and locality fold to, so scoring compares integers and the server never folds a string at query time - the fold happens once, at build time, for everyone. Offsets do the work of pointers, so a term's posting list is a slice of one long array of ascending anchor ids and a multi-token query is a linear intersection. Anchor fields live in one array each rather than in records, so a query touches only the fields it actually reads. House numbers sit in sorted runs behind their anchor, keyed on the number's leading integer, so finding 248 on a street with thousands of addresses is another binary search. Coordinates are int32 fixed point at roughly a centimetre, which halves the space against float64, keeps comparisons exact, and lets point-in-polygon run directly on the stored integers.
 
 The spatial structures are precomputed on the same principle. The k-d tree ships as a permutation of point ids with its structure implicit in their order, so the server builds nothing at startup. Loading is then a read and a cast rather than a parse - 119 ms for 14M addresses, 908 ms for 90M - and resident memory stays close to the artifact size.
 
@@ -115,19 +115,19 @@ The fix is a thread per core, and the reason it can be threads rather than proce
 
 | threads | idle | peak under load | settled afterwards |
 | ---: | ---: | ---: | ---: |
-| 1 | 4.28 GB | 4.62 GB | 4.40 GB |
-| 8 | 4.71 GB | 6.61 GB | 5.20 GB |
-| 16 | 5.30 GB | 8.95 GB | 6.11 GB |
+| 1 | 4.85 GB | 5.09 GB | 4.96 GB |
+| 8 | 5.30 GB | 6.60 GB | 5.56 GB |
+| 16 | 5.93 GB | 8.54 GB | 6.32 GB |
 
-So ~68 MB per thread resident before it does anything, and ~290 MB at peak while it is serving - and it is the second number a deployment has to be sized on, since that is what an OOM killer sees. Sixteen threads still beat sixteen processes, which would have started at 68 GB before serving a request, but "the index is shared so threads are nearly free" would be an overstatement.
+So ~72 MB per thread resident before it does anything, and ~230 MB at peak while it is serving - and it is the second number a deployment has to be sized on, since that is what an OOM killer sees. Sixteen threads still beat sixteen processes, which would have started at 78 GB before serving a request, but "the index is shared so threads are nearly free" would be an overstatement.
 
 Where the ~290 MB goes, in decreasing order:
 
 - **The V8 heap under load** - in-flight GeoJSON objects and the JSON being serialised from them. This is most of it, and it is transient: peak falls back to 6.11 GB at sixteen threads within a minute of the traffic stopping. Bounding it is a `resourceLimits.maxOldGenerationSizeMb` away, at the risk of turning a memory spike into a dead worker.
 - **~68 MB of idle floor** - the isolate, the Fastify instance, the compiled AJV validators and `fast-json-stringify` serializers, the OpenAPI document and the docs bundle, all built once per thread. Measured against the 676 KB demo index, where the index itself is a rounding error: 175 MB at one thread, 1124 MB at sixteen.
-- **The two caches**, which are per thread because decoded strings and folded tokens cannot be shared, and which are smaller than they look. Sizing the folded-token cache down by the thread count - so the pool holds what one thread used to - costs 56% of city-name throughput and saves 0.17 GB. It is not the thing to economise on.
+- **The decoded-string cache**, per thread because a JavaScript string cannot be shared, and capped. (An earlier version was an array slot per entry - 8 bytes x 13.9M strings whether or not they were ever asked for, allocated eagerly per thread. That alone was 2.5 GB across sixteen threads, more than half the index, and it is why the cache is a capped map instead.)
 
-(One earlier version of the string cache was: an array slot per entry, 8 bytes x 13.9M strings whether or not they are ever asked for, allocated eagerly per thread. That alone was 2.5 GB across sixteen threads, more than half the index, and it is why the cache is a capped map instead.)
+There used to be a second, larger cache here: the folded tokens of each anchor's names, at ~140 MB a thread. It is gone, because the fold moved into the artifact - see [The Fold Belongs in the Index](#the-fold-belongs-in-the-index). Per-thread peak went from ~290 MB to ~230 MB, at the cost of 0.6 GB of shared index, which pays for itself at about ten threads.
 
 Each worker runs a complete Fastify instance on its own HTTP server (supplied through Fastify's `serverFactory`), and there is no dispatcher in front of them: the kernel does the balancing. On Linux each worker binds its own socket with `SO_REUSEPORT` and the kernel hashes connections across them. macOS has `SO_REUSEPORT` but does not load-balance it, and Node rejects the option outright, so the pool falls back to the pre-fork model - the first worker binds, the rest accept on its descriptor, which they can because threads share a descriptor table. The strategy is probed at boot, not assumed.
 
@@ -142,13 +142,16 @@ Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the 42-countr
 | query shape | 1 thread | 8 threads | speedup | per thread |
 | --- | ---: | ---: | ---: | ---: |
 | reverse, filtered to a far-off country | 59,750 | 162,644 | 2.7x | 0.02 ms |
-| reverse, lat/lon | 10,194 | 77,672 | 7.6x | 0.10 ms |
-| street + house number | 584 | 4,037 | 6.9x | 1.7 ms |
-| full city name | 508 | 3,360 | 6.6x | 2.0 ms |
-| all-common-word names | 200 | 1,310 | 6.6x | 4.9 ms |
-| mixed traffic | 177 | 1,126 | 6.4x | 5.9 ms |
-| 3-character autocomplete prefix | 106 | 667 | 6.3x | 9.6 ms |
+| reverse, lat/lon | 10,362 | 79,198 | 7.6x | 0.10 ms |
+| street + house number | 569 | 3,701 | 6.5x | 2.2 ms |
+| full city name | 491 | 3,350 | 6.8x | 2.4 ms |
+| 5,000 distinct real names, one per request | - | 2,187 | - | 3.7 ms |
+| all-common-word names | 183 | 1,292 | 7.1x | 6.2 ms |
+| mixed traffic | 161 | 981 | 6.1x | 8.2 ms |
+| 3-character autocomplete prefix | 93 | 572 | 6.2x | 14.0 ms |
 | reverse at max radius and page size | 63 | 460 | 7.3x | 15.9 ms |
+
+Every row but one cycles a handful of queries, which is the friendliest traffic there is for anything cached per thread. The `diverse` row does not: 5,000 distinct names sampled from the index, one per request, which is what a search box actually sends.
 
 Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep, *idle*: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB - see the table above for what it reaches while serving.
 
@@ -167,6 +170,22 @@ Two query shapes used to cost 100x what they should, and both turned out to be i
 What is *not* expensive, contrary to the obvious guess: clicking on nothing. A point in the mid-Atlantic, the Baltic, or the Arctic costs 0.01-0.28ms, less than a click on central Prague, because an empty region is where a k-d tree prunes hardest. Over 4,000 uniform points in the coverage box, reverse geocoding at the default radius averages 0.020ms with a worst case of 1.04ms. It follows that giving up when nothing is within a few hundred metres would buy nothing and cost a great deal: of the points that do get an answer, 82% get it from beyond 200m, and they are real answers — a village 0.2km from a field, a converter station 12.8km off the Dutch coast.
 
 What remains, and is left alone deliberately: a reverse query that asks for 50 results within 50km from a point in open water near a dense coast really does have to sweep a 100km box, and costs ~16ms of thread time. That is under twice a three-character autocomplete, it needs the client to ask for both the maximum radius and the maximum page size, and every way of capping it - a visit budget, an early cut-off - trades a real result for the saving. The honest containment for that shape is load shedding on event-loop delay rather than second-guessing the query.
+
+### The Fold Belongs in the Index
+
+Scoring a candidate meant folding its name and every alias it carries - `TextDecoder`, NFD, a regex, a character loop, several allocations deep - and it happened per candidate, per request, per thread. It was expensive enough to need a cache, and that cache was ~140 MB per thread, replicated across the pool, each copy warming from cold independently.
+
+But the fold is the same answer every time, and the term dictionary already contains it. So [`anchor_terms.bin`](ingest/internal/index/format.go) now stores, per anchor, the *term ids* its locality and each of its name variants fold to. Scoring compares integers: an exact query token is an id equality, a prefix token is a range check, because retrieval has already resolved the prefix to a range of the dictionary. Measured against 200,000 random anchors, reading the stored ids costs **45 ns a candidate where folding the names cost 2,579 ns** - the same token counts, 57x apart.
+
+End to end the throughput gain is modest, and the honest reason is that the benchmark flatters what it replaced: cycling twelve queries gives a per-thread cache a ~100% hit rate, so the 2.6 µs was mostly not being paid. On the diverse profile, where it would have been, the new path is insensitive to it. What is unambiguous is the memory - ~290 MB a thread down to ~230 MB, for 0.6 GB of shared index - and what came with it:
+
+**The artifact is now its own contract fixture.** The index contains what Go folded; the server folds the same names in TypeScript; a test compares them. Not 4,000 sampled names but 23.3 million real ones - and the first run found three bugs that the fixture had missed for the life of the project:
+
+- `unicode.IsDigit` is category Nd, where the TypeScript port's `\p{N}` is Nd, Nl and No. "Třeboň Ⅱ" folded to one token in Go and two in TypeScript, so the index held a term the query never asked for. 6,465 anchors.
+- Go lowercases Σ to σ wherever it stands; JavaScript applies the contextual rule and gives ς at the end of a word. Every Greek name in capitals folded two ways.
+- Go sorts the term dictionary by code point; the server binary-searches it with JavaScript's `<`, which compares UTF-16 code units. The two disagree above the BMP, where a surrogate pair begins 0xD800 and sorts below everything from U+E000 up - so a lookup whose path crossed an astral term could take the wrong branch and come back empty. It is the kind of bug that stays invisible in Europe and would have arrived with the first planet build.
+
+Two more turned up in the build itself, both caught by the same assertion: an anchor kept a higher-ranked duplicate's alternate names while its tokens were replaced, so it advertised aliases it was not indexed under; and `geoindex` trusted the token list serialized into the record stream, so a normalizer change needed a re-extract to take effect rather than a re-index. Both are fixed, and the fold-vector fixture keeps its job - it is just no longer the only thing standing between the two implementations.
 
 ### Container Image
 

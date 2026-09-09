@@ -20,6 +20,10 @@ const SINGLETONS = new Map<string, string>([
   ['ð', 'd'], ['Ð', 'd'],
   ['þ', 'th'], ['Þ', 'th'],
   ['ı', 'i'], ['İ', 'i'],
+  // Greek final sigma: JavaScript's toLowerCase applies the contextual rule and
+  // gives ς at the end of a word where Go always gives σ. Folding ς onto σ
+  // settles it identically on both sides.
+  ['ς', 'σ'],
 ]);
 
 /**

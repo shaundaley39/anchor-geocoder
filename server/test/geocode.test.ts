@@ -9,10 +9,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
+import {
+  loadArtifact, anchorOfAddress, toDeg, TERM_SEP, TERM_MISSING, ALT_SEP, type Artifact,
+} from '../src/artifact.js';
 import { forward } from '../src/forward.js';
 import { parseQuery, type ParsedQuery } from '../src/query.js';
-import { candidates } from '../src/terms.js';
+import { candidates, resolveQuery } from '../src/terms.js';
 import { scoreBound, scoreExact } from '../src/ranking.js';
 import { findHouseNumber } from '../src/housenumber.js';
 import { correctToken, withinOneEdit } from '../src/fuzzy.js';
@@ -20,6 +22,7 @@ import { hasShape, ringAreaM2, containsPoint, haversineMetres } from '../src/geo
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
+import { tokens as foldTokens } from '@anchor-geocoder/core';
 import type { FastifyInstance } from 'fastify';
 
 // Overridable so CI can point at an index built somewhere else, and so a
@@ -235,6 +238,57 @@ maybe('against the built index', () => {
      * set, which is only correct while the writer keeps emitting postings in
      * ascending anchor order.
      */
+    /**
+     * Ranking reads an anchor's own term ids instead of folding its name, so
+     * the two have to agree. A stride rather than every anchor: 23M of them,
+     * each needing a fold and a dictionary lookup per token.
+     */
+    it('stores each anchor the term ids its own names fold to', () => {
+      const sections = (id: number): number[][] => {
+        const out: number[][] = [];
+        let cur: number[] = [];
+        for (let i = a.anchorTermsOff[id]!; i < a.anchorTermsOff[id + 1]!; i++) {
+          const t = a.anchorTerms[i]!;
+          if (t === TERM_SEP) { out.push(cur); cur = []; } else cur.push(t);
+        }
+        out.push(cur);
+        return out;
+      };
+      // A token the dictionary lacks is stored as the sentinel, not as -1.
+      const idsOf = (str: string) => foldTokens(str)
+        .map((t) => { const id = a.terms.find(t); return id < 0 ? TERM_MISSING : id; });
+
+      let checked = 0;
+      for (let id = 0; id < a.manifest.num_anchors; id += 977) {
+        const [locality, ...variants] = sections(id) as [number[], ...number[][]];
+        expect(locality, `anchor ${id} locality`)
+          .toEqual(idsOf(a.strings.get(a.anchorLocal[id]!)));
+        const alts = a.anchorAlt[id] === 0
+          ? [] : a.strings.get(a.anchorAlt[id]!).split(ALT_SEP);
+        expect(variants, `anchor ${id} names`).toEqual([
+          idsOf(a.strings.get(a.anchorName[id]!)),
+          ...alts.map(idsOf).filter((v) => v.length > 0),
+        ]);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(1000);
+    }, 120_000);
+
+    /**
+     * A token the build could not place becomes TERM_MISSING: it keeps its
+     * position in the name, so it still counts against how much of the name a
+     * query used, and matches nothing — which is what it did before, since a
+     * token absent from the dictionary can never equal a query term either.
+     *
+     * Zero, and worth keeping at zero: the 135 Europe produced before were a
+     * higher-ranked duplicate replacing an anchor's tokens while leaving the
+     * loser's alternate names attached, so the anchor advertised aliases it was
+     * no longer indexed under. This assertion is what noticed.
+     */
+    it('places every stored token in the dictionary', () => {
+      expect(a.manifest.counts['anchor_term_not_in_dictionary'] ?? 0).toBe(0);
+    });
+
     it('stores each posting list in ascending anchor order', () => {
       let checked = 0;
       // Every list would be 100M reads; a stride covers the file for the price
@@ -251,11 +305,37 @@ maybe('against the built index', () => {
       expect(checked).toBeGreaterThan(1000);
     });
 
-    it('stores terms in sorted order so prefix search is a binary search', () => {
-      for (let i = 1; i < a.manifest.num_terms; i += 31) {
-        expect(a.terms.get(i) > a.terms.get(i - 1)).toBe(true);
+    /**
+     * Every adjacent pair, not a stride, and compared with the same `<` the
+     * binary search uses. Go sorts by code point and JavaScript compares UTF-16
+     * code units, which disagree above the BMP — the build sorts to match, and
+     * a stride of 31 is exactly how that went unnoticed: it never sampled the
+     * pair either side of an astral term.
+     */
+    it('stores terms in the order the server compares them in', () => {
+      for (let i = 1; i < a.manifest.num_terms; i++) {
+        if (!(a.terms.get(i) > a.terms.get(i - 1))) {
+          throw new Error(
+            `terms ${i - 1} and ${i} are out of order: ` +
+            `${JSON.stringify(a.terms.get(i - 1))} then ${JSON.stringify(a.terms.get(i))}`,
+          );
+        }
       }
-    });
+    }, 120_000);
+
+    /**
+     * The property that ordering exists to give: a term the dictionary holds is
+     * a term the dictionary finds. Strided, since each lookup is a full binary
+     * search over 4.8M terms.
+     */
+    it('finds every term it stores', () => {
+      let checked = 0;
+      for (let i = 0; i < a.manifest.num_terms; i += 97) {
+        expect(a.terms.find(a.terms.get(i)), `term ${i}`).toBe(i);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(1000);
+    }, 120_000);
   });
 
   describe('forward geocoding', () => {
@@ -479,10 +559,11 @@ maybe('against the built index', () => {
       for (const q of queries()) {
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          const cands = candidates(a, parsed.nameVariants, 10_000);
+          const query = resolveQuery(a, parsed.nameVariants);
+          const cands = candidates(a, query, 10_000);
           for (const [id, text] of cands) {
             const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length);
-            const exact = scoreExact(a, id, text, parsed);
+            const exact = scoreExact(a, id, text, parsed, query);
             // Tolerance for floating-point association only.
             expect(exact, `${q} / anchor ${id}`).toBeLessThanOrEqual(bound * (1 + 1e-9));
             checked++;
@@ -496,9 +577,10 @@ maybe('against the built index', () => {
       const opts = { proximity: { lat: 50.0755, lon: 14.4378 } };
       for (const parsed of parseQuery('Nadrazni')) {
         if (parsed.nameTokens.length === 0) continue;
-        for (const [id, text] of candidates(a, parsed.nameVariants, 10_000)) {
+        const query = resolveQuery(a, parsed.nameVariants);
+        for (const [id, text] of candidates(a, query, 10_000)) {
           const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length, opts);
-          const exact = scoreExact(a, id, text, parsed, opts);
+          const exact = scoreExact(a, id, text, parsed, query, opts);
           expect(exact).toBeLessThanOrEqual(bound * (1 + 1e-9));
         }
       }
@@ -537,8 +619,9 @@ maybe('against the built index', () => {
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          for (const [id, text] of candidates(a, parsed.nameVariants, 10_000)) {
-            const sc = scoreExact(a, id, text, parsed);
+          const query = resolveQuery(a, parsed.nameVariants);
+          for (const [id, text] of candidates(a, query, 10_000)) {
+            const sc = scoreExact(a, id, text, parsed, query);
             if (sc > bestScore) { bestScore = sc; bestId = id; }
           }
           if (bestId >= 0) break; // forward takes the first reading that matches

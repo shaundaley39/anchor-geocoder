@@ -12,7 +12,7 @@ import { type Artifact } from './artifact.js';
 import { type GeocodeResult, anchorResult, addressResult } from './result.js';
 import { haversineMetres } from './geometry.js';
 import { type ParsedQuery, parseQuery } from './query.js';
-import { candidates } from './terms.js';
+import { candidates, resolveQuery } from './terms.js';
 import { type RankingOptions, cheapScore, relevance, maxRelevance } from './ranking.js';
 import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 import { correctTokens } from './fuzzy.js';
@@ -131,7 +131,10 @@ function search(
     ? a.manifest.country_ids[opts.country.toLowerCase()]
     : undefined;
 
-  const scored = candidates(a, parsed.nameVariants, MAX_RERANK);
+  // Looked up once and used by both stages: retrieval walks posting lists,
+  // scoring tests the same term ids against each anchor's own.
+  const query = resolveQuery(a, parsed.nameVariants);
+  const scored = candidates(a, query, MAX_RERANK);
   if (scored.size === 0) {
     return { results: [], stats: EMPTY_STATS };
   }
@@ -189,7 +192,7 @@ function search(
     siftDown(0);
     reranked++;
 
-    let score = cheaps[slot]! * relevance(a, id, parsed.nameVariants);
+    let score = cheaps[slot]! * relevance(a, id, query);
 
     let addrIdx: number | null = null;
     if (parsed.houseNumber !== null) {

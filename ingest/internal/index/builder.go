@@ -6,6 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/shaundaley39/anchor-geocoder/ingest/internal/norm"
 )
 
 // Builder assembles the artifact.
@@ -312,7 +316,7 @@ func (b *Builder) writeIndex(dir string, man *Manifest) error {
 	for t := range postings {
 		terms = append(terms, t)
 	}
-	sort.Strings(terms)
+	sortUTF16(terms)
 
 	tt := NewStringTable()
 	tt.list = tt.list[:0] // the term table has no empty-string sentinel
@@ -350,7 +354,7 @@ func (b *Builder) writeIndex(dir string, man *Manifest) error {
 		reversed[i] = reverseRunes(t)
 	}
 	sort.Slice(revOrder, func(a, c int) bool {
-		return reversed[revOrder[a]] < reversed[revOrder[c]]
+		return lessUTF16(reversed[revOrder[a]], reversed[revOrder[c]])
 	})
 	rt := NewStringTable()
 	rt.list = rt.list[:0]
@@ -366,9 +370,124 @@ func (b *Builder) writeIndex(dir string, man *Manifest) error {
 
 	man.NumTerms = len(terms)
 	man.NumPosting = len(flat)
+
+	anchorTerms, anchorOff := b.anchorTermIDs(tt)
+	man.NumAnchorTerms = len(anchorTerms)
 	return writeAll(dir, map[string]any{
 		"post_off": offs, "post": flat, "term_rev_id": revOrder,
+		"anchor_terms": anchorTerms, "anchor_terms_off": anchorOff,
 	}, man)
+}
+
+// Each anchor's own name and locality as term ids, so the server can score
+// without folding a string.
+//
+// Folding an anchor's names is the most expensive thing the ranking does, and
+// it does it per candidate: it was cached per request thread, which cost both
+// the work on a cold cache and ~140MB a thread to keep. The fold is the same
+// every time and the dictionary already holds the answer, so it belongs here —
+// ~500MB in the artifact, shared by every thread, against caches that were not.
+//
+// Written after the dictionary is sorted, because that is when a token has an
+// id at all.
+func (b *Builder) anchorTermIDs(tt *StringTable) ([]uint32, []uint32) {
+	out := make([]uint32, 0, 4*len(b.Anchors))
+	offs := make([]uint32, len(b.Anchors)+1)
+
+	// Localities repeat across thousands of anchors and re-folding them is the
+	// bulk of the work here; names mostly do not, and memoizing 13.9M of them
+	// would cost more than it saves.
+	locCache := map[uint32][]uint32{}
+	ids := func(s string) []uint32 {
+		toks := norm.Tokens(s)
+		if len(toks) == 0 {
+			return nil
+		}
+		v := make([]uint32, 0, len(toks))
+		for _, t := range toks {
+			if id, ok := tt.ids[t]; ok {
+				v = append(v, id)
+			} else {
+				// Should not happen: an anchor's name tokens are a subset of the
+				// tokens it was indexed under. Counted rather than assumed away.
+				b.Counts["anchor_term_not_in_dictionary"]++
+				v = append(v, TermMissing)
+			}
+		}
+		return v
+	}
+
+	for id := range b.Anchors {
+		a := &b.Anchors[id]
+		offs[id] = uint32(len(out))
+
+		loc, ok := locCache[a.LocalID]
+		if !ok {
+			loc = ids(b.Strings.Get(a.LocalID))
+			locCache[a.LocalID] = loc
+		}
+		out = append(out, loc...)
+
+		// The canonical name is emitted even when it folds to nothing, so that
+		// variant 0 is always the canonical one.
+		out = append(out, TermSep)
+		out = append(out, ids(b.Strings.Get(a.NameID))...)
+		if a.AltID != 0 {
+			for _, alt := range strings.Split(b.Strings.Get(a.AltID), AltSep) {
+				v := ids(alt)
+				if len(v) == 0 {
+					continue // an alternate that folds away is not a name variant
+				}
+				out = append(out, TermSep)
+				out = append(out, v...)
+			}
+		}
+	}
+	offs[len(b.Anchors)] = uint32(len(out))
+	return out, offs
+}
+
+// sortUTF16 orders the dictionary the way the server compares it.
+//
+// Go sorts strings by UTF-8 byte, which is code point order. JavaScript's `<`
+// compares UTF-16 code units, and the two disagree above the BMP: a surrogate
+// pair starts 0xD800, which sorts below every character from U+E000 up, while
+// its code point sorts above them. The server binary-searches this dictionary
+// with `<`, so a dictionary in Go's order is one the server can walk off — and
+// not only for the astral terms themselves. Any lookup whose path crosses the
+// disagreement can take the wrong branch, which is how 28 ordinary Japanese and
+// Brahmi names came back unfound.
+//
+// Sorted here rather than compared differently there, because the comparison is
+// the server's inner loop and the sort happens once.
+func sortUTF16(terms []string) {
+	sort.Slice(terms, func(i, j int) bool { return lessUTF16(terms[i], terms[j]) })
+}
+
+// lessUTF16 reports whether a sorts before b by UTF-16 code unit, without
+// encoding either: runes below U+10000 are their own code unit, and above it
+// the high surrogate decides unless both share one.
+func lessUTF16(a, b string) bool {
+	for len(a) > 0 && len(b) > 0 {
+		ra, sa := utf8.DecodeRuneInString(a)
+		rb, sb := utf8.DecodeRuneInString(b)
+		if ra != rb {
+			ua, ub := highUnit(ra), highUnit(rb)
+			if ua != ub {
+				return ua < ub
+			}
+			return ra < rb // same high surrogate, so code point order decides
+		}
+		a, b = a[sa:], b[sb:]
+	}
+	return len(a) < len(b)
+}
+
+func highUnit(r rune) rune {
+	if r > 0xFFFF {
+		return 0xD800 + ((r - 0x10000) >> 10)
+	}
+	return r
 }
 
 // By rune, not byte: folding leaves Greek in place, and reversing its bytes

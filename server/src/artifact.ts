@@ -20,7 +20,7 @@ export const LAYER_POI = 2;
 export const COORD_SCALE = 1e7;
 
 /** Layout version the server understands. */
-export const SUPPORTED_VERSION = 8;
+export const SUPPORTED_VERSION = 9;
 
 /**
  * Decoded strings kept per table per thread, so that a cache which would
@@ -45,6 +45,7 @@ export interface Manifest {
   num_cells: number;
   num_vertices: number;
   num_postings: number;
+  num_anchor_terms: number;
   country_ids: Record<string, number>;
   counts: Record<string, number>;
   bytes: Record<string, number>;
@@ -125,6 +126,19 @@ export interface Artifact {
   postOff: Uint32Array;
   post: Uint32Array;
 
+  /**
+   * Each anchor's own name and locality, as term ids, so scoring compares
+   * integers instead of folding strings per candidate. `anchorTermsOff` slices
+   * it per anchor; within a slice the sections are the locality, then each name
+   * variant with the canonical one first, separated by TERM_SEP.
+   *
+   * This is the folding that `relevance` used to do at query time and cache per
+   * thread. Doing it at build time costs ~500MB in the artifact, shared by every
+   * thread, and removes both the work and the caches that hid it.
+   */
+  anchorTerms: Uint32Array;
+  anchorTermsOff: Uint32Array;
+
   /** Anchors: struct-of-arrays, `numAnchors` entries. */
   anchorName: Uint32Array;
   anchorLocal: Uint32Array;
@@ -142,13 +156,6 @@ export interface Artifact {
   anchorCat: Uint32Array;
   /** String id of the anchor's alternate names, joined by ALT_SEP; 0 if none. */
   anchorAlt: Uint32Array;
-  /**
-   * Lazily folded name and locality tokens per anchor, memoized here rather
-   * than in a module-level map. Keyed by anchor id, such a map returns one
-   * artifact's names for another's ids as soon as a process holds two — which
-   * is exactly what a comparison harness does, and it cost an afternoon.
-   */
-  tokenCache: Map<number, unknown>;
   /**
    * Token count of the shortest name each anchor is known by. Lets the ranking
    * bound relevance without folding the name, which is the expensive part.
@@ -213,6 +220,7 @@ const FILES = [
   'terms.bin', 'terms.idx',
   'terms_rev.bin', 'terms_rev.idx', 'term_rev_id.bin',
   'post_off.bin', 'post.bin',
+  'anchor_terms.bin', 'anchor_terms_off.bin',
   'anchor_name.bin', 'anchor_local.bin', 'anchor_lat.bin', 'anchor_lon.bin',
   'anchor_flags.bin', 'anchor_country.bin', 'anchor_score.bin',
   'anchor_cat.bin', 'anchor_alt.bin', 'anchor_ntok.bin',
@@ -331,9 +339,10 @@ export function artifactFromBundle(bundle: ArtifactBundle): Artifact {
     terms: new StringTable(u8(files['terms.bin']), u32(files['terms.idx'])),
     termsRev: new StringTable(u8(files['terms_rev.bin']), u32(files['terms_rev.idx'])),
     termRevId: u32(files['term_rev_id.bin']),
-    tokenCache: new Map(),
     postOff: u32(files['post_off.bin']),
     post: u32(files['post.bin']),
+    anchorTerms: u32(files['anchor_terms.bin']),
+    anchorTermsOff: u32(files['anchor_terms_off.bin']),
     anchorName: u32(files['anchor_name.bin']),
     anchorLocal: u32(files['anchor_local.bin']),
     anchorLat: i32(files['anchor_lat.bin']),
@@ -377,6 +386,18 @@ export function artifactFromBundle(bundle: ArtifactBundle): Artifact {
       `address array length ${artifact.addrNum.length} != manifest ${manifest.num_addresses}`,
     );
   }
+  if (artifact.anchorTermsOff.length !== manifest.num_anchors + 1) {
+    throw new Error(
+      `anchor term offsets ${artifact.anchorTermsOff.length} ` +
+      `!= manifest ${manifest.num_anchors} + 1`,
+    );
+  }
+  if (artifact.anchorTerms.length !== manifest.num_anchor_terms) {
+    throw new Error(
+      `anchor term array length ${artifact.anchorTerms.length} ` +
+      `!= manifest ${manifest.num_anchor_terms}`,
+    );
+  }
   return artifact;
 }
 
@@ -387,6 +408,16 @@ export async function loadArtifact(dir: string): Promise<Artifact> {
 
 /** Joins an anchor's alternate names inside one interned string. */
 export const ALT_SEP = '\x1f';
+
+/**
+ * Sentinels in `anchorTerms`, mirroring `ingest/internal/index`. Both sit above
+ * any term id, so neither can be mistaken for one.
+ */
+export const TERM_SEP = 0xFFFFFFFF;
+/** A token the dictionary does not hold: it occupies its place in the name, and
+ * so still counts against how much of the name a query used, but matches
+ * nothing. */
+export const TERM_MISSING = 0xFFFFFFFE;
 
 export const layerOf = (flags: number): number => flags & 0x0f;
 

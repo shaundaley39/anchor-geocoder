@@ -17,6 +17,7 @@
  * idle between requests, too much and the queue only adds latency. Sweep it.
  */
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
 
@@ -45,6 +46,7 @@ const HEAVY = ['Rue de la Paix', 'Via Roma 5', 'Rue du General de Gaulle',
 const POINTS = [[52.2297, 21.0122], [50.0755, 14.4378], [48.2082, 16.3738],
   [52.52, 13.405], [45.4642, 9.19], [59.3293, 18.0686]];
 /** Open water, ice and empty mountain: inside the coverage box, far from data. */
+let POOL = ['Praha'];
 const AWKWARD = [[55.90, 19.20], [53.20, 3.30], [43.30, 14.60], [46.55, 8.05],
   [74.0, 20.0], [52.724, 4.331], [35.0, 18.0], [61.0, 31.5]];
 
@@ -63,6 +65,15 @@ const PROFILES = {
     const [lat, lon] = POINTS[i % POINTS.length];
     return `/v1/geocode?lat=${lat}&lon=${lon}&limit=10`;
   },
+  /**
+   * Thousands of distinct real names, one per request, from --queries.
+   *
+   * Every other profile cycles a handful of queries, which is the friendliest
+   * possible traffic for anything the server caches per thread and tells you
+   * nothing about a real search box. Sampled from the index by
+   * `--queries <file>`, a name per line.
+   */
+  diverse: (i) => `/v1/geocode?q=${encodeURIComponent(POOL[i % POOL.length])}&limit=10`,
   /** The tail: multi-token names made entirely of very common words. */
   heavy: (i) => `/v1/geocode?q=${encodeURIComponent(HEAVY[i % HEAVY.length])}&limit=10`,
   /**
@@ -154,6 +165,7 @@ function runClient({ url, connections, durationMs, warmupMs, profile, seed }) {
 // ------------------------------------------------------------------- main ---
 
 if (!isMainThread) {
+  if (workerData.queries) POOL = readFileSync(workerData.queries, 'utf8').split('\n').filter(Boolean);
   runClient(workerData).then((r) => parentPort.postMessage(r, [r.latencies.buffer]));
 } else {
   const arg = (name, fallback) => {
@@ -162,6 +174,7 @@ if (!isMainThread) {
   };
 
   const url = arg('url', 'http://127.0.0.1:3000');
+  const queries = arg('queries', '');
   const connections = Number(arg('connections', 64));
   const durationMs = Number(arg('duration', 10)) * 1000;
   const warmupMs = Number(arg('warmup', 3)) * 1000;
@@ -193,7 +206,7 @@ if (!isMainThread) {
     const t0 = performance.now();
     const parts = await Promise.all(spread.map((conns, i) => new Promise((resolve, reject) => {
       const w = new Worker(new URL(import.meta.url), {
-        workerData: { url, connections: conns, durationMs, warmupMs, profile, seed: i * 9973 },
+        workerData: { url, connections: conns, durationMs, warmupMs, profile, queries, seed: i * 9973 },
       });
       w.once('message', (m) => { resolve(m); void w.terminate(); });
       w.once('error', reject);

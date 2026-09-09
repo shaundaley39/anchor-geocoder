@@ -30,6 +30,11 @@ var singletons = map[rune]string{
 	'ð': "d", 'Ð': "d",
 	'þ': "th", 'Þ': "th",
 	'ı': "i", 'İ': "i",
+	// Greek final sigma. Go lowercases Σ to σ wherever it stands; JavaScript
+	// applies the contextual rule and gives ς at the end of a word, so
+	// "ΒΛΑΧΟΠΟΥΛΟΣ" folded two different ways on the two sides of the artifact.
+	// Mapping ς onto σ makes the question moot in both.
+	'ς': "σ",
 }
 
 // Cyrillic to Latin. Written for Serbo-Croatian, where the same language is
@@ -124,13 +129,20 @@ func Fold(s string) string {
 		folded = b.String() // folding is best-effort; never fail ingest on it
 	}
 
-	// Pass 3: everything that is not a letter or digit becomes a separator.
+	// Pass 3: everything that is not a letter or number becomes a separator.
+	//
+	// IsNumber, not IsDigit: IsDigit is category Nd alone, where the TypeScript
+	// port's \p{N} is Nd, Nl and No. That gap made "Třeboň Ⅱ" fold to "trebon"
+	// here and "trebon ⅱ" there — the index holding one term and the query
+	// asking for two, which is exactly the silent drift the two implementations
+	// are supposed to be held apart from. The 4,000-name fixture never sampled a
+	// Roman numeral; the per-anchor term ids in the artifact did.
 	var out strings.Builder
 	out.Grow(len(folded))
 	prevSep := true
 	for _, r := range folded {
 		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
 			out.WriteRune(r)
 			prevSep = false
 		case !prevSep:

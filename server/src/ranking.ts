@@ -6,10 +6,10 @@
  * ceiling on `relevance` computable from cheap data alone, which is how the
  * search stops early without losing a winner.
  */
-import { type Artifact, layerOf, toDeg, LAYER_PLACE, LAYER_STREET, ALT_SEP } from './artifact.js';
-import { tokens as foldTokens } from '@anchor-geocoder/core';
+import { type Artifact, layerOf, toDeg, LAYER_PLACE, LAYER_STREET, TERM_SEP } from './artifact.js';
 import { haversineMetres } from './geometry.js';
 import type { ParsedQuery } from './query.js';
+import type { ResolvedQuery, ResolvedToken } from './terms.js';
 import { resolveHouseNumber, HOUSE_EXACT } from './housenumber.js';
 
 /** How much a match on an alias is worth against a match on the canonical name. */
@@ -20,47 +20,46 @@ export interface RankingOptions {
   proximity?: { lat: number; lon: number };
 }
 
-/** Memoized on the artifact rather than stored in it: only reranked candidates
- * need it, so shipping it would cost several MB for nothing. */
-interface AnchorTokens {
-  /** Canonical name first, then each alternate, folded separately. */
-  names: string[][];
-  locality: string[];
-}
-
-function anchorTokens(a: Artifact, id: number): AnchorTokens {
-  const hit = a.tokenCache.get(id) as AnchorTokens | undefined;
-  if (hit !== undefined) return hit;
-
-  const names = [foldTokens(a.strings.get(a.anchorName[id]!))];
-  const altID = a.anchorAlt[id]!;
-  if (altID !== 0) {
-    for (const alt of a.strings.get(altID).split(ALT_SEP)) {
-      const toks = foldTokens(alt);
-      if (toks.length > 0) names.push(toks);
-    }
-  }
-  const t: AnchorTokens = { names, locality: foldTokens(a.strings.get(a.anchorLocal[id]!)) };
-  if (a.tokenCache.size < 200_000) a.tokenCache.set(id, t);
-  return t;
+/**
+ * Which of a section's tokens a query token has already claimed.
+ *
+ * Reused across calls rather than allocated per candidate: a search is
+ * synchronous from end to end, so nothing can interleave, and each request
+ * thread has its own copy of this module. Grown rather than fixed, because a
+ * name variant has no hard length limit.
+ */
+let nameClaimed: Uint8Array<ArrayBuffer> = new Uint8Array(64);
+let locClaimed: Uint8Array<ArrayBuffer> = new Uint8Array(64);
+function cleared(buf: Uint8Array<ArrayBuffer>, n: number): Uint8Array<ArrayBuffer> {
+  const out = buf.length >= n ? buf : new Uint8Array(Math.max(n, buf.length * 2));
+  out.fill(0, 0, n);
+  return out;
 }
 
 /**
+ * Finds a token of `terms[start, end)` that this query token matches and has
+ * not already been claimed, or -1.
+ *
  * Claiming makes this a multiset match. Without it "Praha Praha Praha" counted
  * three matches against the one-token name "Praha" and outscored "Praha"
  * itself. "Baden Baden" still finds both tokens of "Baden-Baden".
  *
- * `forms` is one query token's spellings. Retrieval already treats them as one
- * token, and so must scoring: an anchor found through the digraph spelling of
- * its own name would otherwise explain none of the query and score as if the
- * match were an accident.
+ * A token carries exact ids or prefix ranges, never both: every query token but
+ * the last has to match a term exactly, and the last is a prefix, so a
+ * half-typed word still matches. Both are integer comparisons now — the anchor
+ * knows its own term ids, so nothing here folds or decodes a string.
  */
-function claim(tokens: string[], used: boolean[], forms: string[], isLast: boolean): number {
-  for (let i = 0; i < tokens.length; i++) {
-    if (used[i]) continue;
-    const t = tokens[i]!;
-    for (const q of forms) {
-      if (isLast ? t.startsWith(q) : t === q) return i;
+function claim(
+  terms: Uint32Array, start: number, end: number, used: Uint8Array, q: ResolvedToken,
+): number {
+  for (let i = start; i < end; i++) {
+    if (used[i - start] === 1) continue;
+    const id = terms[i]!;
+    for (let k = 0; k < q.ids.length; k++) {
+      if (q.ids[k] === id) return i - start;
+    }
+    for (let k = 0; k < q.ranges.length; k += 2) {
+      if (id >= q.ranges[k]! && id < q.ranges[k + 1]!) return i - start;
     }
   }
   return -1;
@@ -76,47 +75,57 @@ function claim(tokens: string[], used: boolean[], forms: string[], isLast: boole
  * explains, locality at partial credit so adding a city helps rather than
  * dilutes; and how much of the name the query used.
  */
-export function relevance(a: Artifact, id: number, queryVariants: string[][]): number {
-  const { names, locality } = anchorTokens(a, id);
-  if (names.length === 0) return 0.05;
+export function relevance(a: Artifact, id: number, query: ResolvedQuery): number {
+  const qn = query.tokens.length;
+  if (qn === 0) return 0.05;
+
+  const terms = a.anchorTerms;
+  const from = a.anchorTermsOff[id]!;
+  const to = a.anchorTermsOff[id + 1]!;
+
+  // Section 0 is the locality; every section after it is a name variant, the
+  // canonical name first.
+  let locEnd = from;
+  while (locEnd < to && terms[locEnd] !== TERM_SEP) locEnd++;
+  const locLen = locEnd - from;
 
   // Best variant, not the canonical one and not all of them merged. Canonical
   // alone makes exonyms unrankable, since "prague" is not a token of "Praha" and
   // "Prague College" won. Merged, Kraków's 26 alternate names read as one very
   // long name, so the better documented a place is the worse it scores.
   let best = 0;
-  for (let v = 0; v < names.length; v++) {
-    const name = names[v]!;
-    if (name.length === 0) continue;
+  let variant = 0;
+  for (let vStart = locEnd + 1; vStart <= to; variant++) {
+    let vEnd = vStart;
+    while (vEnd < to && terms[vEnd] !== TERM_SEP) vEnd++;
+    const nameLen = vEnd - vStart;
+    if (nameLen === 0) { vStart = vEnd + 1; continue; }
 
+    nameClaimed = cleared(nameClaimed, nameLen);
+    locClaimed = cleared(locClaimed, locLen);
     let inName = 0;
     let inLocality = 0;
-    const nameUsedTokens: boolean[] = new Array(name.length).fill(false);
-    const locUsedTokens: boolean[] = new Array(locality.length).fill(false);
-    for (let i = 0; i < queryVariants.length; i++) {
-      const q = queryVariants[i]!;
-      const isLast = i === queryVariants.length - 1;
-      const inN = claim(name, nameUsedTokens, q, isLast);
+    for (let i = 0; i < qn; i++) {
+      const q = query.tokens[i]!;
+      const inN = claim(terms, vStart, vEnd, nameClaimed, q);
       if (inN >= 0) {
-        nameUsedTokens[inN] = true;
+        nameClaimed[inN] = 1;
         inName++;
         continue;
       }
-      const inL = claim(locality, locUsedTokens, q, isLast);
+      const inL = claim(terms, from, locEnd, locClaimed, q);
       if (inL >= 0) {
-        locUsedTokens[inL] = true;
+        locClaimed[inL] = 1;
         inLocality++;
       }
     }
 
     // Never zero: a POI standing on the queried street is a weak but legitimate
     // answer, and should rank last rather than vanish.
-    const explained = Math.max(
-      (inName + 0.6 * inLocality) / queryVariants.length, 0.05,
-    );
+    const explained = Math.max((inName + 0.6 * inLocality) / qn, 0.05);
     // Already at most 1, since `claim` consumes each name token once. Clamped
     // anyway, because maxRelevance is only sound if it is.
-    const nameUsed = Math.min(inName / name.length, 1);
+    const nameUsed = Math.min(inName / nameLen, 1);
     const base = explained * (0.1 + 0.9 * nameUsed);
 
     // Squared: a partial name match is a weaker signal than raw token overlap
@@ -126,7 +135,7 @@ export function relevance(a: Artifact, id: number, queryVariants: string[][]): n
     // Without this bonus an exactly matched street ("Nádražní", prior 1.0) loses
     // to a partial match on a school "ZŠ Nádražní" (1.8) or a suburb "Nádražní
     // Předměstí" (2.5).
-    if (inName === name.length && inName === queryVariants.length) score *= 2.5;
+    if (inName === nameLen && inName === qn) score *= 2.5;
 
     // An alias is weaker evidence than the name a feature actually goes by, so
     // matching one is discounted. Small on purpose: exonyms are aliases, and
@@ -134,9 +143,10 @@ export function relevance(a: Artifact, id: number, queryVariants: string[][]): n
     // discount an exact hit on a third alt_name beats a prefix hit on something
     // far more important — a Polish lake carrying "Warsz" as an alias outranked
     // Warszawa on a 0.14% margin.
-    if (v > 0) score *= ALIAS_DISCOUNT;
+    if (variant > 0) score *= ALIAS_DISCOUNT;
 
     if (score > best) best = score;
+    vStart = vEnd + 1;
   }
   return best || 0.05;
 }
@@ -221,10 +231,10 @@ export function scoreBound(
 
 /** The final score, as the search would compute it. The bound's test oracle. */
 export function scoreExact(
-  a: Artifact, id: number, text: number, parsed: ParsedQuery,
+  a: Artifact, id: number, text: number, parsed: ParsedQuery, query: ResolvedQuery,
   opts: RankingOptions = {},
 ): number {
-  const score = cheapScore(a, id, text, opts) * relevance(a, id, parsed.nameVariants);
+  const score = cheapScore(a, id, text, opts) * relevance(a, id, query);
   if (parsed.houseNumber === null) return score;
   return score * resolveHouseNumber(a, id, parsed.houseNumber).factor;
 }
