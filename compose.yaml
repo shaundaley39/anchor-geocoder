@@ -19,11 +19,13 @@ services:
       # One request thread per core the container is given, which is what
       # `cpus` below sets. Uncomment to pin it.
       # WORKERS: "4"
-    # Sized off the index rather than guessed: the artifact is held as typed
-    # arrays, so resident memory starts at its size on disk — 4.4 GB for the 42
-    # countries — and each request thread adds ~70 MB of decoded strings and
-    # folded tokens on top. Threads share the index itself, so the count barely
-    # moves this number. Too low a limit is an OOM kill during the first read.
+    # Sized off the index plus the pool, not guessed. The artifact is held as
+    # typed arrays shared by every thread, so resident memory starts at its size
+    # on disk — 4.4 GB for the 42 countries — and each request thread adds ~68 MB
+    # idle and up to ~290 MB while it is actually serving, nearly all of it V8
+    # heap for in-flight responses. At the four threads below that is ~5.6 GB
+    # under load; raise both together. Too low a limit is an OOM kill, either
+    # during the first read or later under traffic.
     mem_limit: 8g
     # Throughput is very nearly linear in this, and nothing else the service
     # does is a bottleneck before it.

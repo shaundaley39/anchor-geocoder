@@ -12,7 +12,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
 import {
-  loadBundle, artifactFromBundle, loadArtifact, type ArtifactBundle,
+  loadBundle, artifactFromBundle, loadArtifact, StringTable, type ArtifactBundle,
 } from '../src/artifact.js';
 import { buildReverseIndex, coverageBBox } from '../src/reverse.js';
 import { forward } from '../src/forward.js';
@@ -45,6 +45,28 @@ describe('the index is loaded once and shared', () => {
     expect(a.post.buffer).toBe(b.post.buffer);
     expect(a.addrLat.buffer).toBe(b.addrLat.buffer);
     expect(a.localityScore.buffer).toBe(b.localityScore.buffer);
+  });
+
+  /**
+   * Not a sample of the arrays but all of them: a field added later that ends
+   * up on a private buffer would be copied into every thread, silently, and
+   * only show up as a memory bill.
+   */
+  it('leaves no part of the artifact unshared', () => {
+    const a = artifactFromBundle(bundle) as unknown as Record<string, unknown>;
+    const priv: string[] = [];
+    const check = (name: string, v: ArrayBufferView): void => {
+      if (!(v.buffer instanceof SharedArrayBuffer)) priv.push(name);
+    };
+    for (const [k, v] of Object.entries(a)) {
+      if (ArrayBuffer.isView(v)) check(k, v);
+      else if (v instanceof StringTable) {
+        const t = v as unknown as { blob: Uint8Array; offsets: Uint32Array };
+        check(`${k}.blob`, t.blob);
+        check(`${k}.offsets`, t.offsets);
+      }
+    }
+    expect(priv).toEqual([]);
   });
 
   it('keeps the per-thread caches per thread', () => {

@@ -49,7 +49,7 @@ This takes time and resources - it's a stress test, which I ran twice, rather th
 ```sh
 make all COUNTRIES=@europe        # all 42, ~30 GB of extracts, 42m47s; building requires 31.1 GB of RAM
 make serve                        # boots in 908 ms; runnning requires 4.86 GB of RAM
-make serve-pool                   # the same index, one request thread per core — 4.28 GB plus ~73 MB a thread
+make serve-pool                   # the same index, one request thread per core — 4.28 GB idle, ~290 MB a thread under load
 ```
 
 ### Build the World
@@ -109,9 +109,25 @@ Reverse geocoding asks two questions and uses a different structure for each. "I
 
 A geocode is pure CPU. There is no I/O inside a query to yield on, so one Node thread serves them strictly one at a time and the service tops out at 1 / service time no matter how large the machine is - a few hundred a second for text search.
 
-The fix is a thread per core, and the reason it can be threads rather than processes is the index itself. It is read-only after load and, for the 42 countries, 4.4 GB of it. So [`server/src/artifact.ts`](server/src/artifact.ts) reads each file straight into a `SharedArrayBuffer` and [`server/src/pool.ts`](server/src/pool.ts) hands that bundle to every worker, which wraps it in typed-array views of the same bytes. A thread costs an event loop, a Fastify instance and its own caches of decoded strings and folded tokens - measured at ~73 MB - rather than another copy of the index. Sixteen threads take resident memory from 4.28 GB to 5.37 GB; sixteen processes would have taken it to 68 GB.
+The fix is a thread per core, and the reason it can be threads rather than processes is the index itself. It is read-only after load and, for the 42 countries, 4.4 GB of it. So [`server/src/artifact.ts`](server/src/artifact.ts) reads each file straight into a `SharedArrayBuffer` and [`server/src/pool.ts`](server/src/pool.ts) hands that bundle to every worker, which wraps it in typed-array views of the same bytes. A thread costs an event loop, a Fastify instance and a V8 heap, not another copy of the index. Audited rather than assumed: every array the query code reads is a view on a `SharedArrayBuffer`, 4.458 GB of them, and the only per-thread objects are the manifest, a 42-entry country table and two empty caches.
 
-(Those caches are worth a word. A decoded string cannot be shared between threads, so the cache for it is per thread and its cost is multiplied by the pool. Caching by array slot - the obvious thing at one thread - is 8 bytes x 13.9M strings whether or not they are ever asked for, which across sixteen threads was 2.5 GB of mostly empty array, more than half the index. A capped map instead pays only for what was used: 7.94 GB down to 5.37 GB at sixteen threads, for a difference in throughput that sits inside the run-to-run noise.)
+#### What a thread actually costs
+
+| threads | idle | peak under load | settled afterwards |
+| ---: | ---: | ---: | ---: |
+| 1 | 4.28 GB | 4.62 GB | 4.40 GB |
+| 8 | 4.71 GB | 6.61 GB | 5.20 GB |
+| 16 | 5.30 GB | 8.95 GB | 6.11 GB |
+
+So ~68 MB per thread resident before it does anything, and ~290 MB at peak while it is serving - and it is the second number a deployment has to be sized on, since that is what an OOM killer sees. Sixteen threads still beat sixteen processes, which would have started at 68 GB before serving a request, but "the index is shared so threads are nearly free" would be an overstatement.
+
+Where the ~290 MB goes, in decreasing order:
+
+- **The V8 heap under load** - in-flight GeoJSON objects and the JSON being serialised from them. This is most of it, and it is transient: peak falls back to 6.11 GB at sixteen threads within a minute of the traffic stopping. Bounding it is a `resourceLimits.maxOldGenerationSizeMb` away, at the risk of turning a memory spike into a dead worker.
+- **~68 MB of idle floor** - the isolate, the Fastify instance, the compiled AJV validators and `fast-json-stringify` serializers, the OpenAPI document and the docs bundle, all built once per thread. Measured against the 676 KB demo index, where the index itself is a rounding error: 175 MB at one thread, 1124 MB at sixteen.
+- **The two caches**, which are per thread because decoded strings and folded tokens cannot be shared, and which are smaller than they look. Sizing the folded-token cache down by the thread count - so the pool holds what one thread used to - costs 56% of city-name throughput and saves 0.17 GB. It is not the thing to economise on.
+
+(One earlier version of the string cache was: an array slot per entry, 8 bytes x 13.9M strings whether or not they are ever asked for, allocated eagerly per thread. That alone was 2.5 GB across sixteen threads, more than half the index, and it is why the cache is a capped map instead.)
 
 Each worker runs a complete Fastify instance on its own HTTP server (supplied through Fastify's `serverFactory`), and there is no dispatcher in front of them: the kernel does the balancing. On Linux each worker binds its own socket with `SO_REUSEPORT` and the kernel hashes connections across them. macOS has `SO_REUSEPORT` but does not load-balance it, and Node rejects the option outright, so the pool falls back to the pre-fork model - the first worker binds, the rest accept on its descriptor, which they can because threads share a descriptor table. The strategy is probed at boot, not assumed.
 
@@ -132,9 +148,9 @@ Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the 42-countr
 | mixed traffic | 173 | 1,108 | 6.4x | 5.8 ms |
 | pathological (see below) | 8 | 41 | 5.1x | 125 ms |
 
-Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB.
+Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep, *idle*: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB - see the table above for what it reaches while serving.
 
-The same sweep in a container, scaling the CPU allocation rather than the thread count, gives 154, 304, 561, 1010 rps at `--cpus` 1, 2, 4, 8 - so a deployment gets what it pays for, and `docker stats` shows 4.24, 4.37, 4.52, 4.84 GiB, the index being shared rather than replicated.
+The same sweep in a container, scaling the CPU allocation rather than the thread count, gives 154, 304, 561, 1010 rps at `--cpus` 1, 2, 4, 8 - so a deployment gets what it pays for, and `docker stats` shows 4.24, 4.37, 4.52, 4.84 GiB at rest, the index being shared rather than replicated.
 
 So the limit is now cores and per-query service time, and the cost per query is the thing worth attacking next. Two specifics:
 

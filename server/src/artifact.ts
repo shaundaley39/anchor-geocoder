@@ -22,8 +22,13 @@ export const COORD_SCALE = 1e7;
 /** Layout version the server understands. */
 export const SUPPORTED_VERSION = 8;
 
-/** Decoded strings kept per table per thread. Roughly 30 MB at the cap, which
- * a sixteen-thread pool can afford and a long-running one will reach. */
+/**
+ * Decoded strings kept per table per thread, so that a cache which would
+ * otherwise grow to the size of the table has a ceiling. Measured against a
+ * cap of 5,000 it is worth a few percent of throughput and costs well under a
+ * gigabyte across a sixteen-thread pool — small next to the request heap, which
+ * is what actually sets a pool's peak.
+ */
 const CACHE_ENTRIES = 500_000;
 
 export interface Manifest {
