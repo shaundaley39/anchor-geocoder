@@ -230,6 +230,27 @@ maybe('against the built index', () => {
       }
     });
 
+    /**
+     * Retrieval tests membership with a binary search rather than building a
+     * set, which is only correct while the writer keeps emitting postings in
+     * ascending anchor order.
+     */
+    it('stores each posting list in ascending anchor order', () => {
+      let checked = 0;
+      // Every list would be 100M reads; a stride covers the file for the price
+      // of a test that still runs in a second.
+      for (let t = 0; t < a.manifest.num_terms; t += 37) {
+        const p = a.post.subarray(a.postOff[t]!, a.postOff[t + 1]!);
+        for (let i = 1; i < p.length; i++) {
+          if (p[i - 1]! >= p[i]!) {
+            throw new Error(`term ${t} posting ${i}: ${p[i - 1]!} >= ${p[i]!}`);
+          }
+        }
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(1000);
+    });
+
     it('stores terms in sorted order so prefix search is a binary search', () => {
       for (let i = 1; i < a.manifest.num_terms; i += 31) {
         expect(a.terms.get(i) > a.terms.get(i - 1)).toBe(true);

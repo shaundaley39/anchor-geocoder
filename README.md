@@ -141,21 +141,32 @@ Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the 42-countr
 
 | query shape | 1 thread | 8 threads | speedup | per thread |
 | --- | ---: | ---: | ---: | ---: |
-| reverse, lat/lon | 10,312 | 79,419 | 7.7x | 0.10 ms |
-| street + house number | 552 | 3,776 | 6.8x | 1.8 ms |
-| full city name | 496 | 3,357 | 6.8x | 2.0 ms |
-| 3-character autocomplete prefix | 104 | 660 | 6.3x | 9.6 ms |
-| mixed traffic | 173 | 1,108 | 6.4x | 5.8 ms |
-| pathological (see below) | 8 | 41 | 5.1x | 125 ms |
+| reverse, filtered to a far-off country | 59,750 | 162,644 | 2.7x | 0.02 ms |
+| reverse, lat/lon | 10,194 | 77,672 | 7.6x | 0.10 ms |
+| street + house number | 584 | 4,037 | 6.9x | 1.7 ms |
+| full city name | 508 | 3,360 | 6.6x | 2.0 ms |
+| all-common-word names | 200 | 1,310 | 6.6x | 4.9 ms |
+| mixed traffic | 177 | 1,126 | 6.4x | 5.9 ms |
+| 3-character autocomplete prefix | 106 | 667 | 6.3x | 9.6 ms |
+| reverse at max radius and page size | 63 | 460 | 7.3x | 15.9 ms |
 
 Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep, *idle*: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB - see the table above for what it reaches while serving.
 
 The same sweep in a container, scaling the CPU allocation rather than the thread count, gives 154, 304, 561, 1010 rps at `--cpus` 1, 2, 4, 8 - so a deployment gets what it pays for, and `docker stats` shows 4.24, 4.37, 4.52, 4.84 GiB at rest, the index being shared rather than replicated.
 
-So the limit is now cores and per-query service time, and the cost per query is the thing worth attacking next. Two specifics:
+**Reverse is essentially free** and text search is not, by two orders of magnitude. A deployment serving mostly map clicks and one serving mostly autocomplete need very different sizing, which is why the table is per shape and the blended figure carries a stated mix.
 
-- **The tail is very long.** "Rue de la Paix" takes ~250ms because every one of its tokens is among the commonest words in French: the posting lists barely narrow each other and the reranker runs to its `MAX_RERANK` cap. Nothing inside a query yields, so one of those occupies a whole thread and everything queued behind it on that thread waits. Capping work by *estimated* cost, or pruning candidates on locality before scoring, would do more for the worst case than more threads.
-- **Reverse is essentially free** and text search is not, by two orders of magnitude. A deployment serving mostly map clicks and one serving mostly autocomplete need very different sizing, which is why the table is per shape and the blended figure carries a stated mix.
+### The Expensive Tail
+
+Two query shapes used to cost 100x what they should, and both turned out to be implementation, not the price of the answer. The measurements below are single-threaded and against the 42-country index.
+
+**Names made entirely of common words.** "Rue de la Paix" took 249ms, of which 242ms was retrieval — it reranked only 78 candidates and returned 1,764. Its three complete tokens hold 1.1M, 2.3M and 1.2M postings, and membership was being tested by building a `Set` from each: 4.6M insertions to discard 4.6M of them. Posting lists are written in ascending anchor order, so membership is a binary search and needs nothing built at all; and the walk should start from whichever candidate set is smallest, which for this query is the last token. 249ms became 1.2ms, and "Rue du General de Gaulle" 191ms became 2.0ms. As a load profile it went from 200 to 1,310 requests a second.
+
+**A reverse search filtered to a country that is nowhere near the point.** `country=pt` clicked on Berlin took 110ms against 0.04ms unfiltered — 2,750x — because the filter rejects every candidate, so the radius escalates to its 50km cap and the final sweep measures every point in a 100km box around a dense city before discarding all of them. The fix is to know where each country is: [`coverage()`](server/src/reverse.ts) records a bounding box per country in the pass it already makes at boot, built from anchor extents and every address hanging off them, so it can never rule out a match the search would have found. Four comparisons settle it. 110ms became 0.001ms, and over a sweep of the whole coverage box the mean went from 2.58ms to 0.008ms and the worst case from 179ms to 2.65ms.
+
+What is *not* expensive, contrary to the obvious guess: clicking on nothing. A point in the mid-Atlantic, the Baltic, or the Arctic costs 0.01-0.28ms, less than a click on central Prague, because an empty region is where a k-d tree prunes hardest. Over 4,000 uniform points in the coverage box, reverse geocoding at the default radius averages 0.020ms with a worst case of 1.04ms. It follows that giving up when nothing is within a few hundred metres would buy nothing and cost a great deal: of the points that do get an answer, 82% get it from beyond 200m, and they are real answers — a village 0.2km from a field, a converter station 12.8km off the Dutch coast.
+
+What remains, and is left alone deliberately: a reverse query that asks for 50 results within 50km from a point in open water near a dense coast really does have to sweep a 100km box, and costs ~16ms of thread time. That is under twice a three-character autocomplete, it needs the client to ask for both the maximum radius and the maximum page size, and every way of capping it - a visit budget, an early cut-off - trades a real result for the saving. The honest containment for that shape is load shedding on event-loop delay rather than second-guessing the query.
 
 ### Container Image
 
@@ -190,13 +201,13 @@ Many!
 - the current rate limiting should be eliminated, and replaced with API keys/ user-based usage restriction
 - make it possible for a running server to pick up a new index without downtime
 - actually deploy this to a chosen cloud infrastructure (along with some CD setup)
-- the pathological text queries above (every token a very common word) cost ~250ms and block a thread for all of it; bounding work by estimated cost would help the tail more than any amount of hardware
+- there is no load shedding: a saturated pool queues rather than refusing, where returning 503 with Retry-After off an event-loop-delay watch would be both cheaper and more honest to the client
 - a worker that dies takes the process down with it, because the listening socket cannot be handed to a replacement without redoing the bind; a supervisor restart covers it, but in-flight requests are lost
 - graceful shutdown drains nothing: under the shared-descriptor fallback the listening socket belongs to all the threads at once, so they are stopped together
 - we could further increase throughput, if we were lucky enough to have to, by setting up horizontal scaling
 - in production, observability beyond structured logs would be nice
 - explore caching and CDN layer (e.g. for handling an autocomplete load)
-- limit the damage from more expensive queries (e.g. lat/lon far from any places in the index is currently more painful than it needs to be - many queries like that could be a problem)
+- broad prefixes still build a candidate map over every posting of a very common term ("de" alone reaches 2.3M), which the search then discards; champion lists — a short, importance-ordered posting list per high-frequency term — would bound that and improve the answers, at an index format change
 - more data beyond OSM
 - it would be nice to have a frontend map UI consuming this API - to catch any bugs, get a gauge of its usefulness and prioritize further work
 

@@ -44,6 +44,9 @@ const HEAVY = ['Rue de la Paix', 'Via Roma 5', 'Rue du General de Gaulle',
   'Piazza del Popolo'];
 const POINTS = [[52.2297, 21.0122], [50.0755, 14.4378], [48.2082, 16.3738],
   [52.52, 13.405], [45.4642, 9.19], [59.3293, 18.0686]];
+/** Open water, ice and empty mountain: inside the coverage box, far from data. */
+const AWKWARD = [[55.90, 19.20], [53.20, 3.30], [43.30, 14.60], [46.55, 8.05],
+  [74.0, 20.0], [52.724, 4.331], [35.0, 18.0], [61.0, 31.5]];
 
 const PROFILES = {
   /** Three characters into a search box: the widest posting scan there is. */
@@ -62,6 +65,20 @@ const PROFILES = {
   },
   /** The tail: multi-token names made entirely of very common words. */
   heavy: (i) => `/v1/geocode?q=${encodeURIComponent(HEAVY[i % HEAVY.length])}&limit=10`,
+  /**
+   * Reverse geocoding asked the awkward way: the widest radius, the largest
+   * page, and points that are mostly nowhere near anything. What a bored client
+   * would send, rather than what a map would.
+   */
+  'reverse-wide': (i) => {
+    const [lat, lon] = AWKWARD[i % AWKWARD.length];
+    return `/v1/geocode?lat=${lat}&lon=${lon}&limit=50&radius=50000`;
+  },
+  /** The same, filtered to a country nowhere near the point. */
+  'reverse-filtered': (i) => {
+    const [lat, lon] = POINTS[i % POINTS.length];
+    return `/v1/geocode?lat=${lat}&lon=${lon}&limit=50&radius=50000&country=pt`;
+  },
 };
 
 /** What a search box in front of a map actually sends, roughly. */

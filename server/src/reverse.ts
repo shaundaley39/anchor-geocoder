@@ -44,6 +44,14 @@ export interface ReverseIndex {
   bbox: BBox;
   /** Number of address points; ids at or above this index anchors. */
   addressCount: number;
+  /** Extent of each country's data, by country id; null where it has none. */
+  countryBBox: (BBox | null)[];
+}
+
+/** What one pass over the data can say about where it is. */
+export interface Coverage {
+  bbox: BBox;
+  byCountry: (BBox | null)[];
 }
 
 function cellKey(lat: number, lon: number): number {
@@ -65,33 +73,70 @@ function findCell(a: Artifact, key: number): number {
   return -1;
 }
 
+/** Grows a fixed-point box to hold a point. */
+function extend(b: { minLat: number; maxLat: number; minLon: number; maxLon: number },
+  lat: number, lon: number): void {
+  if (lat < b.minLat) b.minLat = lat;
+  if (lat > b.maxLat) b.maxLat = lat;
+  if (lon < b.minLon) b.minLon = lon;
+  if (lon > b.maxLon) b.maxLon = lon;
+}
+
+const EMPTY = (): { minLat: number; maxLat: number; minLon: number; maxLon: number } =>
+  ({ minLat: Infinity, maxLat: -Infinity, minLon: Infinity, maxLon: -Infinity });
+
 /**
- * The extent of the data, as a scan over every address point.
+ * Where the data is: overall, and per country.
  *
- * Separate from the index it belongs to because it is the one part of the boot
- * that is real work — 90M reads — and it is the same answer in every thread, so
- * the pool computes it once and hands it to the workers.
+ * One pass, because it is the one part of the boot that is real work and every
+ * thread would reach the same answer, so the pool does it once and hands the
+ * result to the workers.
+ *
+ * The per-country boxes exist to answer "could there be anything of this
+ * country near this point" before searching for it. Built from anchor extents
+ * and every address hanging off them rather than from anchor centroids, so the
+ * answer is never a false no — it is used to skip work, and skipping work that
+ * would have found something is a wrong result, not an optimisation.
  */
-export function coverageBBox(a: Artifact): BBox {
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-  for (let i = 0; i < a.manifest.num_addresses; i++) {
-    const lat = a.addrLat[i]!;
-    const lon = a.addrLon[i]!;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
-    if (lon < minLon) minLon = lon;
-    if (lon > maxLon) maxLon = lon;
+export function coverage(a: Artifact): Coverage {
+  const all = EMPTY();
+  const byCountry = Array.from({ length: 256 }, EMPTY);
+
+  // Addresses are grouped behind the anchor they hang off and the grouping is a
+  // partition, so walking anchors reaches every address exactly once and the
+  // overall box comes out of the same walk. It stays address-only, as it was:
+  // it is the coverage the API reports and the transposition check tests
+  // against, and anchor extents reach places no address does.
+  for (let id = 0; id < a.manifest.num_anchors; id++) {
+    const c = byCountry[a.anchorCountry[id]!]!;
+    extend(c, a.anchorMinLat[id]!, a.anchorMinLon[id]!);
+    extend(c, a.anchorMaxLat[id]!, a.anchorMaxLon[id]!);
+    const from = a.anchorAddrStart[id]!;
+    const to = from + a.anchorAddrCount[id]!;
+    for (let i = from; i < to; i++) {
+      const lat = a.addrLat[i]!;
+      const lon = a.addrLon[i]!;
+      extend(c, lat, lon);
+      extend(all, lat, lon);
+    }
   }
-  return {
-    minLat: toDeg(minLat), maxLat: toDeg(maxLat),
-    minLon: toDeg(minLon), maxLon: toDeg(maxLon),
-  };
+
+  const deg = (b: ReturnType<typeof EMPTY>): BBox | null => (b.minLat === Infinity ? null : {
+    minLat: toDeg(b.minLat), maxLat: toDeg(b.maxLat),
+    minLon: toDeg(b.minLon), maxLon: toDeg(b.maxLon),
+  });
+  return { bbox: deg(all)!, byCountry: byCountry.map(deg) };
+}
+
+/** The overall box on its own, for callers that want nothing else. */
+export function coverageBBox(a: Artifact): BBox {
+  return coverage(a).bbox;
 }
 
 /** Both spatial structures arrive precomputed, so this is a scan for the
  * coverage box and nothing else. Building them here cost 5.4s of startup, on
  * every replica on every deploy. */
-export function buildReverseIndex(a: Artifact, bbox?: BBox): ReverseIndex {
+export function buildReverseIndex(a: Artifact, cov?: Coverage): ReverseIndex {
   const nAddr = a.manifest.num_addresses;
 
   // Addresses and anchors in one tree: without the anchors a click can only
@@ -104,7 +149,8 @@ export function buildReverseIndex(a: Artifact, bbox?: BBox): ReverseIndex {
     a.kdPerm, getX, getY, a.manifest.kd_node_size,
   );
 
-  return { tree, addressCount: nAddr, bbox: bbox ?? coverageBBox(a) };
+  const c = cov ?? coverage(a);
+  return { tree, addressCount: nAddr, bbox: c.bbox, countryBBox: c.byCountry };
 }
 
 export function inBBox(b: BBox, lat: number, lon: number): boolean {
@@ -157,6 +203,22 @@ export function reverse(
 
   const okCountry = (anchorID: number) =>
     wantCountry === undefined || a.anchorCountry[anchorID] === wantCountry;
+
+  // A filter that nothing nearby can satisfy is the expensive case, because the
+  // radius escalates to its cap looking for a match and the last sweep measures
+  // every point in a 100km box before discarding it: country=pt clicked on
+  // Berlin cost 110ms against 0.04ms unfiltered. The country's own extent
+  // settles it in four comparisons, and settles it exactly — the box is built
+  // from anchor extents and their addresses, so it cannot rule out a match that
+  // the search would have found.
+  if (wantCountry !== undefined) {
+    const box = idx.countryBBox[wantCountry];
+    if (box === undefined || box === null) return [];
+    const padLat = maxRadius / M_PER_DEG_LAT;
+    const padLon = padLat / Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
+    if (lat < box.minLat - padLat || lat > box.maxLat + padLat
+      || lon < box.minLon - padLon || lon > box.maxLon + padLon) return [];
+  }
 
   // ---- tier 1: regions containing the click ------------------------------
   const containing: Candidate[] = [];

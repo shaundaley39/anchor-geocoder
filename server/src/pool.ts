@@ -26,7 +26,7 @@ import { createServer } from 'node:net';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { loadBundle, artifactFromBundle, type Manifest } from './artifact.js';
-import { coverageBBox } from './reverse.js';
+import { coverage } from './reverse.js';
 import type { ListenPlan, WorkerInit, WorkerMessage } from './worker.js';
 
 export interface PoolOptions {
@@ -133,10 +133,10 @@ export async function startPool(o: PoolOptions): Promise<Pool> {
   const bundle = await loadBundle(o.indexDir);
   const loadMs = performance.now() - t0;
 
-  // One scan of 90M points, here rather than in each worker: it is the only
-  // part of a worker's boot that is not free, and every thread would compute
-  // the same answer.
-  const bbox = coverageBBox(artifactFromBundle(bundle));
+  // One scan of the whole artifact, here rather than in each worker: it is the
+  // only part of a worker's boot that is not free, and every thread would
+  // compute the same answer.
+  const cov = coverage(artifactFromBundle(bundle));
 
   const t1 = performance.now();
   const reusePort = await supportsReusePort(o.host);
@@ -145,7 +145,7 @@ export async function startPool(o: PoolOptions): Promise<Pool> {
   // The first worker binds the socket. Under reuseport that is all it is; under
   // shared-fd the others need its descriptor, so it has to be listening before
   // they start.
-  const first = spawn(entry, { bundle, bbox, listen: bind });
+  const first = spawn(entry, { bundle, coverage: cov, listen: bind });
   const { fd, port } = await first.listening;
   const bound = port ?? o.port;
 
@@ -164,7 +164,7 @@ export async function startPool(o: PoolOptions): Promise<Pool> {
 
   const rest = Array.from(
     { length: o.workers - 1 },
-    () => spawn(entry, { bundle, bbox, listen: plan }),
+    () => spawn(entry, { bundle, coverage: cov, listen: plan }),
   );
   const workers = [first, ...rest];
   try {

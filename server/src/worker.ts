@@ -13,7 +13,7 @@
 import { createServer, type Server } from 'node:http';
 import { parentPort, workerData } from 'node:worker_threads';
 import { artifactFromBundle, type ArtifactBundle } from './artifact.js';
-import { buildReverseIndex, type BBox } from './reverse.js';
+import { buildReverseIndex, type Coverage } from './reverse.js';
 import { buildServer } from './server.js';
 
 /** How a worker is told to listen. */
@@ -25,7 +25,8 @@ export type ListenPlan =
 
 export interface WorkerInit {
   bundle: ArtifactBundle;
-  bbox: BBox;
+  /** Where the data is, scanned once by the pool rather than per thread. */
+  coverage: Coverage;
   listen: ListenPlan;
 }
 
@@ -56,7 +57,7 @@ async function main(): Promise<void> {
   const init = workerData as WorkerInit;
 
   const artifact = artifactFromBundle(init.bundle);
-  const reverseIndex = buildReverseIndex(artifact, init.bbox);
+  const reverseIndex = buildReverseIndex(artifact, init.coverage);
 
   let server!: Server;
   const app = await buildServer({

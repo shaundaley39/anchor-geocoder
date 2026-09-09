@@ -12,9 +12,9 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
 import {
-  loadBundle, artifactFromBundle, loadArtifact, StringTable, type ArtifactBundle,
+  loadBundle, artifactFromBundle, loadArtifact, StringTable, toDeg, type ArtifactBundle,
 } from '../src/artifact.js';
-import { buildReverseIndex, coverageBBox } from '../src/reverse.js';
+import { buildReverseIndex, coverage, coverageBBox } from '../src/reverse.js';
 import { forward } from '../src/forward.js';
 import { reverse } from '../src/reverse.js';
 import { cpuBudget, canSpawnWorkers, workerEntry, startPool, type Pool } from '../src/pool.js';
@@ -109,8 +109,30 @@ describe('coverage box', () => {
 
   it('is honoured when the pool passes it in', async () => {
     const a = await loadArtifact(demo);
-    const given = { minLat: 1, maxLat: 2, minLon: 3, maxLon: 4 };
-    expect(buildReverseIndex(a, given).bbox).toBe(given);
+    const given = { bbox: { minLat: 1, maxLat: 2, minLon: 3, maxLon: 4 }, byCountry: [] };
+    expect(buildReverseIndex(a, given).bbox).toBe(given.bbox);
+  });
+
+  /**
+   * The per-country boxes gate whether a filtered reverse search runs at all,
+   * so one that is too small silently loses results. Checked against every
+   * point the search could actually return.
+   */
+  it('bounds each country around everything that country holds', async () => {
+    const a = await loadArtifact(demo);
+    const { byCountry } = coverage(a);
+    for (let id = 0; id < a.manifest.num_anchors; id++) {
+      const box = byCountry[a.anchorCountry[id]!];
+      expect(box).not.toBeNull();
+      const within = (lat: number, lon: number) =>
+        lat >= box!.minLat && lat <= box!.maxLat && lon >= box!.minLon && lon <= box!.maxLon;
+      expect(within(toDeg(a.anchorMinLat[id]!), toDeg(a.anchorMinLon[id]!))).toBe(true);
+      expect(within(toDeg(a.anchorMaxLat[id]!), toDeg(a.anchorMaxLon[id]!))).toBe(true);
+      const from = a.anchorAddrStart[id]!;
+      for (let i = from; i < from + a.anchorAddrCount[id]!; i++) {
+        expect(within(toDeg(a.addrLat[i]!), toDeg(a.addrLon[i]!))).toBe(true);
+      }
+    }
   });
 });
 

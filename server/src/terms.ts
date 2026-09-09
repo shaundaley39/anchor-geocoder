@@ -18,6 +18,31 @@ function postings(a: Artifact, termID: number): Uint32Array {
 }
 
 /**
+ * Whether any of a token's posting lists holds `anchor`, by binary search.
+ *
+ * The lists are written in ascending anchor order, so this needs nothing built
+ * first — which is the point. Testing membership by building a `Set` costs the
+ * length of the list rather than its logarithm, and the list can be enormous
+ * while the answer is tiny: "Rue de la Paix" has three tokens with 1.1M, 2.3M
+ * and 1.2M postings and 1,764 results, so it was doing 4.6M insertions to
+ * discard 4.6M of them. That query spent 242ms of its 249ms here.
+ */
+function holds(lists: Uint32Array[], anchor: number): boolean {
+  for (const p of lists) {
+    let lo = 0;
+    let hi = p.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const v = p[mid]!;
+      if (v === anchor) return true;
+      if (v < anchor) lo = mid + 1;
+      else hi = mid - 1;
+    }
+  }
+  return false;
+}
+
+/**
  * All tokens but the last match exactly; the last is a prefix, so a half-typed
  * word still matches.
  *
@@ -107,27 +132,35 @@ export function candidates(a: Artifact, nameVariants: string[][], maxCandidates:
     return prefixHits;
   }
 
-  const membership = lists.map((ls) => {
-    const set = new Set<number>();
-    for (const l of ls) for (const anchor of l) set.add(anchor);
-    return set;
-  });
-
-  // Still walked as posting arrays rather than as the set: one form is the
-  // common case by far, and an anchor listed under two forms only recomputes
-  // the score it already has.
+  // Every complete token has to match, so the work is bounded by the smallest
+  // candidate set among them and the prefix hits: walk that one and test the
+  // rest. Which is smallest is a property of the query, not of the query shape
+  // — "Rue de la Paix" is carried by its last token, "Nowa Wies 12" by its
+  // first — so it is chosen per request rather than assumed.
   let smallest = 0;
   for (let i = 1; i < sizes.length; i++) if (sizes[i]! < sizes[smallest]!) smallest = i;
+  const weightSum = weights.reduce((t, w) => t + w, 0);
+
+  if (prefixHits.size <= sizes[smallest]!) {
+    for (const [anchor, pw] of prefixHits) {
+      let ok = true;
+      for (const token of lists) {
+        if (!holds(token, anchor)) { ok = false; break; }
+      }
+      if (ok) scores.set(anchor, pw + weightSum);
+    }
+    return scores;
+  }
+
   for (const list of lists[smallest]!) for (const anchor of list) {
     const pw = prefixHits.get(anchor);
     if (pw === undefined) continue;
-    let total = pw;
     let ok = true;
-    for (let i = 0; i < membership.length; i++) {
-      if (!membership[i]!.has(anchor)) { ok = false; break; }
-      total += weights[i]!;
+    for (let i = 0; i < lists.length; i++) {
+      // Already known to hold it: this is the list being walked.
+      if (i !== smallest && !holds(lists[i]!, anchor)) { ok = false; break; }
     }
-    if (ok) scores.set(anchor, total);
+    if (ok) scores.set(anchor, pw + weightSum);
   }
   return scores;
 }
