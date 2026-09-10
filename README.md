@@ -162,23 +162,25 @@ Two consequences worth knowing. A connection belongs to one worker for its lifet
 
 Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the world index (58.5M anchors, 173.8M addresses) on an M4 Max - 12 performance cores, 4 efficiency cores, 48 GB - with the load generator on the same machine. Requests per second, closed-loop at 96 connections:
 
-| query shape | 1 thread | 8 threads | 16 threads | speedup at 8 | per thread |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| reverse, filtered to a far-off country | 59,397 | 168,320 | 164,447 | 2.8x | 0.05 ms |
-| reverse, lat/lon | 10,290 | 78,024 | 89,599 | 7.6x | 0.10 ms |
-| full city name | 489 | 3,689 | 5,267 | 7.5x | 2.2 ms |
-| street + house number | 545 | 3,633 | 5,234 | 6.7x | 2.2 ms |
-| all-common-word names | 163 | 1,107 | 1,622 | 6.8x | 7.2 ms |
-| mixed traffic | 127 | 824 | 1,205 | 6.5x | 9.7 ms |
-| 5,000 distinct real names, one per request | 113 | 546 | 764 | 4.8x | 14.7 ms |
-| reverse at max radius and page size | 71 | 508 | 765 | 7.2x | 15.7 ms |
-| 3-character autocomplete prefix | 75 | 488 | 682 | 6.5x | 16.4 ms |
+| query shape | 1 thread | 8 threads | speedup | per thread |
+| --- | ---: | ---: | ---: | ---: |
+| reverse, filtered to a far-off country | 59,397 | 168,320 | 2.8x | 0.05 ms |
+| reverse, lat/lon | 10,290 | 78,024 | 7.6x | 0.10 ms |
+| full city name | 489 | 3,689 | 7.5x | 2.2 ms |
+| street + house number | 545 | 3,633 | 6.7x | 2.2 ms |
+| all-common-word names | 163 | 1,107 | 6.8x | 7.2 ms |
+| mixed traffic | 127 | 824 | 6.5x | 9.7 ms |
+| 5,000 distinct real names, one per request | 113 | 546 | 4.8x | 14.7 ms |
+| reverse at max radius and page size | 71 | 508 | 7.2x | 15.7 ms |
+| 3-character autocomplete prefix | 75 | 488 | 6.5x | 16.4 ms |
+
+Eight threads, and no column beyond it. This is a laptop running its own load generator, and macOS schedules the desktop and everything else on it ahead of a background process, so past eight threads the figures say more about what the machine was willing to give the server than about the server. Read the speedups as a floor rather than a measurement: some of the shortfall below 8x is that same contention, on a box with twelve performance cores that is also spending several of them generating the load.
 
 A fresh server for every row, which is a correction to how I measured this before. Nine profiles in one process does not measure the last of them: `heavy` and `diverse` leave a heap the next profile pays to collect, and the harness's five second gap is not enough. Measured side by side, autocomplete read 346 rps at eight threads running eighth in the queue against 487 running first, and mixed 610 against 809. Every row above ran first in its own process.
 
 Every row but one cycles a handful of queries, which is the friendliest traffic there is for anything cached per thread. The `diverse` row does not: 5,000 distinct names sampled from the index, one per request, which is what a search box actually sends. On a world index that row is also the one carrying names from every language at once, and it is the slowest text shape after a bare prefix.
 
-Scaling the mixed profile by thread count: 131, 253, 468, 680, 863, 1033, 1161, 1206 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.9x at twelve threads and 9.2x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep, *idle*: 11.23, 11.31, 11.45, 11.58, 11.68, 11.64, 11.74, 11.92 GB - 690 MB of spread across fifteen extra threads, over an 11 GB index they share. See the table above for what it reaches while serving.
+Scaling the mixed profile by thread count: 131, 253, 468, 680, 863, 1033, 1161, 1206 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads - 8.9x at twelve. The curve bends where the machine runs out of cores rather than where the server does, and the last point is past the end of anything this box can measure honestly. Resident memory over the same sweep, *idle*: 11.23, 11.31, 11.45, 11.58, 11.68, 11.64, 11.74, 11.92 GB - 690 MB of spread across fifteen extra threads, over an 11 GB index they share. See the table above for what it reaches while serving.
 
 The same sweep in a container, scaling the CPU allocation rather than the thread count, gave 154, 304, 561, 1010 rps at `--cpus` 1, 2, 4, 8 - so a deployment gets what it pays for, and `docker stats` showed 4.24, 4.37, 4.52, 4.84 GiB at rest, the index being shared rather than replicated. That one is against the 42-country index and has not been repeated: what it demonstrates is the cgroup quota being read and the shared index not being copied, neither of which the size of the index changes.
 
