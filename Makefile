@@ -16,6 +16,7 @@ GO       := GOTOOLCHAIN=local CGO_ENABLED=0 go
 CZ_PBF := $(RAW)/czech-republic-latest.osm.pbf
 
 .PHONY: all fetch records index test test-go test-server clean verify countries \
+        serve-pool loadtest \
         demo demo-index \
         fold-vectors serve bench install docker docker-bundled docker-run \
         docker-run-bundled hooks lint lint-go lint-server fixtures format-constants
@@ -37,24 +38,44 @@ fetch: $(PBFS)
 
 # The download path may sit in a subdirectory (europe/great-britain) while the
 # local file is flat, so the URL is looked up rather than derived from the name.
+#
+# A mismatched checksum deletes the file. `curl -C -` resumes onto whatever
+# bytes are already there, so a partial or stale download is appended to rather
+# than replaced, and every retry fails the same way until someone deletes it by
+# hand — which is a poor thing to discover 117 files into a 189-file fetch.
 $(RAW)/%-latest.osm.pbf:
 	@mkdir -p $(RAW)
 	@url=$$($(RESOLVE) url "$*"); \
 	 test -n "$$url" || { echo "no catalog entry for $*"; exit 1; }; \
 	 curl -fSL --retry 3 -C - -o $@ "$$url"; \
 	 curl -fsSL -o $@.md5 "$$url.md5"
-	@cd $(RAW) && test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
-	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)" \
-	   && echo "  checksum OK: $*" || (echo "  CHECKSUM MISMATCH: $*" && exit 1)
+	@cd $(RAW) && if test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
+	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)"; \
+	 then echo "  checksum OK: $*"; \
+	 else \
+	   rm -f $*-latest.osm.pbf $*-latest.osm.pbf.md5; \
+	   echo "  CHECKSUM MISMATCH: $* (removed; re-run make fetch)"; exit 1; \
+	 fi
+
+# MEM_GB: a soft ceiling on the build's heap, in gigabytes. Unset, Go collects
+# when the heap has doubled, so resident memory settles at roughly twice what is
+# live — fine on a machine with room, and the difference between finishing and
+# being OOM-killed on one without. Set it and the collector works harder as it
+# approaches: Europe's index build goes from 22 GB resident to 19 GB at
+# MEM_GB=12, and takes no longer.
+MEM_GB ?=
 
 ## records: extract OSM into the normalized record stream (build/records.ndjson.gz)
 records:
 	@mkdir -p $(BUILD)
-	cd ingest && $(GO) run ./cmd/geoingest -countries $(COUNTRIES) -raw ../$(RAW) -out ../$(BUILD)
+	cd ingest && BUILD_MEM_GB=$(MEM_GB) $(GO) run ./cmd/geoingest \
+	  -countries $(COUNTRIES) -raw ../$(RAW) -out ../$(BUILD)
 
 ## index: turn the record stream into the binary artifact the server loads
+##        (MEM_GB=24 caps the heap on a machine that needs it capped)
 index:
-	cd ingest && $(GO) run ./cmd/geoindex -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
+	cd ingest && BUILD_MEM_GB=$(MEM_GB) $(GO) run ./cmd/geoindex \
+	  -in ../$(BUILD)/records.ndjson.gz -out ../$(BUILD)/index
 
 ## fixtures: regenerate the cross-language contract fixtures
 fixtures: fold-vectors format-constants
@@ -83,14 +104,27 @@ demo-index: $(RAW)/liechtenstein-latest.osm.pbf
 	rm -rf demo/index && cp -r $(BUILD)/demo/index demo/index
 	@echo "  demo/index regenerated ($$(du -sh demo/index | cut -f1))"
 
-## serve: run the API server (INDEX_DIR, PORT, HOST are overridable)
-##         OpenAPI at /openapi.json, docs at /docs
+## serve: run the API server on one thread, straight from the sources
+##         (INDEX_DIR, PORT, HOST are overridable; docs at /docs)
 serve:
 	cd server && INDEX_DIR=../$(BUILD)/index pnpm exec tsx src/index.ts
+
+## serve-pool: run it the way production does — compiled, one request thread
+##             per core. WORKERS overrides the count.
+serve-pool:
+	pnpm -r --filter "./packages/*" build
+	cd server && pnpm build && INDEX_DIR=../$(BUILD)/index node dist/index.js
 
 ## bench: measure query latency against the built index
 bench:
 	cd server && pnpm exec tsx bench.mts
+
+## loadtest: drive a running server to find what it can actually serve.
+##           Start it with RATE_LIMIT_MAX=0, or the answer is 429s per second.
+LOADTEST ?= --connections 96 --clients 3 --duration 8 \
+            --profile reverse,address,city,autocomplete,mixed,heavy
+loadtest:
+	cd server && node loadtest.mjs $(LOADTEST)
 
 ## hooks: install the local git hooks (fast static checks, no tests)
 hooks:

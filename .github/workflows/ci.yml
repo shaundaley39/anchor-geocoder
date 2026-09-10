@@ -132,6 +132,12 @@ jobs:
       - name: lint
         run: cd server && pnpm exec eslint .
 
+      # The pool runs its threads from the compiled worker entry — a Worker gets
+      # a fresh module loader and cannot read a .ts file — so without an emit
+      # the one test that starts a real multi-threaded server skips.
+      - name: build server
+        run: cd server && pnpm build
+
       - name: test
         # Against the committed demo index. build/ is gitignored, so without
         # this the whole geocode suite skips and a green tick means only that it

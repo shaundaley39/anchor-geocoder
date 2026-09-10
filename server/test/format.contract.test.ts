@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  SUPPORTED_VERSION, COORD_SCALE, ALT_SEP,
+  SUPPORTED_VERSION, COORD_SCALE, ALT_SEP, TERM_SEP, TERM_MISSING,
   LAYER_STREET, LAYER_PLACE, LAYER_POI,
 } from '../src/artifact.js';
 import { CELL_CONSTANTS } from '../src/reverse.js';
@@ -47,11 +47,21 @@ describe('artifact format constants match the Go writer', () => {
     expect(CELL_CONSTANTS.stride).toBe(go['cellStride']);
   });
 
+  /**
+   * Read as term ids rather than as sentinels, the separator would make every
+   * anchor one long nameless variant and the ranking would collapse quietly.
+   */
+  it('agrees on the anchor-term sentinels', () => {
+    expect(TERM_SEP).toBe(go['termSep']);
+    expect(TERM_MISSING).toBe(go['termMissing']);
+  });
+
   it('covers every constant Go publishes', () => {
     // A new shared constant fails here until it is asserted above.
     expect(Object.keys(go).sort()).toEqual([
       'altSep', 'cellDeg', 'cellOrigin', 'cellStride', 'coordScale',
-      'kdNodeSize', 'layerPOI', 'layerPlace', 'layerStreet', 'version',
+      'kdNodeSize', 'layerPOI', 'layerPlace', 'layerStreet', 'termMissing',
+      'termSep', 'version',
     ]);
   });
 });

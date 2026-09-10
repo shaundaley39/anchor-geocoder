@@ -99,15 +99,75 @@ func TestResolve(t *testing.T) {
 
 // The whole-Europe group is what a full run uses; a missing member there is a
 // silent coverage hole.
-func TestEuropeGroupCoversEveryCountry(t *testing.T) {
+// @world is the group a planet build names, so a country the catalogue holds
+// but the group omits is a country that silently never gets indexed.
+func TestWorldGroupCoversEveryCountry(t *testing.T) {
 	c := load(t)
-	inEurope := map[string]bool{}
-	for _, m := range c.Groups["europe"] {
-		inEurope[m] = true
+	inWorld := map[string]bool{}
+	for _, m := range c.Groups["world"] {
+		inWorld[m] = true
 	}
 	for code := range c.Countries {
-		if !inEurope[code] {
-			t.Errorf("country %q is configured but missing from the @europe group", code)
+		if !inWorld[code] {
+			t.Errorf("country %q is configured but missing from the @world group", code)
 		}
 	}
+}
+
+// The continent groups partition the catalogue: every country in exactly one,
+// which is what lets @world be assembled from them and what makes a build of
+// one continent mean what it says.
+func TestContinentGroupsPartitionTheCatalogue(t *testing.T) {
+	c := load(t)
+	// Keyed by the Geofabrik path's first segment, which is where the extract
+	// actually lives. russia and antarctica are continent-level files.
+	group := map[string]string{
+		"africa": "africa", "asia": "asia", "australia-oceania": "oceania",
+		"central-america": "camerica", "europe": "europe",
+		"north-america": "namerica", "south-america": "samerica",
+	}
+	in := map[string][]string{}
+	for name, members := range c.Groups {
+		for _, m := range members {
+			if name == "world" {
+				continue
+			}
+			if _, ok := groupIsContinent(group, name); ok {
+				in[m] = append(in[m], name)
+			}
+		}
+	}
+	for code, country := range c.Countries {
+		top := country.Path
+		if i := indexByte(top, '/'); i >= 0 {
+			top = top[:i]
+		}
+		want, isContinent := group[top]
+		if !isContinent {
+			continue // russia, antarctica: their own files, in no continent group
+		}
+		got := in[code]
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("country %q (%s) is in continent groups %v, want exactly [%s]",
+				code, country.Path, got, want)
+		}
+	}
+}
+
+func groupIsContinent(m map[string]string, name string) (string, bool) {
+	for _, v := range m {
+		if v == name {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
 }

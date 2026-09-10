@@ -67,8 +67,19 @@ func Add(b *index.Builder, r *model.Record) {
 	a.LocalID = b.Strings.Intern(r.City)
 	a.Lat, a.Lon = coord(r.Lat), coord(r.Lon)
 	a.Country = b.CountryID(r.Country)
-	a.Tokens = r.Tokens
+	// Recomputed, not taken from the record: the extract serializes the tokens
+	// it folded, so an index built from an older stream would put terms in the
+	// dictionary that the current normalizer no longer produces — and then an
+	// anchor's own name would fold to something the dictionary does not hold.
+	// Costs one pass of folding to make a normalizer change need only `make
+	// index` rather than a re-extract.
+	a.Tokens = b.InternTokens(model.SearchTokens(r))
 	a.Layer = layer
+	// Assigned, not merely set when there are alternates: a higher-ranked
+	// duplicate replaces this anchor's tokens, and leaving the loser's AltID
+	// behind left it advertising names it was no longer indexed under. 135
+	// tokens across Europe, each an alias a user could type and not find.
+	a.AltID = 0
 	if len(r.AltNames) > 0 {
 		a.AltID = b.Strings.Intern(strings.Join(r.AltNames, index.AltSep))
 	}
@@ -222,7 +233,8 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			b.Counts["address_bound_to_place"]++
 		} else {
 			id = b.NewSynthetic(anchorName, r.City, cc, index.LayerPlace,
-				b.Strings, append(norm.Tokens(anchorName), norm.Tokens(r.City)...),
+				b.Strings,
+				b.InternTokens(append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...)),
 				coord(r.Lat), coord(r.Lon))
 			b.Counts["anchor_synthetic_place"]++
 		}
@@ -239,7 +251,7 @@ func AddAddress(b *index.Builder, r *model.Record, placesByName map[string][]uin
 			a.Country = cc
 			a.Layer = index.LayerStreet
 			a.Score = 1
-			a.Tokens = append(norm.Tokens(anchorName), norm.Tokens(r.City)...)
+			a.Tokens = b.InternTokens(append(norm.IndexTokens(anchorName), norm.IndexTokens(r.City)...))
 			b.Counts["anchor_synthetic_street"]++
 		}
 	}

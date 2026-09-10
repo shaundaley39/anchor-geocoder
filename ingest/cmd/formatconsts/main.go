@@ -31,6 +31,8 @@ func main() {
 		"cellOrigin":  index.CellOrigin,
 		"cellStride":  index.CellStride,
 		"kdNodeSize":  index.KDNodeSize,
+		"termSep":     index.TermSep,
+		"termMissing": index.TermMissing,
 	}
 
 	f, err := os.Create(*out)

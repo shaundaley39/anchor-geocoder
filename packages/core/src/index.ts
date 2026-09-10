@@ -5,4 +5,4 @@
  * a second implementation of the folding rules that can drift.
  */
 export * from './schema.js';
-export { fold, tokens } from './normalize.js';
+export { fold, tokens, indexTokens, queryVariants, tokenVariants } from './normalize.js';

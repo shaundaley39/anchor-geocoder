@@ -6,13 +6,15 @@
  * versus binary search — and none of that is visible to a hand-made fixture.
  * They skip when the artifact is absent, so a fresh clone can run them.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadArtifact, anchorOfAddress, type Artifact, toDeg } from '../src/artifact.js';
+import {
+  loadArtifact, anchorOfAddress, toDeg, TERM_SEP, TERM_MISSING, ALT_SEP, type Artifact,
+} from '../src/artifact.js';
 import { forward } from '../src/forward.js';
-import { parseQuery } from '../src/query.js';
-import { candidates } from '../src/terms.js';
+import { parseQuery, type ParsedQuery } from '../src/query.js';
+import { candidates, resolveQuery } from '../src/terms.js';
 import { scoreBound, scoreExact } from '../src/ranking.js';
 import { findHouseNumber } from '../src/housenumber.js';
 import { correctToken, withinOneEdit } from '../src/fuzzy.js';
@@ -20,7 +22,9 @@ import { hasShape, ringAreaM2, containsPoint, haversineMetres } from '../src/geo
 import { buildReverseIndex, reverse, type ReverseIndex } from '../src/reverse.js';
 import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
+import { tokens as foldTokens } from '@anchor-geocoder/core';
 import type { FastifyInstance } from 'fastify';
+import { connect } from 'node:net';
 
 // Overridable so CI can point at an index built somewhere else, and so a
 // smaller corpus can be checked without disturbing the local one.
@@ -42,6 +46,17 @@ const covered: Record<string, number> = haveIndex
 /** `needs('cz','pl')('...', fn)` runs only where both were built. */
 const needs = (...cc: string[]) =>
   (cc.every((c) => c in covered) ? it : it.skip);
+
+/**
+ * An index covering most of the planet, where "outside coverage" barely exists.
+ * A few behaviours are about the edge of the data and have nothing to say when
+ * there is no edge.
+ */
+const isGlobal = Object.keys(covered).length > 100;
+
+/** Like `needs`, and also skipped on a global index. */
+const maybeRegional = (...cc: string[]) =>
+  (!isGlobal && cc.every((c) => c in covered) ? it : it.skip);
 
 describe('rate limiting', () => {
   needs('cz')('returns 429 with Retry-After once the window is exhausted', async () => {
@@ -69,8 +84,12 @@ describe('rate limiting', () => {
 });
 
 describe('parseQuery', () => {
+  /** The split itself, without the per-token spellings asserted separately. */
+  const plain = (p: ParsedQuery) => ({
+    nameTokens: p.nameTokens, houseNumber: p.houseNumber,
+  });
   // Candidate readings, best guess first.
-  const first = (q: string) => parseQuery(q)[0]!;
+  const first = (q: string) => plain(parseQuery(q)[0]!);
 
   it('splits a trailing house number off the street name', () => {
     expect(first('Marszalkowska 12')).toEqual({
@@ -108,7 +127,7 @@ describe('parseQuery', () => {
   it('always offers the whole query as a fallback reading', () => {
     const readings = parseQuery('Via Roma 1 Torino');
     expect(readings.length).toBe(2);
-    expect(readings[1]).toEqual({
+    expect(plain(readings[1]!)).toEqual({
       nameTokens: ['via', 'roma', '1', 'torino'], houseNumber: null,
     });
   });
@@ -119,6 +138,154 @@ describe('parseQuery', () => {
 
   it('returns nothing for an empty query', () => {
     expect(first('   ')).toEqual({ nameTokens: [], houseNumber: null });
+  });
+
+  /**
+   * German spells an umlaut two ways and ß two more. The tokens stay one per
+   * word — the alternatives ride alongside, so nothing downstream that counts
+   * query tokens sees a longer query than was typed.
+   */
+  it('carries the alternative German spellings of each token', () => {
+    const p = parseQuery('Muenchen 5')[0]!;
+    expect(p.nameTokens).toEqual(['muenchen']);
+    expect(p.houseNumber).toBe('5');
+    expect(p.nameVariants).toEqual([['muenchen', 'munchen']]);
+
+    expect(parseQuery('München')[0]!.nameVariants)
+      .toEqual([['munchen', 'muenchen']]);
+    expect(parseQuery('Schloßstraße')[0]!.nameVariants)
+      .toEqual([['schlossstrasse', 'schlosstrasse']]);
+  });
+
+  /**
+   * The number leads in the UK, the US and Ireland, and reading it as part of
+   * the name asks the index for a street whose name contains "10". Offered
+   * last, because a leading number is more often part of the name than a house
+   * number and the whole-query reading has to get first refusal.
+   */
+  it('offers a leading house number, but only as a last resort', () => {
+    const shapes = (q: string) => parseQuery(q).map((p) => [p.nameTokens.join(' '), p.houseNumber]);
+
+    expect(shapes('10 Downing Street')).toEqual([['10 downing', null], ['downing', '10']]);
+    expect(shapes('1600 Pennsylvania Avenue'))
+      .toEqual([['1600 pennsylvania', null], ['pennsylvania', '1600']]);
+    // Letter suffixes are house numbers too.
+    expect(shapes('221B Baker Street')).toEqual([['221b baker', null], ['baker', '221b']]);
+
+    // The name reading still comes first, which is what keeps "3 Maja" a street.
+    expect(shapes('3 Maja')[0]).toEqual(['3 maja', null]);
+    expect(shapes('3 Maja Warszawa')[0]).toEqual(['3 maja warszawa', null]);
+  });
+
+  it('leaves a token with one spelling alone', () => {
+    expect(parseQuery('Praha')[0]!.nameVariants).toEqual([['praha']]);
+    // Not every ue is a written-out umlaut.
+    expect(parseQuery('Neue Aue')[0]!.nameVariants).toEqual([['neue'], ['aue']]);
+  });
+
+  /**
+   * Nothing is searchable by postcode, and every token but the last has to
+   * match a term, so a postcode left in the name matches nothing at all.
+   */
+  it('takes a two-part postcode out of the name', () => {
+    expect(first('Bratislavska 22, 602 00 Brno')).toEqual({
+      nameTokens: ['bratislavska', 'brno'], houseNumber: '22',
+    });
+    expect(first('Milady Horakove 334/36, 602 00 Brno')).toEqual({
+      nameTokens: ['milady', 'horakove', 'brno'], houseNumber: '334/36',
+    });
+    // Polish writes it with a hyphen and the halves the other way round.
+    expect(first('Marszalkowska 12, 00-001 Warszawa')).toEqual({
+      nameTokens: ['marszalkowska', 'warszawa'], houseNumber: '12',
+    });
+  });
+
+  /**
+   * A lone five-digit run is a German postcode or an American ZIP or a house
+   * number in a large city. Both readings are offered, and every reading that
+   * takes a house number out comes before every reading that does not.
+   */
+  it('offers both readings of a one-part postcode', () => {
+    const shapes = (q: string) => parseQuery(q).map((p) => [p.nameTokens.join(' '), p.houseNumber]);
+    expect(shapes('Hauptstrasse 5, 10115 Berlin')).toEqual([
+      ['hauptstrasse berlin', '5'],
+      // Reading the postcode as the house number instead is offered too, and
+      // finds nothing, which is why it is allowed to be this speculative.
+      ['hauptstrasse 5 berlin', '10115'],
+      ['hauptstrasse 10115 berlin', '5'],
+      ['hauptstrasse 5 berlin', null],
+      ['hauptstrasse 5 10115 berlin', null],
+    ]);
+    // Where the run really was the house number, taking it out leaves nothing
+    // for that reading to find, so there is no such reading to get in the way.
+    expect(shapes('Hauptstrasse 1234 Berlin')).toEqual([
+      ['hauptstrasse berlin', '1234'],
+      ['hauptstrasse berlin', null],
+      ['hauptstrasse 1234 berlin', null],
+    ]);
+    // A four-digit leading number is a house number, not a postcode.
+    expect(shapes('1600 Pennsylvania Avenue'))
+      .toEqual([['1600 pennsylvania', null], ['pennsylvania', '1600']]);
+  });
+
+  /**
+   * Folding splits a house number wherever its punctuation was, so reading one
+   * token of it asks for the wrong number on a street whose name has to
+   * contain the rest. Every one of these used to return nothing.
+   */
+  it('keeps a house number whole however it is punctuated', () => {
+    const hn = (q: string) => first(q).houseNumber;
+    expect(hn('85th Street 78-52, New York')).toBe('78-52');        // Queens
+    expect(hn('Generaal Smutslaan 216-17, Tilburg')).toBe('216-17'); // Dutch
+    expect(hn('中正南路 213號, 臺南市')).toBe('213號');                  // Taiwanese
+    expect(hn('High Street 5/B')).toBe('5/b');                       // letter half
+    expect(hn('Prazska ev.223, Pisek')).toBe('ev.223');              // Czech evidenční
+    expect(hn('Kosciuszki 1a, Biskupiec')).toBe('1a');
+    expect(hn('Golden Gate Avenue 1963;1965')).toBe('1963;1965');    // two in one tag
+  });
+
+  /** Humans put spaces where they like. The match folds both sides, so the
+   * only thing that has to survive is the run staying one number. */
+  it('tolerates whitespace inside a composed number', () => {
+    expect(first('Milady Horakove 334 / 36, Brno')).toEqual({
+      nameTokens: ['milady', 'horakove', 'brno'], houseNumber: '334/36',
+    });
+    expect(first('138. Sokak 75 / A, Balikesir').houseNumber).toBe('75/a');
+  });
+
+  /**
+   * The run has to stop at the number. A one-or-two-letter part is how "1a"
+   * and "213號" stay whole, and the risk is that it eats the street instead.
+   */
+  it('does not let a number run reach into the street name', () => {
+    expect(first('12 Main Street').houseNumber).toBeNull();
+    expect(first('Main Street 12')).toEqual({
+      nameTokens: ['main'], houseNumber: '12',
+    });
+    // An ordinal is a street, not a number, wherever it sits.
+    expect(first('85th Street, New York').houseNumber).toBeNull();
+    expect(parseQuery('1st Avenue').every((p) => p.houseNumber === null)).toBe(true);
+  });
+
+  /** Plenty of buildings are named and not numbered. */
+  it('reads a query with no number at all as pure name', () => {
+    const readings = parseQuery('Rose Cottage, High Street, Oxford');
+    expect(readings.every((p) => p.houseNumber === null)).toBe(true);
+    expect(readings[0]!.nameTokens).toEqual(['rose', 'cottage', 'high', 'oxford']);
+  });
+
+  /**
+   * "334/36" and "602 00" both fold to two digit tokens, and only the raw text
+   * says which is one number and which is two. Without the slash the pair is
+   * not recombined - and "334 36" is not how anyone writes the address.
+   */
+  it('recombines a number pair only where the query wrote the slash', () => {
+    expect(first('Prazska 248/39 Podebrady')).toEqual({
+      nameTokens: ['prazska', 'podebrady'], houseNumber: '248/39',
+    });
+    expect(first('Prazska 248 39 Podebrady')).not.toEqual({
+      nameTokens: ['prazska', 'podebrady'], houseNumber: '248/39',
+    });
   });
 });
 
@@ -160,12 +327,29 @@ maybe('against the built index', () => {
    * CI has only the committed demo index, and hardcoded Czech names meant the
    * tests that matter most were the ones that never ran there.
    */
+  /**
+   * Names a query could plausibly be made of: judged on what they fold to, not
+   * on how they are spelled. A world index holds "½ Street", which folds to the
+   * tokens "1" and "2" — every digit in the corpus is a candidate for it, and
+   * asking it to find itself tests nothing but the ranking of numbers.
+   */
+  /**
+   * A stride that takes about `want` samples however large the index is. A
+   * fixed stride is a fixed sample only for one corpus: 977 over 58M anchors is
+   * 60,000 checks and over the demo index's 2,287 it is three, which is how
+   * three of these assertions came to require a corpus CI does not have.
+   */
+  const strideFor = (total: number, want: number): number =>
+    Math.max(1, Math.floor(total / want));
+
   const sampleNames = (want: number): string[] => {
     const out: string[] = [];
     const seen = new Set<string>();
     for (let id = 0; id < a.manifest.num_anchors && out.length < want; id += 3) {
       const nm = a.strings.get(a.anchorName[id]!);
-      if (nm.length < 4 || /\d/.test(nm) || seen.has(nm)) continue;
+      if (nm.length < 4 || seen.has(nm)) continue;
+      const toks = foldTokens(nm);
+      if (toks.some((t) => /\d/.test(t)) || !toks.some((t) => t.length >= 4)) continue;
       seen.add(nm);
       out.push(nm);
     }
@@ -203,11 +387,128 @@ maybe('against the built index', () => {
       }
     });
 
-    it('stores terms in sorted order so prefix search is a binary search', () => {
-      for (let i = 1; i < a.manifest.num_terms; i += 31) {
-        expect(a.terms.get(i) > a.terms.get(i - 1)).toBe(true);
+    /**
+     * Retrieval tests membership with a binary search rather than building a
+     * set, which is only correct while the writer keeps emitting postings in
+     * ascending anchor order.
+     */
+    /**
+     * Ranking reads an anchor's own term ids instead of folding its name, so
+     * the two have to agree. A stride rather than every anchor: 23M of them,
+     * each needing a fold and a dictionary lookup per token.
+     */
+    it('stores each anchor the term ids its own names fold to', () => {
+      const sections = (id: number): number[][] => {
+        const out: number[][] = [];
+        let cur: number[] = [];
+        for (let i = a.anchorTermsOff[id]!; i < a.anchorTermsOff[id + 1]!; i++) {
+          const t = a.anchorTerms[i]!;
+          if (t === TERM_SEP) { out.push(cur); cur = []; } else cur.push(t);
+        }
+        out.push(cur);
+        return out;
+      };
+      // A token the dictionary lacks is stored as the sentinel, not as -1.
+      const idsOf = (str: string) => foldTokens(str)
+        .map((t) => { const id = a.terms.find(t); return id < 0 ? TERM_MISSING : id; });
+
+      let checked = 0;
+      const stride = strideFor(a.manifest.num_anchors, 24_000);
+      for (let id = 0; id < a.manifest.num_anchors; id += stride) {
+        const [locality, ...variants] = sections(id) as [number[], ...number[][]];
+        expect(locality, `anchor ${id} locality`)
+          .toEqual(idsOf(a.strings.get(a.anchorLocal[id]!)));
+        const alts = a.anchorAlt[id] === 0
+          ? [] : a.strings.get(a.anchorAlt[id]!).split(ALT_SEP);
+        expect(variants, `anchor ${id} names`).toEqual([
+          idsOf(a.strings.get(a.anchorName[id]!)),
+          ...alts.map(idsOf).filter((v) => v.length > 0),
+        ]);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_anchors));
+    }, 120_000);
+
+    /**
+     * A token the build could not place becomes TERM_MISSING: it keeps its
+     * position in the name, so it still counts against how much of the name a
+     * query used, and matches nothing — which is what it did before, since a
+     * token absent from the dictionary can never equal a query term either.
+     *
+     * Zero, and worth keeping at zero: the 135 Europe produced before were a
+     * higher-ranked duplicate replacing an anchor's tokens while leaving the
+     * loser's alternate names attached, so the anchor advertised aliases it was
+     * no longer indexed under. This assertion is what noticed.
+     */
+    it('places every stored token in the dictionary', () => {
+      expect(a.manifest.counts['anchor_term_not_in_dictionary'] ?? 0).toBe(0);
+    });
+
+    /**
+     * A CSR offset array, which means non-decreasing and ending at the total.
+     * The writer used to leave the final entry at zero, which made the last
+     * anchor's outline invisible — the range [start, 0) is empty — and
+     * undercounted num_shapes by one. Harmless only because the last anchor
+     * happened to have no shape.
+     */
+    it('closes the geometry offsets at the vertex count', () => {
+      const off = a.geomOff;
+      expect(off.length).toBe(a.manifest.num_anchors + 1);
+      expect(off[off.length - 1]).toBe(a.manifest.num_vertices);
+      for (let i = 1; i < off.length; i++) {
+        if (off[i]! < off[i - 1]!) throw new Error(`geom_off decreases at ${i}`);
       }
     });
+
+    it('stores each posting list in ascending anchor order', () => {
+      let checked = 0;
+      // Every list would be 100M reads; a stride covers the file for the price
+      // of a test that still runs in a second.
+      const stride = strideFor(a.manifest.num_terms, 130_000);
+      for (let t = 0; t < a.manifest.num_terms; t += stride) {
+        const p = a.post.subarray(a.postOff[t]!, a.postOff[t + 1]!);
+        for (let i = 1; i < p.length; i++) {
+          if (p[i - 1]! >= p[i]!) {
+            throw new Error(`term ${t} posting ${i}: ${p[i - 1]!} >= ${p[i]!}`);
+          }
+        }
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_terms));
+    });
+
+    /**
+     * Every adjacent pair, not a stride, and compared with the same `<` the
+     * binary search uses. Go sorts by code point and JavaScript compares UTF-16
+     * code units, which disagree above the BMP — the build sorts to match, and
+     * a stride of 31 is exactly how that went unnoticed: it never sampled the
+     * pair either side of an astral term.
+     */
+    it('stores terms in the order the server compares them in', () => {
+      for (let i = 1; i < a.manifest.num_terms; i++) {
+        if (!(a.terms.get(i) > a.terms.get(i - 1))) {
+          throw new Error(
+            `terms ${i - 1} and ${i} are out of order: ` +
+            `${JSON.stringify(a.terms.get(i - 1))} then ${JSON.stringify(a.terms.get(i))}`,
+          );
+        }
+      }
+    }, 120_000);
+
+    /**
+     * The property that ordering exists to give: a term the dictionary holds is
+     * a term the dictionary finds. Strided, since each lookup is a full binary
+     * search over 4.8M terms.
+     */
+    it('finds every term it stores', () => {
+      let checked = 0;
+      const stride = strideFor(a.manifest.num_terms, 50_000);
+      for (let i = 0; i < a.manifest.num_terms; i += stride) {
+        expect(a.terms.find(a.terms.get(i)), `term ${i}`).toBe(i);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_terms));
+    }, 120_000);
   });
 
   describe('forward geocoding', () => {
@@ -329,6 +630,42 @@ maybe('against the built index', () => {
       expect(r?.houseNumber?.startsWith('248')).toBe(true);
     });
 
+    /**
+     * Two of the three ways of writing a Czech address are addresses: the
+     * whole thing, and the orientation number alone. They name the same
+     * building and are worth the same. The conscription number alone reaches
+     * the building and ranks below both, because it is not an address.
+     *
+     * Reported against this exact query, which used to answer the short form
+     * with the street.
+     */
+    needs('cz')('answers both valid forms of a Czech address with one building', () => {
+      const full = top('Milady Horakove 334/36, Brno');
+      expect(full?.layer).toBe('address');
+      expect(full?.houseNumber).toBe('334/36');
+
+      const short = top('Milady Horakove 36, Brno');
+      expect(short?.houseNumber).toBe('334/36');
+      expect(short?.score).toBeCloseTo(full!.score, 3);
+
+      const conscription = top('Milady Horakove 334, Brno');
+      expect(conscription?.houseNumber).toBe('334/36');
+      expect(conscription!.score).toBeLessThan(full!.score);
+    });
+
+    /** Nothing is searchable by postcode, so one in the query has to be
+     * ignored rather than searched for. */
+    needs('cz')('answers the same with a postcode written into the query', () => {
+      const plain = top('Milady Horakove 36, Brno');
+      for (const q of ['Milady Horakove 334/36, 602 00 Brno',
+        'Milady Horakove 36, 602 00 Brno']) {
+        const r = top(q);
+        expect(r?.layer, q).toBe('address');
+        expect(r?.houseNumber, q).toBe('334/36');
+        expect(r?.id, q).toBe(plain?.id);
+      }
+    });
+
     needs('cz')('resolves a place-anchored village address with no street', () => {
       const r = top('Velka Upa 299');
       expect(r?.layer).toBe('address');
@@ -431,10 +768,11 @@ maybe('against the built index', () => {
       for (const q of queries()) {
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          const cands = candidates(a, parsed.nameTokens, 10_000);
+          const query = resolveQuery(a, parsed.nameVariants);
+          const cands = candidates(a, query, 10_000);
           for (const [id, text] of cands) {
             const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length);
-            const exact = scoreExact(a, id, text, parsed);
+            const exact = scoreExact(a, id, text, parsed, query);
             // Tolerance for floating-point association only.
             expect(exact, `${q} / anchor ${id}`).toBeLessThanOrEqual(bound * (1 + 1e-9));
             checked++;
@@ -448,9 +786,10 @@ maybe('against the built index', () => {
       const opts = { proximity: { lat: 50.0755, lon: 14.4378 } };
       for (const parsed of parseQuery('Nadrazni')) {
         if (parsed.nameTokens.length === 0) continue;
-        for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
+        const query = resolveQuery(a, parsed.nameVariants);
+        for (const [id, text] of candidates(a, query, 10_000)) {
           const bound = scoreBound(a, id, text, parsed.houseNumber !== null, parsed.nameTokens.length, opts);
-          const exact = scoreExact(a, id, text, parsed, opts);
+          const exact = scoreExact(a, id, text, parsed, query, opts);
           expect(exact).toBeLessThanOrEqual(bound * (1 + 1e-9));
         }
       }
@@ -485,12 +824,16 @@ maybe('against the built index', () => {
         const top = out.results[0];
         // A correction searched different tokens than the scan below uses.
         if (!top || out.corrected !== null) continue;
+        // MAX_RERANK stopping the scan is the one case the bound does not
+        // cover, and `forward` says so by setting this.
+        if (out.stats.cappedByLimit) continue;
 
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
           if (parsed.nameTokens.length === 0) continue;
-          for (const [id, text] of candidates(a, parsed.nameTokens, 10_000)) {
-            const sc = scoreExact(a, id, text, parsed);
+          const query = resolveQuery(a, parsed.nameVariants);
+          for (const [id, text] of candidates(a, query, 10_000)) {
+            const sc = scoreExact(a, id, text, parsed, query);
             if (sc > bestScore) { bestScore = sc; bestId = id; }
           }
           if (bestId >= 0) break; // forward takes the first reading that matches
@@ -526,6 +869,13 @@ maybe('against the built index', () => {
     it('finds the same corrections as a full scan of the dictionary', () => {
       const TYPOS = ['prahha', 'warszwa', 'nadrzni', 'krakoww', 'zurick', 'sarajevoo'];
       for (const typo of TYPOS) {
+        // A correctly spelled query is never second-guessed, and a big enough
+        // dictionary has a real place called almost anything: "zurick" is a
+        // term in the world index.
+        if (a.terms.find(typo) >= 0) {
+          expect(correctToken(a, typo), typo).toBeNull();
+          continue;
+        }
         let bestBrute = '';
         let bestPostings = -1;
         for (let id = 0; id < a.terms.length; id++) {
@@ -614,9 +964,100 @@ maybe('against the built index', () => {
         const num = a.strings.get(a.addrNum[i]!);
         const found = findHouseNumber(a, anchorID, num);
         expect(found).not.toBeNull();
-        expect(found!.exact).toBe(true);
+        expect(found!.how).toBe('exact');
         // The match must carry the same leading integer.
         expect(a.addrSortKey[found!.index]).toBe(a.addrSortKey[i]);
+      }
+    });
+
+    /**
+     * A Czech or Slovak street carrying a composed number whose two halves
+     * appear nowhere else in the run, so each of the three lookups below has
+     * exactly one possible answer and the test is about the rule rather than
+     * about which of two candidates the corpus happened to order first.
+     */
+    const cleanComposed = (): { anchorID: number; num: string } | null => {
+      const czsk = new Set(
+        ['cz', 'sk'].map((c) => covered[c]).filter((v) => v !== undefined),
+      );
+      if (czsk.size === 0) return null;
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        if (!czsk.has(a.anchorCountry[id]!)) continue;
+        const start = a.anchorAddrStart[id]!;
+        const count = a.anchorAddrCount[id]!;
+        if (count < 2 || count > 60) continue;
+        const nums: string[] = [];
+        for (let i = start; i < start + count; i++) nums.push(a.strings.get(a.addrNum[i]!));
+        for (const num of nums) {
+          const m = /^(\d+)\/(\d+)$/.exec(num);
+          if (!m) continue;
+          const [c, o] = [m[1]!, m[2]!];
+          const claims = (n: string) => nums.filter((v) =>
+            v === n || v.startsWith(`${n}/`) || v.endsWith(`/${n}`)).length;
+          if (claims(c) === 1 && claims(o) === 1) return { anchorID: id, num };
+        }
+      }
+      return null;
+    };
+
+    /**
+     * Czech and Slovak buildings carry two numbers. "334/36" is conscription
+     * number 334 and orientation number 36, and the address is written either
+     * in full or as the orientation number alone - "Milady Horákové 36" is
+     * complete, and is the usual form. The conscription number alone is not an
+     * address, so it reaches the building and ranks below the two forms that
+     * are.
+     */
+    it('reads both valid forms of a composed number, and demotes the third', () => {
+      const found = cleanComposed();
+      if (found === null) return; // no Czech or Slovak data in this corpus
+      const { anchorID, num } = found;
+      const [conscription, orientation] = num.split('/') as [string, string];
+
+      expect(findHouseNumber(a, anchorID, num)!.how, num).toBe('exact');
+
+      const short = findHouseNumber(a, anchorID, orientation)!;
+      expect(short, `${num} by ${orientation}`).not.toBeNull();
+      expect(short.how).toBe('orientation');
+      expect(a.strings.get(a.addrNum[short.index]!)).toBe(num);
+
+      const long = findHouseNumber(a, anchorID, conscription)!;
+      expect(long, `${num} by ${conscription}`).not.toBeNull();
+      expect(long.how).toBe('conscription');
+      expect(a.strings.get(a.addrNum[long.index]!)).toBe(num);
+    });
+
+    /**
+     * The run is sorted on the conscription number, so it is the half a binary
+     * search finds first - and the wrong one. "Bratislavská 6" means the
+     * building whose door plate says 6, not whichever building happens to be
+     * conscription number 6.
+     */
+    it('prefers the orientation half to the conscription half', () => {
+      const czsk = new Set(
+        ['cz', 'sk'].map((c) => covered[c]).filter((v) => v !== undefined),
+      );
+      if (czsk.size === 0) return;
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        if (!czsk.has(a.anchorCountry[id]!)) continue;
+        const start = a.anchorAddrStart[id]!;
+        const count = a.anchorAddrCount[id]!;
+        if (count < 2 || count > 60) continue;
+        const nums: string[] = [];
+        for (let i = start; i < start + count; i++) nums.push(a.strings.get(a.addrNum[i]!));
+        // One address claims n as its orientation number, another as its
+        // conscription number, and no address is n outright.
+        for (const num of nums) {
+          const m = /^(\d+)\/(\d+)$/.exec(num);
+          if (!m) continue;
+          const n = m[2]!;
+          if (nums.includes(n)) continue;
+          if (!nums.some((v) => v !== num && v.startsWith(`${n}/`))) continue;
+          const hit = findHouseNumber(a, id, n)!;
+          expect(hit.how, `${n} on a run of ${nums.join(' ')}`).toBe('orientation');
+          expect(a.strings.get(a.addrNum[hit.index]!)).toBe(num);
+          return;
+        }
       }
     });
 
@@ -626,6 +1067,150 @@ maybe('against the built index', () => {
         if (a.anchorAddrCount[id]! > 5) { anchorID = id; break; }
       }
       expect(findHouseNumber(a, anchorID, '999999')).toBeNull();
+    });
+
+    /**
+     * The run is sorted on `addr_sortkey`, which the Go build fills with the
+     * first digits found anywhere in the number - "ev.223" sorts under 223.
+     * The lookup used `parseInt`, which is NaN for those, so every number
+     * whose digits did not come first was unreachable.
+     */
+    it('finds a number whose digits do not start it', () => {
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        const start = a.anchorAddrStart[id]!;
+        for (let i = start; i < start + a.anchorAddrCount[id]!; i++) {
+          const num = a.strings.get(a.addrNum[i]!);
+          if (/^\d/.test(num) || !/\d/.test(num)) continue;
+          expect(findHouseNumber(a, id, num), num).not.toBeNull();
+          return;
+        }
+      }
+    });
+  });
+
+  /**
+   * The shapes a house number comes in are the long tail of this whole
+   * problem: 84% are plain digits and the rest are 1,500 other things.
+   * Hyphens, Taiwanese 號, letter halves and letter prefixes each used to
+   * return nothing at all, because folding split them and the parser kept one
+   * piece. So this asks the index for its own odd-shaped addresses, written
+   * the way they are stored, and expects them back.
+   */
+  it('round-trips addresses whose number is not plain digits', () => {
+    const anchorOfAddr = (i: number): number => {
+      let lo = 0, hi = a.manifest.num_anchors - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (a.anchorAddrStart[mid]! <= i) lo = mid; else hi = mid - 1;
+      }
+      return lo;
+    };
+
+    const stride = strideFor(a.manifest.num_addresses, 4000);
+    const failures: string[] = [];
+    let tried = 0;
+    for (let i = 0; i < a.manifest.num_addresses && tried < 120; i += stride) {
+      const num = a.strings.get(a.addrNum[i]!);
+      if (/^\d+$/.test(num)) continue;          // the easy 84%
+      // A comma cannot join a number, because it is what separates the
+      // address from the town. OSM's "2367,2369" is two addresses in one tag
+      // and can only be asked for one number at a time.
+      if (num.includes(',')) continue;
+      const anchor = anchorOfAddr(i);
+      const street = a.strings.get(a.anchorName[anchor]!);
+      const city = a.anchorLocal[anchor] ? a.strings.get(a.anchorLocal[anchor]!) : '';
+      if (!street || !city) continue;
+      tried++;
+      const r = forward(a, `${street} ${num}, ${city}`, { limit: 1, fuzzy: false }).results[0];
+      if (r?.layer !== 'address' || r.houseNumber !== num) {
+        failures.push(`${street} ${num}, ${city} -> ${r ? `${r.layer} ${r.houseNumber ?? r.name}` : 'nothing'}`);
+      }
+    }
+    if (tried < 10) return;  // a corpus with no interesting numbers in it
+    // Not all of them: OSM stores "1a" and "1A" on the same street as two
+    // addresses, and they fold to one thing.
+    expect(failures.length / tried, failures.slice(0, 5).join(' | ')).toBeLessThan(0.1);
+  });
+
+  /**
+   * Over a real socket, because this is about the HTTP parser and `inject`
+   * never meets it. Node rejects a request line carrying bytes above 0x7F
+   * before any of the server runs, and a geocoder is asked for "Horákové" and
+   * "東京都" all day by clients that send exactly what they were given.
+   */
+  describe('a request target that was never percent-encoded', () => {
+    let listener: FastifyInstance;
+    let port = 0;
+
+    beforeAll(async () => {
+      listener = await buildServer({
+        artifact: a, reverseIndex: rev,
+        options: { rateLimitMax: 0, logger: false },
+      });
+      await listener.listen({ port: 0, host: '127.0.0.1' });
+      port = (listener.server.address() as { port: number }).port;
+    }, 60_000);
+    afterAll(async () => { await listener?.close(); });
+
+    /** Sends bytes, not a URL: no client library to encode them on the way. */
+    const raw = (target: string): Promise<string> => new Promise((resolve, reject) => {
+      const c = connect(port, '127.0.0.1', () => {
+        c.write(Buffer.concat([
+          Buffer.from('GET ', 'latin1'), Buffer.from(target, 'utf8'),
+          Buffer.from(' HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n', 'latin1'),
+        ]));
+      });
+      const chunks: Buffer[] = [];
+      c.on('data', (d: Buffer) => chunks.push(d));
+      c.on('error', reject);
+      c.on('close', () => { resolve(Buffer.concat(chunks).toString('utf8')); });
+    });
+
+    const bodyOf = (r: string) => JSON.parse(r.slice(r.indexOf('\r\n\r\n') + 4)) as
+      { features: { properties: { name: string } }[] };
+
+    /** A name this index holds that is not pure ASCII, whichever index it is. */
+    const accentedName = (): string => {
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        const nm = a.strings.get(a.anchorName[id]!);
+        // eslint-disable-next-line no-control-regex
+        if (nm.length >= 4 && nm.length < 40 && /[^\u0000-\u007f]/.test(nm)) return nm;
+      }
+      return '';
+    };
+
+    it('serves a query whose non-ASCII arrived as raw bytes', async () => {
+      const name = accentedName();
+      expect(name, 'no non-ASCII name in this index').not.toBe('');
+      const res = await raw(`/v1/geocode?limit=1&q=${name.replace(/ /g, '+')}`);
+      expect(res.startsWith('HTTP/1.1 200'), res.split('\r\n')[0]).toBe(true);
+      expect(bodyOf(res).features.length).toBeGreaterThan(0);
+    });
+
+    /** The repair has to produce what the client should have sent, not merely
+     * something that parses. */
+    it('answers raw bytes exactly as it answers them percent-encoded', async () => {
+      const name = accentedName();
+      const asSent = await raw(`/v1/geocode?limit=5&q=${name.replace(/ /g, '+')}`);
+      const encoded = await raw(`/v1/geocode?limit=5&q=${encodeURIComponent(name)}`);
+      const names = (r: string) => bodyOf(r).features.map((f) => f.properties.name);
+      expect(names(asSent)).toEqual(names(encoded));
+      expect(names(asSent).length).toBeGreaterThan(0);
+    });
+
+    it('says what is wrong when the request line is beyond repair', async () => {
+      const res = await new Promise<string>((resolve, reject) => {
+        const c = connect(port, '127.0.0.1', () => {
+          c.write('GET /v1/geo code?q=x HTTP/1.1\r\nHost: localhost\r\n\r\n', 'latin1');
+        });
+        const chunks: Buffer[] = [];
+        c.on('data', (d: Buffer) => chunks.push(d));
+        c.on('error', reject);
+        c.on('close', () => { resolve(Buffer.concat(chunks).toString('utf8')); });
+      });
+      expect(res.startsWith('HTTP/1.1 400')).toBe(true);
+      // Not Fastify's bare "Client Error", which says nothing a caller can act on.
+      expect(res).toMatch(/percent-encode/);
     });
   });
 
@@ -860,7 +1445,9 @@ maybe('against the built index', () => {
       // build of it. Naming European countries here broke the moment the index
       // grew to all 41.
       const covered = new Set(Object.keys(a.manifest.country_ids));
-      const absent = ['jp', 'br', 'au', 'za'].find((c) => !covered.has(c));
+      // User-assigned codes, which no extract can ever carry — the index may
+      // well cover every country that exists.
+      const absent = ['zz', 'qq', 'xx'].find((c) => !covered.has(c));
       expect(absent, 'no absent country to test with').toBeDefined();
       const res = await get(`/v1/geocode?q=Praha&country=${absent}`);
       expect(res.statusCode).toBe(400);
@@ -876,8 +1463,13 @@ maybe('against the built index', () => {
     /**
      * `center` is [lon, lat] while the parameters are lat/lon, so reading one
      * into the other lands this region off Somalia with no indication why.
+     *
+     * The hint can only fire where the swapped point is inside coverage and the
+     * given one is not, so a global index cannot produce it — 16.6N 49.2E is in
+     * Yemen, which a world build also holds. Skipped there rather than
+     * pretended: it is a real limit of the heuristic, not of the test.
      */
-    needs('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
+    maybeRegional('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
       const res = await get('/v1/geocode?lat=16.6148&lon=49.2012');
       expect(res.statusCode).toBe(200); // outside coverage is not an error
       const body = res.json();
@@ -927,9 +1519,12 @@ maybe('against the built index', () => {
       expect(b.maxLat).toBeGreaterThanOrEqual(hiLat);
       expect(b.minLon).toBeLessThanOrEqual(loLon);
       expect(b.maxLon).toBeGreaterThanOrEqual(hiLon);
-      // Not the whole globe: a coverage box is only useful if it excludes things.
-      expect(b.maxLat - b.minLat).toBeLessThan(120);
-      expect(b.maxLon - b.minLon).toBeLessThan(180);
+      // A coverage box is only useful if it excludes things — unless the index
+      // really is the whole world, in which case excluding nothing is correct.
+      if (!isGlobal) {
+        expect(b.maxLat - b.minLat).toBeLessThan(120);
+        expect(b.maxLon - b.minLon).toBeLessThan(180);
+      }
     });
 
     it('reports health', async () => {

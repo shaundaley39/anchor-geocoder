@@ -18,4 +18,16 @@ italy	it
 balkans	hr,si,rs,ba,me,mk,xk,al,bg,ro,gr
 eastern	ua,by,md,pl,sk,hu,ro
 mediterranean	it,gr,mt,cy,tr
-europe	al,at,ba,be,bg,by,ch,cy,cz,de,dk,ee,es,fi,fr,gb,gr,hr,hu,ie,is,it,li,lt,lu,lv,md,me,mk,mt,nl,no,pl,pt,ro,rs,se,si,sk,tr,ua,xk
+europe	ad,al,at,ba,be,bg,by,ch,cy,cz,de,dk,ee,es,fi,fo,fr,gb,ge,gr,hr,hu,ie,is,it,li,lt,lu,lv,mc,md,me,mk,mt,nl,no,pl,pt,ro,rs,se,si,sk,tr,ua,xk
+
+# Continents, and everything. Generated from the Geofabrik paths in
+# countries.tsv by scripts/refresh-catalog.sh; @world is every extract the
+# catalogue knows, which is every country Geofabrik publishes. Saudi Arabia is
+# the one gap, and it is Geofabrik's: they do not publish an extract for it.
+africa	ao,bf,bi,bj,bw,cd,cf,cg,ci,cm,cv,dj,dz,eg,er,et,ga,gh,gn,gq,gw,ke,lr,ls,ly,ma,mg,ml,mr,mu,mw,mz,na,ne,ng,rw,sc,sd,sh,sl,sn,so,ss,st,sz,td,tg,tn,tz,ug,za,zm,zw
+asia	af,am,az,bd,bt,cn,id,in,iq,ir,jo,jp,kg,kh,kp,kr,kz,la,lb,lk,mm,mn,mv,my,np,ph,pk,ps,qa,sy,th,tj,tl,tm,tw,uz,vn,ye
+oceania	as,au,ck,cp,fj,fm,ki,mh,nc,nr,nu,nz,pf,pg,pn,pw,sb,tk,to,tv,vu,wf,ws
+camerica	bs,bz,cr,cu,gt,hn,ht,jm,ni,pa,sv
+namerica	ca,gl,mx,us
+samerica	ar,bo,br,cl,co,ec,gy,pe,py,sr,uy,ve
+world	ad,af,al,am,ao,aq,ar,as,at,au,az,ba,bd,be,bf,bg,bi,bj,bo,br,bs,bt,bw,by,bz,ca,cd,cf,cg,ch,ci,ck,cl,cm,cn,co,cp,cr,cu,cv,cy,cz,de,dj,dk,dz,ec,ee,eg,er,es,et,fi,fj,fm,fo,fr,ga,gb,ge,gh,gl,gn,gq,gr,gt,gw,gy,hn,hr,ht,hu,id,ie,in,iq,ir,is,it,jm,jo,jp,ke,kg,kh,ki,kp,kr,kz,la,lb,li,lk,lr,ls,lt,lu,lv,ly,ma,mc,md,me,mg,mh,mk,ml,mm,mn,mr,mt,mu,mv,mw,mx,my,mz,na,nc,ne,ng,ni,nl,no,np,nr,nu,nz,pa,pe,pf,pg,ph,pk,pl,pn,ps,pt,pw,py,qa,ro,rs,ru,rw,sb,sc,sd,se,sh,si,sk,sl,sn,so,sr,ss,st,sv,sy,sz,td,tg,th,tj,tk,tl,tm,tn,to,tr,tv,tw,tz,ua,ug,us,uy,uz,ve,vn,vu,wf,ws,xk,ye,za,zm,zw

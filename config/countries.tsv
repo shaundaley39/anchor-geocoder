@@ -12,45 +12,192 @@
 # ireland-and-northern-ireland, which includes it — so gb+ie is the British
 # Isles with no overlap and no gap. xk is the conventional user-assigned code
 # for Kosovo.
+ad	europe/andorra	3454685	Andorra
+af	asia/afghanistan	112392412	Afghanistan
 al	europe/albania	53963766	Albania
+am	asia/armenia	53073599	Armenia
+ao	africa/angola	85206256	Angola
+aq	antarctica	33090927	Antarctica
+ar	south-america/argentina	429592758	Argentina
+as	australia-oceania/american-oceania	5366081	American Oceania
 at	europe/austria	809164710	Austria
+au	australia-oceania/australia	962145511	Australia
+az	asia/azerbaijan	46041053	Azerbaijan
 ba	europe/bosnia-herzegovina	160666211	Bosnia and Herzegovina
+bd	asia/bangladesh	353805843	Bangladesh
 be	europe/belgium	693705806	Belgium
+bf	africa/burkina-faso	84502762	Burkina Faso
 bg	europe/bulgaria	172989287	Bulgaria
+bi	africa/burundi	46224740	Burundi
+bj	africa/benin	48196631	Benin
+bo	south-america/bolivia	173362080	Bolivia
+br	south-america/brazil	2082794950	Brazil
+bs	central-america/bahamas	14271205	Bahamas
+bt	asia/bhutan	23597998	Bhutan
+bw	africa/botswana	87952688	Botswana
 by	europe/belarus	348686686	Belarus
+bz	central-america/belize	18246915	Belize
+ca	north-america/canada	6447041662	Canada
+cd	africa/congo-democratic-republic	416404061	Congo (Democratic Republic/Kinshasa)
+cf	africa/central-african-republic	99429710	Central African Republic
+cg	africa/congo-brazzaville	32567496	Congo (Republic/Brazzaville)
 ch	europe/switzerland	544999779	Switzerland
+ci	africa/ivory-coast	85398649	Ivory Coast
+ck	australia-oceania/cook-islands	972429	Cook Islands
+cl	south-america/chile	347007563	Chile
+cm	africa/cameroon	223177790	Cameroon
+cn	asia/china	1591551281	China
+co	south-america/colombia	329124868	Colombia
+cp	australia-oceania/ile-de-clipperton	42661	Île de Clipperton
+cr	central-america/costa-rica	38951185	Costa Rica
+cu	central-america/cuba	61866523	Cuba
+cv	africa/cape-verde	11682181	Cape Verde
 cy	europe/cyprus	37222742	Cyprus
 cz	europe/czech-republic	945522044	Czechia
 de	europe/germany	4833032297	Germany
+dj	africa/djibouti	7013899	Djibouti
 dk	europe/denmark	493834894	Denmark
+dz	africa/algeria	299847203	Algeria
+ec	south-america/ecuador	125315106	Ecuador
 ee	europe/estonia	122823933	Estonia
+eg	africa/egypt	178194012	Egypt
+er	africa/eritrea	31397520	Eritrea
 es	europe/spain	1478648881	Spain
+et	africa/ethiopia	139644559	Ethiopia
 fi	europe/finland	765257117	Finland
+fj	australia-oceania/fiji	17235550	Fiji
+fm	australia-oceania/micronesia	1985227	Micronesia
+fo	europe/faroe-islands	7732265	Faroe Islands
 fr	europe/france	5075198227	France
+ga	africa/gabon	25440486	Gabon
 gb	europe/great-britain	2169086306	United Kingdom (Great Britain)
+ge	europe/georgia	101670211	Georgia
+gh	africa/ghana	115590848	Ghana
+gl	north-america/greenland	26004889	Greenland
+gn	africa/guinea	118316379	Guinea
+gq	africa/equatorial-guinea	6533554	Equatorial Guinea
 gr	europe/greece	340303345	Greece
+gt	central-america/guatemala	131377439	Guatemala
+gw	africa/guinea-bissau	11153131	Guinea-Bissau
+gy	south-america/guyana	15530345	Guyana
+hn	central-america/honduras	74066123	Honduras
 hr	europe/croatia	199269994	Croatia
+ht	central-america/haiti-and-domrep	88630841	Haiti and Dominican Republic
 hu	europe/hungary	323804321	Hungary
+id	asia/indonesia	1735574890	Indonesia (with East Timor)
 ie	europe/ireland-and-northern-ireland	411898695	Ireland and Northern Ireland
+in	asia/india	1705724940	India
+iq	asia/iraq	90322840	Iraq
+ir	asia/iran	229265843	Iran
 is	europe/iceland	64729720	Iceland
 it	europe/italy	2226262095	Italy
+jm	central-america/jamaica	38600249	Jamaica
+jo	asia/jordan	31018724	Jordan
+jp	asia/japan	2517688670	Japan
+ke	africa/kenya	350056040	Kenya
+kg	asia/kyrgyzstan	73423584	Kyrgyzstan
+kh	asia/cambodia	40771263	Cambodia
+ki	australia-oceania/kiribati	2434673	Kiribati
+kp	asia/north-korea	91807127	North Korea
+kr	asia/south-korea	286925006	South Korea
+kz	asia/kazakhstan	222506771	Kazakhstan
+la	asia/laos	53564075	Laos
+lb	asia/lebanon	52481242	Lebanon
 li	europe/liechtenstein	3452251	Liechtenstein
+lk	asia/sri-lanka	144142389	Sri Lanka
+lr	africa/liberia	37283352	Liberia
+ls	africa/lesotho	126821610	Lesotho
 lt	europe/lithuania	222519015	Lithuania
 lu	europe/luxembourg	47448676	Luxembourg
 lv	europe/latvia	139982316	Latvia
+ly	africa/libya	76568724	Libya
+ma	africa/morocco	243373848	Morocco
+mc	europe/monaco	691321	Monaco
 md	europe/moldova	101087543	Moldova
 me	europe/montenegro	34367242	Montenegro
+mg	africa/madagascar	388617442	Madagascar
+mh	australia-oceania/marshall-islands	2210480	Marshall Islands
 mk	europe/macedonia	29662739	North Macedonia
+ml	africa/mali	173386427	Mali
+mm	asia/myanmar	281612031	Myanmar (a.k.a. Burma)
+mn	asia/mongolia	61978046	Mongolia
+mr	africa/mauritania	30544617	Mauritania
 mt	europe/malta	8907969	Malta
+mu	africa/mauritius	9308432	Mauritius
+mv	asia/maldives	5270692	Maldives
+mw	africa/malawi	154722535	Malawi
+mx	north-america/mexico	645387569	Mexico
+my	asia/malaysia-singapore-brunei	250569417	Malaysia, Singapore, and Brunei
+mz	africa/mozambique	255323031	Mozambique
+na	africa/namibia	54377779	Namibia
+nc	australia-oceania/new-caledonia	14195976	New Caledonia
+ne	africa/niger	77442219	Niger
+ng	africa/nigeria	708388554	Nigeria
+ni	central-america/nicaragua	61237314	Nicaragua
 nl	europe/netherlands	1400381384	Netherlands
 no	europe/norway	1374279363	Norway
+np	asia/nepal	413675207	Nepal
+nr	australia-oceania/nauru	266514	Nauru
+nu	australia-oceania/niue	424565	Niue
+nz	australia-oceania/new-zealand	402913410	New Zealand
+pa	central-america/panama	36141123	Panama
+pe	south-america/peru	255881668	Peru
+pf	australia-oceania/polynesie-francaise	15645001	Polynésie française (French Polynesia)
+pg	australia-oceania/papua-new-guinea	54100367	Papua New Guinea
+ph	asia/philippines	606038493	Philippines
+pk	asia/pakistan	155950731	Pakistan
 pl	europe/poland	2092996067	Poland
+pn	australia-oceania/pitcairn-islands	114907	Pitcairn Islands
+ps	asia/israel-and-palestine	119379998	Israel and Palestine
 pt	europe/portugal	422078695	Portugal
+pw	australia-oceania/palau	820713	Palau
+py	south-america/paraguay	154303666	Paraguay
+qa	asia/gcc-states	252798960	GCC States
 ro	europe/romania	327450212	Romania
 rs	europe/serbia	239255977	Serbia
+ru	russia	4156403559	Russian Federation
+rw	africa/rwanda	67058723	Rwanda
+sb	australia-oceania/solomon-islands	11924997	Solomon Islands
+sc	africa/seychelles	2757975	Seychelles
+sd	africa/sudan	204050281	Sudan
 se	europe/sweden	815981133	Sweden
+sh	africa/saint-helena-ascension-and-tristan-da-cunha	896960	Saint Helena, Ascension, and Tristan da Cunha
 si	europe/slovenia	312416450	Slovenia
 sk	europe/slovakia	343719181	Slovakia
+sl	africa/sierra-leone	46192675	Sierra Leone
+sn	africa/senegal-and-gambia	105169147	Senegal and Gambia
+so	africa/somalia	164669252	Somalia
+sr	south-america/suriname	21360103	Suriname
+ss	africa/south-sudan	138371146	South Sudan
+st	africa/sao-tome-and-principe	1258311	Sao Tome and Principe
+sv	central-america/el-salvador	35035223	El Salvador
+sy	asia/syria	81626760	Syria
+sz	africa/swaziland	30577467	Swaziland
+td	africa/chad	134974066	Chad
+tg	africa/togo	62279520	Togo
+th	asia/thailand	327209245	Thailand
+tj	asia/tajikistan	48328559	Tajikistan
+tk	australia-oceania/tokelau	144805	Tokelau
+tl	asia/east-timor	17764008	East Timor
+tm	asia/turkmenistan	24854046	Turkmenistan
+tn	africa/tunisia	84093811	Tunisia
+to	australia-oceania/tonga	3717021	Tonga
 tr	europe/turkey	644955033	Turkey
+tv	australia-oceania/tuvalu	365029	Tuvalu
+tw	asia/taiwan	326271701	Taiwan
+tz	africa/tanzania	705637813	Tanzania
 ua	europe/ukraine	876115930	Ukraine
+ug	africa/uganda	371002616	Uganda
+us	north-america/us	12133184851	United States of America
+uy	south-america/uruguay	56101450	Uruguay
+uz	asia/uzbekistan	123796408	Uzbekistan
+ve	south-america/venezuela	127020138	Venezuela
+vn	asia/vietnam	328087800	Vietnam
+vu	australia-oceania/vanuatu	7892334	Vanuatu
+wf	australia-oceania/wallis-et-futuna	618265	Wallis et Futuna
+ws	australia-oceania/samoa	3457043	Samoa
 xk	europe/kosovo	30731946	Kosovo
+ye	asia/yemen	43113731	Yemen
+za	africa/south-africa	419808072	South Africa
+zm	africa/zambia	251751868	Zambia
+zw	africa/zimbabwe	179380099	Zimbabwe

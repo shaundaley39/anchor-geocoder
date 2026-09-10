@@ -19,9 +19,11 @@ import (
 )
 
 type vector struct {
-	In     string   `json:"in"`
-	Fold   string   `json:"fold"`
-	Tokens []string `json:"tokens"`
+	In     string     `json:"in"`
+	Fold   string     `json:"fold"`
+	Tokens []string   `json:"tokens"`
+	Index  []string   `json:"index_tokens"`
+	Query  [][]string `json:"query_variants"`
 }
 
 // Edge cases that must never regress, whatever the current extracts hold.
@@ -34,6 +36,25 @@ var handPicked = []string{
 	"Мостар", "Tuzla", "Њемачка", "Џамија",
 	"248/39", "ev.38", "12A", "2410/8a", "",
 	"  spaced   out  ", "ß straße", "Ø", "ﬁ ligature", "ĂǍÂ", "1/2/3",
+	// German: the umlaut spelled both ways, and ß against a compound boundary.
+	"München", "Muenchen", "Munchen", "Köln", "Düsseldorf", "Städtle",
+	"Fürstentum Liechtenstein", "Äußere Weißgerbergasse", "Grünstraße",
+	"Schloßstraße", "Schlossstraße", "Schlosstraße", "Straße", "Weißenburg",
+	"Neue Aue", "Steuerweg", "Bauernhof", "Michaelgasse", "Mu\u0308nchen",
+	// Categories the two implementations disagreed about: Nl and No are numbers
+	// to \p{N} and not to unicode.IsDigit.
+	"Třeboň Ⅱ", "Ⅳ", "№ 5", "①", "㎡", "½", "Ⅻ",
+	// Greek final sigma: JavaScript lowercases Σ to ς at a word end, Go to σ.
+	"ΒΛΑΧΟΠΟΥΛΟΣ", "Βλαχόπουλος", "ΑΘΗΝΑ", "Αθήνα", "ΟΔΟΣ", "οδός", "L'appartΣ",
+	// Above the BMP, where UTF-16 order and code point order part company.
+	"𑀜𑀸𑀡𑀲𑀁𑀯𑀭", "１月と７月", "🇬🇷 café",
+	// Scripts written without spaces, cut into bigrams; and the compatibility
+	// forms a Japanese address is full of.
+	"東京都千代田区千代田1-1", "千代田区", "東京", "新宿区西新宿2丁目8-1", "日本橋",
+	"北海道札幌市中央区北1条西2丁目", "日", "北京市朝阳区", "서울특별시 중구",
+	"１２３ 全角", "ｶﾀﾞｶﾅ", "ガタカナ", "ばなな", "バナナ", "㎡", "℡ 123", "㎅", "Ⅻ",
+	// The number leads in the English-speaking world.
+	"10 Downing Street", "1600 Pennsylvania Avenue", "221B Baker Street",
 }
 
 func main() {
@@ -92,7 +113,17 @@ func main() {
 		if t == nil {
 			t = []string{}
 		}
-		vecs = append(vecs, vector{In: s, Fold: norm.Fold(s), Tokens: t})
+		idx := norm.IndexTokens(s)
+		if idx == nil {
+			idx = []string{}
+		}
+		q := norm.QueryVariants(s)
+		if q == nil {
+			q = [][]string{}
+		}
+		vecs = append(vecs, vector{
+			In: s, Fold: norm.Fold(s), Tokens: t, Index: idx, Query: q,
+		})
 	}
 
 	of, err := os.Create(*out)

@@ -253,11 +253,14 @@ func firstNonEmpty(vals ...string) string {
 // deduplicated: a query mixes them freely — "Pražská 248 Poděbrady" spans
 // three. Exported so the build can re-tokenize after attaching a derived
 // locality.
+//
+// IndexTokens rather than Tokens: retrieval must also answer the other correct
+// spellings of a German name, so "München" is indexed under "muenchen" too.
 func SearchTokens(r *Record) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(s string) {
-		for _, tok := range norm.Tokens(s) {
+		for _, tok := range norm.IndexTokens(s) {
 			if tok != "" && !seen[tok] {
 				seen[tok] = true
 				out = append(out, tok)
