@@ -46,6 +46,17 @@ const covered: Record<string, number> = haveIndex
 const needs = (...cc: string[]) =>
   (cc.every((c) => c in covered) ? it : it.skip);
 
+/**
+ * An index covering most of the planet, where "outside coverage" barely exists.
+ * A few behaviours are about the edge of the data and have nothing to say when
+ * there is no edge.
+ */
+const isGlobal = Object.keys(covered).length > 100;
+
+/** Like `needs`, and also skipped on a global index. */
+const maybeRegional = (...cc: string[]) =>
+  (!isGlobal && cc.every((c) => c in covered) ? it : it.skip);
+
 describe('rate limiting', () => {
   needs('cz')('returns 429 with Retry-After once the window is exhausted', async () => {
     if (!haveIndex) return;
@@ -210,12 +221,20 @@ maybe('against the built index', () => {
    * CI has only the committed demo index, and hardcoded Czech names meant the
    * tests that matter most were the ones that never ran there.
    */
+  /**
+   * Names a query could plausibly be made of: judged on what they fold to, not
+   * on how they are spelled. A world index holds "½ Street", which folds to the
+   * tokens "1" and "2" — every digit in the corpus is a candidate for it, and
+   * asking it to find itself tests nothing but the ranking of numbers.
+   */
   const sampleNames = (want: number): string[] => {
     const out: string[] = [];
     const seen = new Set<string>();
     for (let id = 0; id < a.manifest.num_anchors && out.length < want; id += 3) {
       const nm = a.strings.get(a.anchorName[id]!);
-      if (nm.length < 4 || /\d/.test(nm) || seen.has(nm)) continue;
+      if (nm.length < 4 || seen.has(nm)) continue;
+      const toks = foldTokens(nm);
+      if (toks.some((t) => /\d/.test(t)) || !toks.some((t) => t.length >= 4)) continue;
       seen.add(nm);
       out.push(nm);
     }
@@ -651,6 +670,9 @@ maybe('against the built index', () => {
         const top = out.results[0];
         // A correction searched different tokens than the scan below uses.
         if (!top || out.corrected !== null) continue;
+        // MAX_RERANK stopping the scan is the one case the bound does not
+        // cover, and `forward` says so by setting this.
+        if (out.stats.cappedByLimit) continue;
 
         let bestId = -1, bestScore = -Infinity;
         for (const parsed of parseQuery(q)) {
@@ -693,6 +715,13 @@ maybe('against the built index', () => {
     it('finds the same corrections as a full scan of the dictionary', () => {
       const TYPOS = ['prahha', 'warszwa', 'nadrzni', 'krakoww', 'zurick', 'sarajevoo'];
       for (const typo of TYPOS) {
+        // A correctly spelled query is never second-guessed, and a big enough
+        // dictionary has a real place called almost anything: "zurick" is a
+        // term in the world index.
+        if (a.terms.find(typo) >= 0) {
+          expect(correctToken(a, typo), typo).toBeNull();
+          continue;
+        }
         let bestBrute = '';
         let bestPostings = -1;
         for (let id = 0; id < a.terms.length; id++) {
@@ -1027,7 +1056,9 @@ maybe('against the built index', () => {
       // build of it. Naming European countries here broke the moment the index
       // grew to all 41.
       const covered = new Set(Object.keys(a.manifest.country_ids));
-      const absent = ['jp', 'br', 'au', 'za'].find((c) => !covered.has(c));
+      // User-assigned codes, which no extract can ever carry — the index may
+      // well cover every country that exists.
+      const absent = ['zz', 'qq', 'xx'].find((c) => !covered.has(c));
       expect(absent, 'no absent country to test with').toBeDefined();
       const res = await get(`/v1/geocode?q=Praha&country=${absent}`);
       expect(res.statusCode).toBe(400);
@@ -1043,8 +1074,13 @@ maybe('against the built index', () => {
     /**
      * `center` is [lon, lat] while the parameters are lat/lon, so reading one
      * into the other lands this region off Somalia with no indication why.
+     *
+     * The hint can only fire where the swapped point is inside coverage and the
+     * given one is not, so a global index cannot produce it — 16.6N 49.2E is in
+     * Yemen, which a world build also holds. Skipped there rather than
+     * pretended: it is a real limit of the heuristic, not of the test.
      */
-    needs('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
+    maybeRegional('cz')('flags transposed coordinates instead of silently returning nothing', async () => {
       const res = await get('/v1/geocode?lat=16.6148&lon=49.2012');
       expect(res.statusCode).toBe(200); // outside coverage is not an error
       const body = res.json();
@@ -1094,9 +1130,12 @@ maybe('against the built index', () => {
       expect(b.maxLat).toBeGreaterThanOrEqual(hiLat);
       expect(b.minLon).toBeLessThanOrEqual(loLon);
       expect(b.maxLon).toBeGreaterThanOrEqual(hiLon);
-      // Not the whole globe: a coverage box is only useful if it excludes things.
-      expect(b.maxLat - b.minLat).toBeLessThan(120);
-      expect(b.maxLon - b.minLon).toBeLessThan(180);
+      // A coverage box is only useful if it excludes things — unless the index
+      // really is the whole world, in which case excluding nothing is correct.
+      if (!isGlobal) {
+        expect(b.maxLat - b.minLat).toBeLessThan(120);
+        expect(b.maxLon - b.minLon).toBeLessThan(180);
+      }
     });
 
     it('reports health', async () => {

@@ -6,9 +6,11 @@
 # publishes index-v1.json listing every extract with its path, so the catalogue
 # can be generated from it:
 #
-#   scripts/refresh-catalog.sh            # refresh sizes for what is listed
-#   scripts/refresh-catalog.sh add gr cy   # add countries by ISO code
-#   scripts/refresh-catalog.sh list        # every European extract available
+#   scripts/refresh-catalog.sh              # refresh sizes for what is listed
+#   scripts/refresh-catalog.sh add gr cy     # add countries by ISO code
+#   scripts/refresh-catalog.sh list          # every extract available
+#   scripts/refresh-catalog.sh list asia     # ...in one continent
+#   scripts/refresh-catalog.sh add-all       # every country on earth
 #
 # The index carries paths and names but not sizes, so those come from a HEAD.
 # Note the redirect: the request lands on a dated filename, and only the final
@@ -30,27 +32,48 @@ fetch_index() {
   fi
 }
 
-# Europe-only, and only leaf extracts: a country, not a continent or a region.
-europe_extracts() {
-  python3 - "$cache" <<'PY'
+# Country-level extracts, optionally within one continent. A country, not a
+# continent and not a sub-region: the first is too coarse to give the API a
+# country code, the second too fine to be one.
+all_extracts() {
+  python3 - "$cache" "${1:-}" <<'INNER'
 import json, sys
+
+# Geofabrik's index mis-tags a handful of small Pacific extracts: six claim
+# Vanuatu's code and two the Marshall Islands'. Taken at face value the
+# catalogue would have six entries fighting over "vu". The path says what each
+# one actually is.
+OVERRIDE = {
+    'australia-oceania/american-oceania': 'as',
+    'australia-oceania/ile-de-clipperton': 'cp',
+    'australia-oceania/polynesie-francaise': 'pf',
+    'australia-oceania/tokelau': 'tk',
+    'australia-oceania/wallis-et-futuna': 'wf',
+    'australia-oceania/pitcairn-islands': 'pn',
+}
+
 d = json.load(open(sys.argv[1]))
+want = sys.argv[2] if len(sys.argv) > 2 else ''
 for f in d['features']:
     p = f['properties']
-    urls = p.get('urls', {})
-    pbf = urls.get('pbf', '')
-    if '/europe/' not in pbf:
-        continue
-    # Skip sub-regions: they have a parent that is itself a European country.
-    if pbf.count('/') > 5:
-        continue
-    iso = (p.get('iso3166-1:alpha2') or [None])[0]
-    if not iso:
+    pbf = p.get('urls', {}).get('pbf', '')
+    if not pbf:
         continue
     path = (pbf.replace('https://download.geofabrik.de/', '')
                .replace('-latest.osm.pbf', ''))
-    print(f"{iso.lower()}\t{path}\t{p['name']}")
-PY
+    depth = path.count('/')
+    # Depth 1 is a country within a continent; russia and antarctica are
+    # continent-level files that happen to be one country each.
+    if depth != 1 and path not in ('russia', 'antarctica'):
+        continue
+    iso = p.get('iso3166-1:alpha2') or []
+    code = OVERRIDE.get(path) or (iso[0].lower() if iso else '')
+    if not code:
+        continue
+    if want and not (path == want or path.startswith(want + '/')):
+        continue
+    print(f"{code}\t{path}\t{p['name']}")
+INNER
 }
 
 size_of() {
@@ -61,14 +84,14 @@ size_of() {
 case "${1:-refresh}" in
 list)
   fetch_index
-  europe_extracts | sort | awk -F'\t' '{printf "  %-4s %-34s %s\n", $1, $3, $2}'
+  all_extracts "${2:-}" | sort | awk -F'\t' '{printf "  %-4s %-34s %s\n", $1, $3, $2}'
   ;;
 add)
   fetch_index
   shift
   for code in "$@"; do
-    line=$(europe_extracts | awk -F'\t' -v c="$code" '$1==c')
-    [ -n "$line" ] || { echo "no European extract for '$code'" >&2; exit 1; }
+    line=$(all_extracts | awk -F'\t' -v c="$code" '$1==c' | head -1)
+    [ -n "$line" ] || { echo "no extract for '$code'" >&2; exit 1; }
     if grep -q "^$code	" "$catalog"; then
       echo "  $code already present"; continue
     fi
@@ -96,5 +119,24 @@ refresh)
     sleep 1
   done < "$catalog"
   ;;
-*) echo "usage: refresh-catalog.sh [list|add CODE...|refresh]" >&2; exit 2;;
+add-all)
+  # Every country Geofabrik publishes, skipping what the catalogue already has,
+  # so hand-tuned entries survive. A HEAD each for the size, which takes a few
+  # minutes and is polite about it.
+  fetch_index
+  added=0
+  while IFS=$'\t' read -r code path name; do
+    grep -q "^$code	" "$catalog" && continue
+    sz=$(size_of "$path")
+    [ -n "$sz" ] || { echo "  could not size $path, skipping" >&2; continue; }
+    printf '%s\t%s\t%s\t%s\n' "$code" "$path" "$sz" "$name" >> "$catalog"
+    printf '  added %-4s %-34s %6.2f GB\n' "$code" "$name" "$(echo "$sz/1073741824" | bc -l)"
+    added=$((added + 1))
+    sleep 0.3
+  done < <(all_extracts | sort)
+  echo "  $added added"
+  { grep '^#' "$catalog"; grep -v '^#' "$catalog" | grep -v '^$' | sort; } > "$catalog.tmp"
+  mv "$catalog.tmp" "$catalog"
+  ;;
+*) echo "usage: refresh-catalog.sh [list [continent]|add CODE...|add-all|refresh]" >&2; exit 2;;
 esac

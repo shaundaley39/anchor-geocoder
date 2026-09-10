@@ -54,21 +54,49 @@ make serve-pool                   # the same index, one request thread per core 
 
 ### Build the World
 
-An index for the whole world should fit in under 8 GB of RAM (calculated, not tested). Building it is the harder half, and the shape of the build decides whether it fits on a laptop - see [Building Within the RAM You Have](#building-within-the-ram-you-have) for the measurements. The short version: **build it from regional extracts, not from `planet-latest.osm.pbf`**.
-
-The reason is in the extract stage. Resolving way geometry needs the node ids a selected way refers to, and their locations, held while the file streams past: Germany alone needs 131.9M of them, which is 2.1 GB of the two arrays. Those scale with the extract, not with the machine, so one planet file would want tens of gigabytes for that step alone and there is no ceiling that can help - the data has to be live. Regional extracts bound it by the largest region instead.
+Built and served, not calculated. The catalogue holds every country Geofabrik publishes — 189 extracts, 77 GB — and `@world` names all of them:
 
 ```sh
-# Add the Geofabrik regions outside Europe to the catalogue. Paths are relative
-# to https://download.geofabrik.de/ and sizes are indicative only.
-printf 'af\tafrica\t%s\tAfrica\n' 5000000000 >> config/countries.tsv
-# ...and so on for asia, north-america, south-america, central-america,
-# australia-oceania and russia, then name the set in config/groups.tsv.
-
-make all COUNTRIES=@world MEM_GB=26
-make serve-pool
+make all COUNTRIES=@world MEM_GB=26   # fetch + records + index, about 2h15
+make serve-pool                        # 189 countries, one thread per core
 ```
 
+| | |
+| --- | --- |
+| extracts | 189 countries, 77 GB downloaded |
+| extract stage | 1h19, peak 27.7 GB resident, producing 12.2 GB of records |
+| index stage | 36m, peak 31.9 GB resident (22.1 GB live), producing an 11.8 GB index |
+| index contents | 58.5M anchors, 173.8M addresses, 25.8M POIs, 9.6M search terms, 34.5M strings |
+| serving it | 11.7 GB resident idle, 14.0 GB under load on eight threads, 3.5s to boot |
+
+Both stages run under `MEM_GB`, which is what makes this a laptop job rather than a cloud one — see [Building Within the RAM You Have](#building-within-the-ram-you-have). The index stage's 31.9 GB is macOS's peak resident figure and counts pages the collector has already released; the live heap peaked at 22.1 GB, and a tighter ceiling trades CPU for the difference.
+
+**Build it from country extracts, not from `planet-latest.osm.pbf`.** Resolving way geometry needs the node ids each selected way refers to, and their locations, held while the file streams past: the United States alone needs 132M of them. Those arrays scale with the file being read, not with the machine, so one planet file would want tens of gigabytes for that step and no ceiling can help — the data has to be live. Country extracts bound it by the largest country instead, which is why the run above peaks where it does.
+
+Adding countries needs no hand-editing: `scripts/refresh-catalog.sh` reads Geofabrik's published index.
+
+```sh
+scripts/refresh-catalog.sh list asia    # what is available
+scripts/refresh-catalog.sh add jp kr    # add two by ISO code
+scripts/refresh-catalog.sh add-all      # every country on earth
+```
+
+Saudi Arabia is the one gap in `@world`, and it is Geofabrik's: they publish no extract for it.
+
+#### What the world serves
+
+Requests per second, same harness and same machine as the European figures [above](#what-it-actually-serves):
+
+| query shape | 1 thread | 8 threads | vs Europe |
+| --- | ---: | ---: | ---: |
+| reverse, lat/lon | 10,326 | 80,833 | same |
+| street + house number | 530 | 3,630 | -2% |
+| full city name | 490 | 3,490 | +4% |
+| 5,000 distinct real names | 121 | 544 | -75% |
+| mixed traffic | 121 | 774 | -21% |
+| 3-character autocomplete prefix | 70 | 443 | -23% |
+
+Reverse geocoding does not notice the world at all — a k-d tree over 232M points is four levels deeper than one over 113M. Text search costs 20-25% more, which is what an inverted index 2.5x larger should cost: longer posting lists, more terms in a prefix range. The diverse profile falls furthest because a name sampled from the whole planet is likelier to be a common word in some language than a name sampled from Europe.
 
 ## Architectural Decisions
 
@@ -154,6 +182,8 @@ Measured with [`server/loadtest.mjs`](server/loadtest.mjs) against the 42-countr
 | 3-character autocomplete prefix | 93 | 572 | 6.2x | 14.0 ms |
 | reverse at max radius and page size | 63 | 460 | 7.3x | 15.9 ms |
 
+The same table for the whole world is under [What the world serves](#what-the-world-serves).
+
 Every row but one cycles a handful of queries, which is the friendliest traffic there is for anything cached per thread. The `diverse` row does not: 5,000 distinct names sampled from the index, one per request, which is what a search box actually sends.
 
 Scaling the mixed profile by thread count: 173, 323, 593, 863, 1050, 1219, 1397, 1513 rps at 1, 2, 4, 6, 8, 10, 12, 16 threads. That is 8.1x at twelve threads and 8.8x at sixteen, on a box with twelve performance cores and four efficiency cores that is also running the load generator - the curve bends where the machine runs out of cores, not where the server does. Resident memory over the same sweep, *idle*: 4.28, 4.40, 4.59, 4.61, 4.73, 4.94, 4.80, 5.37 GB - see the table above for what it reaches while serving.
@@ -223,7 +253,7 @@ and it is no slower - 15m33 against 16m07. Four changes, in order of how much th
 
 Extraction (`geoingest`) is bounded by the largest single extract rather than by the corpus. Germany, the largest in Europe, peaks at 14.1 GB; under `MEM_GB=6` it peaks at 7.8 GB and takes 7m24 instead of 4m49. That is the trade in its clearest form, and it is why the ceiling is a knob rather than a default.
 
-**Does the world fit in 30 GB?** Indexing scales with records, and the planet has roughly twice Europe's addresses and anchors, so ~20 GB live and comfortably inside 30 with `MEM_GB` set. Extraction fits if - and only if - it is fed regional extracts, since its two big arrays scale with the file it is reading rather than with the total. Both halves are extrapolations from the European measurements above; the honest position is that it should fit and has not been run.
+**Does the world fit in 30 GB?** It has now been run, on the laptop this was written on: extraction peaks at 27.7 GB and indexing at 31.9 GB resident, the latter against a live heap of 22.1 GB. So extraction fits with room and indexing fits the working set but not, on macOS's accounting, the resident figure — the gap is pages the collector has released and the OS has not yet reclaimed, which it will under pressure. A tighter `MEM_GB` trades CPU for that gap. The prediction above was 20 GB live against 22.1 measured, which is close enough to be luck.
 
 ### Container Image
 

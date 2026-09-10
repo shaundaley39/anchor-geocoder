@@ -38,15 +38,24 @@ fetch: $(PBFS)
 
 # The download path may sit in a subdirectory (europe/great-britain) while the
 # local file is flat, so the URL is looked up rather than derived from the name.
+#
+# A mismatched checksum deletes the file. `curl -C -` resumes onto whatever
+# bytes are already there, so a partial or stale download is appended to rather
+# than replaced, and every retry fails the same way until someone deletes it by
+# hand — which is a poor thing to discover 117 files into a 189-file fetch.
 $(RAW)/%-latest.osm.pbf:
 	@mkdir -p $(RAW)
 	@url=$$($(RESOLVE) url "$*"); \
 	 test -n "$$url" || { echo "no catalog entry for $*"; exit 1; }; \
 	 curl -fSL --retry 3 -C - -o $@ "$$url"; \
 	 curl -fsSL -o $@.md5 "$$url.md5"
-	@cd $(RAW) && test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
-	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)" \
-	   && echo "  checksum OK: $*" || (echo "  CHECKSUM MISMATCH: $*" && exit 1)
+	@cd $(RAW) && if test "$$(awk '{print $$1}' $*-latest.osm.pbf.md5)" = \
+	   "$$(md5 -q $*-latest.osm.pbf 2>/dev/null || md5sum $*-latest.osm.pbf | cut -d' ' -f1)"; \
+	 then echo "  checksum OK: $*"; \
+	 else \
+	   rm -f $*-latest.osm.pbf $*-latest.osm.pbf.md5; \
+	   echo "  CHECKSUM MISMATCH: $* (removed; re-run make fetch)"; exit 1; \
+	 fi
 
 # MEM_GB: a soft ceiling on the build's heap, in gigabytes. Unset, Go collects
 # when the heap has doubled, so resident memory settles at roughly twice what is
