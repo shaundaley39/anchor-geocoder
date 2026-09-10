@@ -162,8 +162,6 @@ Where the ~290 MB goes, in decreasing order:
 - **~68 MB of idle floor** - the isolate, the Fastify instance, the compiled AJV validators and `fast-json-stringify` serializers, the OpenAPI document and the docs bundle, all built once per thread. Measured against the 676 KB demo index, where the index itself is a rounding error: 175 MB at one thread, 1124 MB at sixteen.
 - **The decoded-string cache**, per thread because a JavaScript string cannot be shared, and capped. (An earlier version was an array slot per entry - 8 bytes x 13.9M strings whether or not they were ever asked for, allocated eagerly per thread. That alone was 2.5 GB across sixteen threads, more than half the index, and it is why the cache is a capped map instead.)
 
-There used to be a second, larger cache here: the folded tokens of each anchor's names, at ~140 MB a thread. It is gone, because the fold moved into the artifact - see [The Fold Belongs in the Index](#the-fold-belongs-in-the-index). Per-thread peak went from ~290 MB to ~230 MB, at the cost of 0.6 GB of shared index, which pays for itself at about ten threads.
-
 Each worker runs a complete Fastify instance on its own HTTP server (supplied through Fastify's `serverFactory`), and there is no dispatcher in front of them: the kernel does the balancing. On Linux each worker binds its own socket with `SO_REUSEPORT` and the kernel hashes connections across them. macOS has `SO_REUSEPORT` but does not load-balance it, and Node rejects the option outright, so the pool falls back to the pre-fork model - the first worker binds, the rest accept on its descriptor, which they can because threads share a descriptor table. The strategy is probed at boot, not assumed.
 
 Thread count defaults to `availableParallelism()`, which reads the cgroup quota, so `docker run --cpus=4` starts four threads on a 14-core host rather than fourteen fighting over four. `WORKERS` overrides it, and `WORKERS=1` is the old single-threaded process exactly.
@@ -196,69 +194,6 @@ The same sweep in a container, scaling the CPU allocation rather than the thread
 
 **Reverse is essentially free** and text search is not, by two orders of magnitude. A deployment serving mostly map clicks and one serving mostly autocomplete need very different sizing, which is why the table is per shape and the blended figure carries a stated mix.
 
-### The Expensive Tail
-
-Two query shapes used to cost 100x what they should, and both turned out to be implementation, not the price of the answer. The measurements below are single-threaded and against the 42-country index.
-
-**Names made entirely of common words.** "Rue de la Paix" took 249ms, of which 242ms was retrieval — it reranked only 78 candidates and returned 1,764. Its three complete tokens hold 1.1M, 2.3M and 1.2M postings, and membership was being tested by building a `Set` from each: 4.6M insertions to discard 4.6M of them. Posting lists are written in ascending anchor order, so membership is a binary search and needs nothing built at all; and the walk should start from whichever candidate set is smallest, which for this query is the last token. 249ms became 1.2ms, and "Rue du General de Gaulle" 191ms became 2.0ms. As a load profile it went from 200 to 1,310 requests a second.
-
-**A reverse search filtered to a country that is nowhere near the point.** `country=pt` clicked on Berlin took 110ms against 0.04ms unfiltered — 2,750x — because the filter rejects every candidate, so the radius escalates to its 50km cap and the final sweep measures every point in a 100km box around a dense city before discarding all of them. The fix is to know where each country is: [`coverage()`](server/src/reverse.ts) records a bounding box per country in the pass it already makes at boot, built from anchor extents and every address hanging off them, so it can never rule out a match the search would have found. Four comparisons settle it. 110ms became 0.001ms, and over a sweep of the whole coverage box the mean went from 2.58ms to 0.008ms and the worst case from 179ms to 2.65ms.
-
-What is *not* expensive, contrary to the obvious guess: clicking on nothing. A point in the mid-Atlantic, the Baltic, or the Arctic costs 0.01-0.28ms, less than a click on central Prague, because an empty region is where a k-d tree prunes hardest. Over 4,000 uniform points in the coverage box, reverse geocoding at the default radius averages 0.020ms with a worst case of 1.04ms. It follows that giving up when nothing is within a few hundred metres would buy nothing and cost a great deal: of the points that do get an answer, 82% get it from beyond 200m, and they are real answers — a village 0.2km from a field, a converter station 12.8km off the Dutch coast.
-
-What remains, and is left alone deliberately: a reverse query that asks for 50 results within 50km from a point in open water near a dense coast really does have to sweep a 100km box, and costs ~16ms of thread time. That is under twice a three-character autocomplete, it needs the client to ask for both the maximum radius and the maximum page size, and every way of capping it - a visit budget, an early cut-off - trades a real result for the saving. The honest containment for that shape is load shedding on event-loop delay rather than second-guessing the query.
-
-### Addresses That Are Not European
-
-Two shapes the folding got wrong, both found by asking rather than assuming.
-
-**The number leads in the English-speaking world.** "10 Downing Street" folded to `[10, downing]` - a name reading, since a leading digit was treated as part of the name on the grounds that "3 Maja" is a Polish street and "17 Novembre" a French one. But no street's *name* contains "10", so the query asked the index for something that cannot exist and got nothing back. Parsing now offers a leading-number reading too, last of the candidates: the whole-query reading still gets first refusal, so "3 Maja" resolves to Plac 3 Maja and "10 Downing Street" to 10 Downing Street, London.
-
-**Japanese and Chinese are written without spaces.** The folder's last pass turns everything that is not a letter or a number into a separator, which finds no boundary at all in 東京都千代田区千代田: the whole address arrived as one token, so a query for 千代田区 would have had to reproduce the entire string to match anything. Runs of Han, Hiragana and Katakana are now cut into overlapping bigrams - 千代, 代田, 田区 - so a part of a name shares tokens with the whole of it, and the ordinary AND across query tokens does the rest. It is what Lucene's CJK analyzer does, and it needs no dictionary, which a geocoder rebuilt from a planet extract cannot carry. Hangul is deliberately left alone: Korean is written with spaces, so the existing split already finds its boundaries.
-
-Two smaller things came with it. Folding moved from NFD to NFKD, so the full-width digits a Japanese address is written with ("１丁目") reach the ASCII ones, half-width katakana reaches full-width, and Ⅻ, ﬁ, ² and № become letters a keyboard can produce rather than characters nobody can type. And the two Japanese voicing marks are now spared from the diacritic strip: they are combining marks by category, but dropping U+3099 folds ば onto は, which is a different word, where dropping a háček is the whole point.
-
-The script ranges are hard-coded rather than taken from `unicode.Is(unicode.Han, r)` and `\p{Script=Han}`, because those are Unicode-version dependent on each side and the two sides have to agree exactly, forever.
-
-### The Fold Belongs in the Index
-
-Scoring a candidate meant folding its name and every alias it carries - `TextDecoder`, NFD, a regex, a character loop, several allocations deep - and it happened per candidate, per request, per thread. It was expensive enough to need a cache, and that cache was ~140 MB per thread, replicated across the pool, each copy warming from cold independently.
-
-But the fold is the same answer every time, and the term dictionary already contains it. So [`anchor_terms.bin`](ingest/internal/index/format.go) now stores, per anchor, the *term ids* its locality and each of its name variants fold to. Scoring compares integers: an exact query token is an id equality, a prefix token is a range check, because retrieval has already resolved the prefix to a range of the dictionary. Measured against 200,000 random anchors, reading the stored ids costs **45 ns a candidate where folding the names cost 2,579 ns** - the same token counts, 57x apart.
-
-End to end the throughput gain is modest, and the honest reason is that the benchmark flatters what it replaced: cycling twelve queries gives a per-thread cache a ~100% hit rate, so the 2.6 µs was mostly not being paid. On the diverse profile, where it would have been, the new path is insensitive to it. What is unambiguous is the memory - ~290 MB a thread down to ~230 MB, for 0.6 GB of shared index - and what came with it:
-
-**The artifact is now its own contract fixture.** The index contains what Go folded; the server folds the same names in TypeScript; a test compares them. Not 4,000 sampled names but 23.3 million real ones - and the first run found three bugs that the fixture had missed for the life of the project:
-
-- `unicode.IsDigit` is category Nd, where the TypeScript port's `\p{N}` is Nd, Nl and No. "Třeboň Ⅱ" folded to one token in Go and two in TypeScript, so the index held a term the query never asked for. 6,465 anchors.
-- Go lowercases Σ to σ wherever it stands; JavaScript applies the contextual rule and gives ς at the end of a word. Every Greek name in capitals folded two ways.
-- Go sorts the term dictionary by code point; the server binary-searches it with JavaScript's `<`, which compares UTF-16 code units. The two disagree above the BMP, where a surrogate pair begins 0xD800 and sorts below everything from U+E000 up - so a lookup whose path crossed an astral term could take the wrong branch and come back empty. It is the kind of bug that stays invisible in Europe and would have arrived with the first planet build.
-
-Two more turned up in the build itself, both caught by the same assertion: an anchor kept a higher-ranked duplicate's alternate names while its tokens were replaced, so it advertised aliases it was not indexed under; and `geoindex` trusted the token list serialized into the record stream, so a normalizer change needed a re-extract to take effect rather than a re-index. Both are fixed, and the fold-vector fixture keeps its job - it is just no longer the only thing standing between the two implementations.
-
-### Building Within the RAM You Have
-
-The build is the memory-hungry half of this project: the server holds a 5 GB index, the build that produces it held 28 GB. That gap decides whether a planet build is a laptop job or a cloud one, so it is worth the same attention as the query path.
-
-Measured on the 42-country European build, indexing (`geoindex`, the stage that turns 97M records into the artifact):
-
-| | peak resident | peak live heap |
-| --- | ---: | ---: |
-| before | 28.5 GB | 23.1 GB |
-| after | 22.0 GB | 9.9 GB |
-| after, with `MEM_GB=12` | **18.8 GB** | 10.0 GB |
-
-and it is no slower - 15m33 against 16m07. Four changes, in order of how much they were worth:
-
-- **Anchor tokens are ids, not strings.** Five tokens per anchor is five string headers and five allocations, ~200 bytes against 20, across 23.3M anchors. The dictionary has to intern every one of them anyway, so the anchor holds ids into it. Live heap after the first pass: 15.4 GB to 9.0 GB.
-- **The dedup key is hashed, not kept.** "country|folded name|folded locality", built to be compared and then never read again, was 1.6 GB of strings. Two independent 64-bit hashes instead - a collision would silently merge two anchors, so 128 bits, where the odds are 5e-24 at sixty million keys rather than one in 65,000. Live heap after the second pass: 14.1 GB to 9.4 GB. And the map is dropped entirely once the passes are done, which is another 2 GB before the write phase begins.
-- **Columns stream to disk.** Nineteen anchor arrays of 23.3M entries, and four address arrays of 90M, were built in full and then written one after another - 2.9 GB held to do sequentially what a 1 MB buffer does. Same for the posting lists, which were copied into one flat 414 MB slice, and for the per-anchor term ids. Peak live heap through the write phase: 23.1 GB to 9.9 GB.
-- **`MEM_GB`.** Go collects when the heap has doubled, so resident memory settles at about twice what is live. A soft limit inverts that: near the ceiling the collector works harder, trading CPU for memory the machine does not have. Nothing is refused, so an honest overshoot finishes slowly rather than being OOM-killed at the last pass.
-
-Extraction (`geoingest`) is bounded by the largest single extract rather than by the corpus. Germany, the largest in Europe, peaks at 14.1 GB; under `MEM_GB=6` it peaks at 7.8 GB and takes 7m24 instead of 4m49. That is the trade in its clearest form, and it is why the ceiling is a knob rather than a default.
-
-**Does the world fit in 30 GB?** It has now been run, on the laptop this was written on: extraction peaks at 27.7 GB and indexing at 31.9 GB resident, the latter against a live heap of 22.1 GB. So extraction fits with room and indexing fits the working set but not, on macOS's accounting, the resident figure — the gap is pages the collector has released and the OS has not yet reclaimed, which it will under pressure. A tighter `MEM_GB` trades CPU for that gap. The prediction above was 20 GB live against 22.1 measured, which is close enough to be luck.
-
 ### Container Image
 
 The Dockerfile has a two stage build: the builder compiles the TypeScript and resolves production-only dependencies, and the runtime stage copies just the output across, leaving a 61 MB image with just the node runtime and server. The index is deliberately not built during the runtime image build - that would drag 3.5 GB of extracts and the Go toolchain into a parent layer for an artifact that is immutable once written, and shared by every replica/ deployment. `make docker` leaves the index outside the image, to be mounted from the host at `/index`, while `make docker-bundled` copies it into the image so the container needs no volume - at the cost of carrying an extra 473.
@@ -284,8 +219,6 @@ See [`./packages/core`](./packages/core) - dependency-free and browser-buildable
 ## Future Improvements and Scale
 
 Many!
-- we could probably use less RAM when building - it'd be worth exploring optimizations there if we want to do planet scale builds
-- incremental builds (ingesting changes rather than everything) could speed up production builds
 - forward geocoding could benefit from setting a locality bias, based on the user's map viewport or the particular application
 - depending on application, filtering places/ features by type or metadata may make sense
 - this API returns ranked places for a lat/lon or text input, but the ranking/ weights would deserve better calibration & regression testing (for both code changes and data ingestion)
