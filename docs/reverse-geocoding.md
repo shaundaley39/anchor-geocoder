@@ -43,11 +43,40 @@ Both spatial structures are precomputed by the build, so boot is a read rather
 than a rebuild - building them in-process cost 5.4 s and 3.0 s of startup
 respectively, on every replica on every deploy.
 
+Both are built from the same three arrangements the text index uses - a
+column, a blob with its bounds, and a *sorted* blob with its bounds - which
+[the forward document describes in
+full](forward-geocoding.md#the-three-shapes-everything-is-stored-in). Nothing
+here is a linked structure either. Figures below are the four-country default
+build, which `make all` produces with no arguments.
+
 **The k-d tree** ships as `kd_perm`, a permutation of point ids in k-d order
 with the tree's structure implicit in that order
 ([`BuildKDPermutation`](../ingest/internal/index/kdtree.go#L22), written by
-[`writeSpatial`](../ingest/internal/index/builder.go#L328)). The server adopts
-the permutation and holds nothing else
+[`writeSpatial`](../ingest/internal/index/builder.go#L328)).
+
+Implicit is the whole trick, so it is worth spelling out. A k-d tree is
+normally nodes with two child pointers. Here it is one `Uint32Array` of
+15,957,985 point ids - every address and every anchor, 60.9 MiB - arranged so
+that the median of any sub-range sits at its midpoint. The root is the element
+at `(0 + n-1) / 2`, split on longitude; its children are the midpoints of the
+two halves either side, split on latitude; and so on, alternating. A node is
+therefore a triple of integers - `left`, `right`, `axis` - and descending is
+arithmetic:
+
+```
+mid   = (left + right) >> 1        // this node's point
+left  half = (left, mid - 1, 1 - axis)
+right half = (mid + 1, right, 1 - axis)
+```
+
+[`range`](../server/src/pointindex.ts#L142) pushes those triples on an explicit
+stack and pops until the range is at most `nodeSize` wide, at which point it
+scans the remainder linearly. With `nodeSize` 64 and 16M points that is 18
+splits to a leaf. Descent into a half happens only if the query box reaches
+across the split, which is the pruning.
+
+The server adopts the permutation and holds nothing else
 ([`PointIndex.fromPermutation`](../server/src/pointindex.ts#L26)): coordinates
 are read back through accessors into `addr_lat`/`addr_lon` and
 `anchor_lat`/`anchor_lon` rather than copied, which saves 490 MB on the
@@ -59,20 +88,32 @@ neighbours rather than an error.
 
 **The containment grid** is a uniform 0.05° grid, about 5.5 km
 ([`kdtree.go:111`](../ingest/internal/index/kdtree.go#L111)). A feature is listed
-in every cell its bounding box touches. It ships as four arrays: `cell_key`,
-sorted, packing the cell's x and y into one integer
-([`CellKey`](../ingest/internal/index/kdtree.go#L125)); and `cell_start`,
-`cell_count`, `cell_items` as a CSR of anchor ids. The cell size is the usual
-trade - smaller cells multiply large features across more entries, larger ones
-return too many candidates per lookup.
+in every cell its bounding box touches.
+
+It is a sorted blob and its bounds, with one extra step. `cell_key` is the
+sorted array of occupied cells, each packing the cell's x and y into one
+integer ([`CellKey`](../ingest/internal/index/kdtree.go#L125)); `cell_start`
+and `cell_count` are parallel to it and slice `cell_items`, the concatenated
+anchor ids. Only occupied cells are stored, which is why the key has to be
+searched for rather than indexed into: 19,254 cells hold 105,732 listings, 5.5
+rings per cell, against the 259,200 cells a dense 0.05° grid of the globe
+would need. A lookup is therefore a binary search over `cell_key`
+([`findCell`](../server/src/reverse.ts#L63)) and then a slice, exactly like a
+posting list. The whole grid is 0.7 MiB.
+
+The cell size is the usual trade - smaller cells multiply large features
+across more entries, larger ones return too many candidates per lookup.
 
 The key packing is part of the format, since the server recomputes the same key
 from a click ([`reverse.ts:57`](../server/src/reverse.ts#L57)) and the two must
 agree; a contract test asserts the constants against the Go writer.
 
-**Outlines** are `geom` (int32 lat/lon pairs, all shapes concatenated),
-`geom_off` (a CSR of vertex offsets per anchor) and `geom_closed` (one byte per
-anchor: ring, or open point set).
+**Outlines** are the same arrangement once more: `geom` is every shape's int32
+lat/lon pairs concatenated (14.9 MiB, 1,951,739 vertices over 273,861 shapes),
+`geom_off` the per-anchor offsets that slice it, and `geom_closed` one byte per
+anchor saying whether the slice is a ring or an open point set. An anchor with
+no outline has `geom_off[id] == geom_off[id+1]`, so absence needs no flag and
+no null.
 
 **Coverage** is scanned once at boot
 ([`coverage`](../server/src/reverse.ts#L101)) and gives two things: the overall
@@ -161,7 +202,7 @@ What the callback does depends on which half of the id space the point is in:
 - **An address** is a bare point, so the distance is a haversine to it
   ([`haversineMetres`](../server/src/geometry.ts#L169)), and its owning anchor is
   recovered by binary search over `anchor_addr_start`
-  ([`anchorOfAddress`](../server/src/artifact.ts#L439)).
+  ([`anchorOfAddress`](../server/src/artifact.ts#L437)).
 - **An anchor with an outline** is measured to the outline
   ([`distanceToShape`](../server/src/geometry.ts#L78)), not to its centroid. A
   click at one end of a 2 km street is not 1 km from the street.
@@ -201,3 +242,27 @@ region, so a caller that wants to distinguish the tiers can.
 The whole path is checked against brute force: a test picks random points,
 computes the nearest address by scanning every address in the index, and asserts
 the k-d tree agrees.
+
+
+## 7. Two clicks, end to end
+
+On the four-country default build, single-threaded:
+
+**Central Brno (49.1951, 16.6068), 0.92 ms.** The cell key resolves by binary
+search over 19,254 keys; the cell's handful of rings are rejected on their
+bounding boxes or ray-cast; the first distance round at 150 m already fills
+the result, so the escalation loop runs once. Five results, the nearest two
+addresses 10 m away.
+
+**The Baltic (55.9, 19.2), 0.07 ms - thirteen times faster.** This is the
+shape people assume is the expensive one, and it is the cheapest thing the API
+does. The cell key is absent from `cell_key`, so tier one ends at the binary
+search. Then the radius escalates 150 m, 600 m, 2.4 km, 9.6 km, 38 km, 50 km
+and every round returns nothing, because an empty region is exactly where a
+k-d tree prunes hardest: the box fails the split test at the top of the tree
+and whole subtrees are never entered. Six rounds of not descending cost less
+than one round of descending.
+
+The expensive shape is the opposite one - a wide radius over dense data, which
+is why `limit=50&radius=50000` off a populated coast is the row that costs
+about 16 ms of thread time in the README's table.

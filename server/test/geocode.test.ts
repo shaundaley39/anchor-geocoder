@@ -182,6 +182,111 @@ describe('parseQuery', () => {
     // Not every ue is a written-out umlaut.
     expect(parseQuery('Neue Aue')[0]!.nameVariants).toEqual([['neue'], ['aue']]);
   });
+
+  /**
+   * Nothing is searchable by postcode, and every token but the last has to
+   * match a term, so a postcode left in the name matches nothing at all.
+   */
+  it('takes a two-part postcode out of the name', () => {
+    expect(first('Bratislavska 22, 602 00 Brno')).toEqual({
+      nameTokens: ['bratislavska', 'brno'], houseNumber: '22',
+    });
+    expect(first('Milady Horakove 334/36, 602 00 Brno')).toEqual({
+      nameTokens: ['milady', 'horakove', 'brno'], houseNumber: '334/36',
+    });
+    // Polish writes it with a hyphen and the halves the other way round.
+    expect(first('Marszalkowska 12, 00-001 Warszawa')).toEqual({
+      nameTokens: ['marszalkowska', 'warszawa'], houseNumber: '12',
+    });
+  });
+
+  /**
+   * A lone five-digit run is a German postcode or an American ZIP or a house
+   * number in a large city. Both readings are offered, and every reading that
+   * takes a house number out comes before every reading that does not.
+   */
+  it('offers both readings of a one-part postcode', () => {
+    const shapes = (q: string) => parseQuery(q).map((p) => [p.nameTokens.join(' '), p.houseNumber]);
+    expect(shapes('Hauptstrasse 5, 10115 Berlin')).toEqual([
+      ['hauptstrasse berlin', '5'],
+      // Reading the postcode as the house number instead is offered too, and
+      // finds nothing, which is why it is allowed to be this speculative.
+      ['hauptstrasse 5 berlin', '10115'],
+      ['hauptstrasse 10115 berlin', '5'],
+      ['hauptstrasse 5 berlin', null],
+      ['hauptstrasse 5 10115 berlin', null],
+    ]);
+    // Where the run really was the house number, taking it out leaves nothing
+    // for that reading to find, so there is no such reading to get in the way.
+    expect(shapes('Hauptstrasse 1234 Berlin')).toEqual([
+      ['hauptstrasse berlin', '1234'],
+      ['hauptstrasse berlin', null],
+      ['hauptstrasse 1234 berlin', null],
+    ]);
+    // A four-digit leading number is a house number, not a postcode.
+    expect(shapes('1600 Pennsylvania Avenue'))
+      .toEqual([['1600 pennsylvania', null], ['pennsylvania', '1600']]);
+  });
+
+  /**
+   * Folding splits a house number wherever its punctuation was, so reading one
+   * token of it asks for the wrong number on a street whose name has to
+   * contain the rest. Every one of these used to return nothing.
+   */
+  it('keeps a house number whole however it is punctuated', () => {
+    const hn = (q: string) => first(q).houseNumber;
+    expect(hn('85th Street 78-52, New York')).toBe('78-52');        // Queens
+    expect(hn('Generaal Smutslaan 216-17, Tilburg')).toBe('216-17'); // Dutch
+    expect(hn('中正南路 213號, 臺南市')).toBe('213號');                  // Taiwanese
+    expect(hn('High Street 5/B')).toBe('5/b');                       // letter half
+    expect(hn('Prazska ev.223, Pisek')).toBe('ev.223');              // Czech evidenční
+    expect(hn('Kosciuszki 1a, Biskupiec')).toBe('1a');
+    expect(hn('Golden Gate Avenue 1963;1965')).toBe('1963;1965');    // two in one tag
+  });
+
+  /** Humans put spaces where they like. The match folds both sides, so the
+   * only thing that has to survive is the run staying one number. */
+  it('tolerates whitespace inside a composed number', () => {
+    expect(first('Milady Horakove 334 / 36, Brno')).toEqual({
+      nameTokens: ['milady', 'horakove', 'brno'], houseNumber: '334/36',
+    });
+    expect(first('138. Sokak 75 / A, Balikesir').houseNumber).toBe('75/a');
+  });
+
+  /**
+   * The run has to stop at the number. A one-or-two-letter part is how "1a"
+   * and "213號" stay whole, and the risk is that it eats the street instead.
+   */
+  it('does not let a number run reach into the street name', () => {
+    expect(first('12 Main Street').houseNumber).toBeNull();
+    expect(first('Main Street 12')).toEqual({
+      nameTokens: ['main'], houseNumber: '12',
+    });
+    // An ordinal is a street, not a number, wherever it sits.
+    expect(first('85th Street, New York').houseNumber).toBeNull();
+    expect(parseQuery('1st Avenue').every((p) => p.houseNumber === null)).toBe(true);
+  });
+
+  /** Plenty of buildings are named and not numbered. */
+  it('reads a query with no number at all as pure name', () => {
+    const readings = parseQuery('Rose Cottage, High Street, Oxford');
+    expect(readings.every((p) => p.houseNumber === null)).toBe(true);
+    expect(readings[0]!.nameTokens).toEqual(['rose', 'cottage', 'high', 'oxford']);
+  });
+
+  /**
+   * "334/36" and "602 00" both fold to two digit tokens, and only the raw text
+   * says which is one number and which is two. Without the slash the pair is
+   * not recombined - and "334 36" is not how anyone writes the address.
+   */
+  it('recombines a number pair only where the query wrote the slash', () => {
+    expect(first('Prazska 248/39 Podebrady')).toEqual({
+      nameTokens: ['prazska', 'podebrady'], houseNumber: '248/39',
+    });
+    expect(first('Prazska 248 39 Podebrady')).not.toEqual({
+      nameTokens: ['prazska', 'podebrady'], houseNumber: '248/39',
+    });
+  });
 });
 
 describe('placeName rendering', () => {
@@ -525,6 +630,42 @@ maybe('against the built index', () => {
       expect(r?.houseNumber?.startsWith('248')).toBe(true);
     });
 
+    /**
+     * Two of the three ways of writing a Czech address are addresses: the
+     * whole thing, and the orientation number alone. They name the same
+     * building and are worth the same. The conscription number alone reaches
+     * the building and ranks below both, because it is not an address.
+     *
+     * Reported against this exact query, which used to answer the short form
+     * with the street.
+     */
+    needs('cz')('answers both valid forms of a Czech address with one building', () => {
+      const full = top('Milady Horakove 334/36, Brno');
+      expect(full?.layer).toBe('address');
+      expect(full?.houseNumber).toBe('334/36');
+
+      const short = top('Milady Horakove 36, Brno');
+      expect(short?.houseNumber).toBe('334/36');
+      expect(short?.score).toBeCloseTo(full!.score, 3);
+
+      const conscription = top('Milady Horakove 334, Brno');
+      expect(conscription?.houseNumber).toBe('334/36');
+      expect(conscription!.score).toBeLessThan(full!.score);
+    });
+
+    /** Nothing is searchable by postcode, so one in the query has to be
+     * ignored rather than searched for. */
+    needs('cz')('answers the same with a postcode written into the query', () => {
+      const plain = top('Milady Horakove 36, Brno');
+      for (const q of ['Milady Horakove 334/36, 602 00 Brno',
+        'Milady Horakove 36, 602 00 Brno']) {
+        const r = top(q);
+        expect(r?.layer, q).toBe('address');
+        expect(r?.houseNumber, q).toBe('334/36');
+        expect(r?.id, q).toBe(plain?.id);
+      }
+    });
+
     needs('cz')('resolves a place-anchored village address with no street', () => {
       const r = top('Velka Upa 299');
       expect(r?.layer).toBe('address');
@@ -823,50 +964,101 @@ maybe('against the built index', () => {
         const num = a.strings.get(a.addrNum[i]!);
         const found = findHouseNumber(a, anchorID, num);
         expect(found).not.toBeNull();
-        expect(found!.exact).toBe(true);
+        expect(found!.how).toBe('exact');
         // The match must carry the same leading integer.
         expect(a.addrSortKey[found!.index]).toBe(a.addrSortKey[i]);
       }
     });
 
     /**
-     * A Czech address composes two numbers: "334/36" is conscription number
-     * 334, which identifies the building within the municipality, and
-     * orientation number 36, which is on the door plate and on the envelope.
-     * The run is sorted on the first, so the second used to be unreachable and
-     * "Milady Horakove 36" returned the street.
+     * A Czech or Slovak street carrying a composed number whose two halves
+     * appear nowhere else in the run, so each of the three lookups below has
+     * exactly one possible answer and the test is about the rule rather than
+     * about which of two candidates the corpus happened to order first.
      */
-    it('finds a composed number by either of its halves', () => {
-      // Any address stored as "<digits>/<digits>", found in the corpus rather
-      // than assumed to exist.
-      let anchorID = -1;
-      let composed = '';
-      for (let id = 0; id < a.manifest.num_anchors && anchorID < 0; id++) {
+    const cleanComposed = (): { anchorID: number; num: string } | null => {
+      const czsk = new Set(
+        ['cz', 'sk'].map((c) => covered[c]).filter((v) => v !== undefined),
+      );
+      if (czsk.size === 0) return null;
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        if (!czsk.has(a.anchorCountry[id]!)) continue;
         const start = a.anchorAddrStart[id]!;
-        for (let i = start; i < start + a.anchorAddrCount[id]!; i++) {
-          const num = a.strings.get(a.addrNum[i]!);
-          if (/^\d+\/\d+$/.test(num)) { anchorID = id; composed = num; break; }
+        const count = a.anchorAddrCount[id]!;
+        if (count < 2 || count > 60) continue;
+        const nums: string[] = [];
+        for (let i = start; i < start + count; i++) nums.push(a.strings.get(a.addrNum[i]!));
+        for (const num of nums) {
+          const m = /^(\d+)\/(\d+)$/.exec(num);
+          if (!m) continue;
+          const [c, o] = [m[1]!, m[2]!];
+          const claims = (n: string) => nums.filter((v) =>
+            v === n || v.startsWith(`${n}/`) || v.endsWith(`/${n}`)).length;
+          if (claims(c) === 1 && claims(o) === 1) return { anchorID: id, num };
         }
       }
-      if (anchorID < 0) return; // no composed numbers in this corpus
-      const [conscription, orientation] = composed.split('/') as [string, string];
+      return null;
+    };
 
-      const whole = findHouseNumber(a, anchorID, composed);
-      expect(whole, composed).not.toBeNull();
-      expect(whole!.exact).toBe(true);
+    /**
+     * Czech and Slovak buildings carry two numbers. "334/36" is conscription
+     * number 334 and orientation number 36, and the address is written either
+     * in full or as the orientation number alone - "Milady Horákové 36" is
+     * complete, and is the usual form. The conscription number alone is not an
+     * address, so it reaches the building and ranks below the two forms that
+     * are.
+     */
+    it('reads both valid forms of a composed number, and demotes the third', () => {
+      const found = cleanComposed();
+      if (found === null) return; // no Czech or Slovak data in this corpus
+      const { anchorID, num } = found;
+      const [conscription, orientation] = num.split('/') as [string, string];
 
-      // Both halves reach an address. Neither is exact: each is a partial
-      // reference to a number with two parts.
-      for (const half of [conscription, orientation]) {
-        const hit = findHouseNumber(a, anchorID, half);
-        expect(hit, `${composed} by ${half}`).not.toBeNull();
-        expect(hit!.exact).toBe(false);
+      expect(findHouseNumber(a, anchorID, num)!.how, num).toBe('exact');
+
+      const short = findHouseNumber(a, anchorID, orientation)!;
+      expect(short, `${num} by ${orientation}`).not.toBeNull();
+      expect(short.how).toBe('orientation');
+      expect(a.strings.get(a.addrNum[short.index]!)).toBe(num);
+
+      const long = findHouseNumber(a, anchorID, conscription)!;
+      expect(long, `${num} by ${conscription}`).not.toBeNull();
+      expect(long.how).toBe('conscription');
+      expect(a.strings.get(a.addrNum[long.index]!)).toBe(num);
+    });
+
+    /**
+     * The run is sorted on the conscription number, so it is the half a binary
+     * search finds first - and the wrong one. "Bratislavská 6" means the
+     * building whose door plate says 6, not whichever building happens to be
+     * conscription number 6.
+     */
+    it('prefers the orientation half to the conscription half', () => {
+      const czsk = new Set(
+        ['cz', 'sk'].map((c) => covered[c]).filter((v) => v !== undefined),
+      );
+      if (czsk.size === 0) return;
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        if (!czsk.has(a.anchorCountry[id]!)) continue;
+        const start = a.anchorAddrStart[id]!;
+        const count = a.anchorAddrCount[id]!;
+        if (count < 2 || count > 60) continue;
+        const nums: string[] = [];
+        for (let i = start; i < start + count; i++) nums.push(a.strings.get(a.addrNum[i]!));
+        // One address claims n as its orientation number, another as its
+        // conscription number, and no address is n outright.
+        for (const num of nums) {
+          const m = /^(\d+)\/(\d+)$/.exec(num);
+          if (!m) continue;
+          const n = m[2]!;
+          if (nums.includes(n)) continue;
+          if (!nums.some((v) => v !== num && v.startsWith(`${n}/`))) continue;
+          const hit = findHouseNumber(a, id, n)!;
+          expect(hit.how, `${n} on a run of ${nums.join(' ')}`).toBe('orientation');
+          expect(a.strings.get(a.addrNum[hit.index]!)).toBe(num);
+          return;
+        }
       }
-      // The orientation half has to reach an address whose orientation it is,
-      // not merely any address.
-      const byOrientation = findHouseNumber(a, anchorID, orientation)!;
-      const reached = a.strings.get(a.addrNum[byOrientation.index]!);
-      expect(reached.endsWith(`/${orientation}`) || reached === orientation).toBe(true);
     });
 
     it('returns null for a number the street does not have', () => {
@@ -876,6 +1068,68 @@ maybe('against the built index', () => {
       }
       expect(findHouseNumber(a, anchorID, '999999')).toBeNull();
     });
+
+    /**
+     * The run is sorted on `addr_sortkey`, which the Go build fills with the
+     * first digits found anywhere in the number - "ev.223" sorts under 223.
+     * The lookup used `parseInt`, which is NaN for those, so every number
+     * whose digits did not come first was unreachable.
+     */
+    it('finds a number whose digits do not start it', () => {
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        const start = a.anchorAddrStart[id]!;
+        for (let i = start; i < start + a.anchorAddrCount[id]!; i++) {
+          const num = a.strings.get(a.addrNum[i]!);
+          if (/^\d/.test(num) || !/\d/.test(num)) continue;
+          expect(findHouseNumber(a, id, num), num).not.toBeNull();
+          return;
+        }
+      }
+    });
+  });
+
+  /**
+   * The shapes a house number comes in are the long tail of this whole
+   * problem: 84% are plain digits and the rest are 1,500 other things.
+   * Hyphens, Taiwanese 號, letter halves and letter prefixes each used to
+   * return nothing at all, because folding split them and the parser kept one
+   * piece. So this asks the index for its own odd-shaped addresses, written
+   * the way they are stored, and expects them back.
+   */
+  it('round-trips addresses whose number is not plain digits', () => {
+    const anchorOfAddr = (i: number): number => {
+      let lo = 0, hi = a.manifest.num_anchors - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (a.anchorAddrStart[mid]! <= i) lo = mid; else hi = mid - 1;
+      }
+      return lo;
+    };
+
+    const stride = strideFor(a.manifest.num_addresses, 4000);
+    const failures: string[] = [];
+    let tried = 0;
+    for (let i = 0; i < a.manifest.num_addresses && tried < 120; i += stride) {
+      const num = a.strings.get(a.addrNum[i]!);
+      if (/^\d+$/.test(num)) continue;          // the easy 84%
+      // A comma cannot join a number, because it is what separates the
+      // address from the town. OSM's "2367,2369" is two addresses in one tag
+      // and can only be asked for one number at a time.
+      if (num.includes(',')) continue;
+      const anchor = anchorOfAddr(i);
+      const street = a.strings.get(a.anchorName[anchor]!);
+      const city = a.anchorLocal[anchor] ? a.strings.get(a.anchorLocal[anchor]!) : '';
+      if (!street || !city) continue;
+      tried++;
+      const r = forward(a, `${street} ${num}, ${city}`, { limit: 1, fuzzy: false }).results[0];
+      if (r?.layer !== 'address' || r.houseNumber !== num) {
+        failures.push(`${street} ${num}, ${city} -> ${r ? `${r.layer} ${r.houseNumber ?? r.name}` : 'nothing'}`);
+      }
+    }
+    if (tried < 10) return;  // a corpus with no interesting numbers in it
+    // Not all of them: OSM stores "1a" and "1A" on the same street as two
+    // addresses, and they fold to one thing.
+    expect(failures.length / tried, failures.slice(0, 5).join(' | ')).toBeLessThan(0.1);
   });
 
   /**
