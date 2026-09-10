@@ -161,7 +161,7 @@ What the callback does depends on which half of the id space the point is in:
 - **An address** is a bare point, so the distance is a haversine to it
   ([`haversineMetres`](../server/src/geometry.ts#L169)), and its owning anchor is
   recovered by binary search over `anchor_addr_start`
-  ([`anchorOfAddress`](../server/src/artifact.ts#L428)).
+  ([`anchorOfAddress`](../server/src/artifact.ts#L439)).
 - **An anchor with an outline** is measured to the outline
   ([`distanceToShape`](../server/src/geometry.ts#L78)), not to its centroid. A
   click at one end of a 2 km street is not 1 km from the street.

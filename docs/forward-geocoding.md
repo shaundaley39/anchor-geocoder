@@ -283,11 +283,22 @@ scorings so a pathological query cannot run unbounded, and when it stops the sca
 before the bound does, the guarantee lapses. The search says so by setting
 `stats.cappedByLimit` ([`forward.ts:48`](../server/src/forward.ts#L48)).
 
-Afterwards the house number is resolved inside the winning anchor by binary
-search ([`housenumber.ts:60`](../server/src/housenumber.ts#L60)) and becomes the
+Afterwards the house number is resolved inside the winning anchor
+([`housenumber.ts:100`](../server/src/housenumber.ts#L100)) and becomes the
 largest single factor in the score - 18 for an exact match, 6 for a numeric one,
 0.4 when the street exists and the number does not
-([`housenumber.ts:48`](../server/src/housenumber.ts#L48)). Near-duplicates are
+([`housenumber.ts:88`](../server/src/housenumber.ts#L88)).
+
+The lookup is a binary search over the run, which is sorted on the leading
+integer of each number
+([`findHouseNumber`](../server/src/housenumber.ts#L40)). A Czech address
+composes two numbers, "334/36": 334 is the conscription number, identifying the
+building within the municipality, and 36 is the orientation number, which is on
+the door plate and on the envelope. Either is a valid way to ask for it. The
+run is sorted on the first, so the second is found by a scan of the run
+comparing the digits after the slash, read off the stored bytes without decoding
+them and only reached when the binary search came back with nothing. Runs
+average seventeen addresses. Near-duplicates are
 dropped ([`forward.ts:237`](../server/src/forward.ts#L237)): Karlův most is mapped
 as an attraction several times along its length.
 
@@ -329,7 +340,7 @@ stream.
 | `MAX_RERANK` | [`forward.ts:37`](../server/src/forward.ts#L37) | worst-case latency against the bound's guarantee |
 | `DEDUP_HEADROOM` | [`forward.ts:45`](../server/src/forward.ts#L45) | pruning depth against duplicates lost |
 | `DUPLICATE_RADIUS_M` | [`forward.ts:229`](../server/src/forward.ts#L229) | merging one feature mapped twice against merging two branches of a chain |
-| `HOUSE_EXACT`, `HOUSE_NUMERIC`, `HOUSE_MISSING` | [`housenumber.ts:48`](../server/src/housenumber.ts#L48) | how much a matched number is worth |
+| `HOUSE_EXACT`, `HOUSE_NUMERIC`, `HOUSE_MISSING` | [`housenumber.ts:88`](../server/src/housenumber.ts#L88) | how much a matched number is worth |
 | `MIN_LENGTH`, `MAX_CANDIDATES` | [`fuzzy.ts:6`](../server/src/fuzzy.ts#L6) | correction reach against guesswork |
 
 **Normalizer tables**, which change what matches at all rather than how it

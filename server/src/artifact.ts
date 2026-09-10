@@ -85,6 +85,15 @@ export class StringTable {
     return s;
   }
 
+  /**
+   * The undecoded bytes and the offsets that slice them, for a scan that cannot
+   * afford a `subarray` per entry — one allocation per address on a street is
+   * most of the cost of looking at one. Callers read; nothing here is written
+   * after load, and the buffers are shared between threads.
+   */
+  get bytes(): Uint8Array { return this.blob; }
+  get bounds(): Uint32Array { return this.offsets; }
+
   /** Terms are sorted, so this is a binary search rather than a scan. */
   prefixRange(prefix: string): [number, number] {
     const lo = this.lowerBound(prefix);

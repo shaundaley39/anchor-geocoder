@@ -6,7 +6,7 @@
  * versus binary search — and none of that is visible to a hand-made fixture.
  * They skip when the artifact is absent, so a fresh clone can run them.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -24,6 +24,7 @@ import { buildServer } from '../src/server.js';
 import { placeName } from '../src/geojson.js';
 import { tokens as foldTokens } from '@anchor-geocoder/core';
 import type { FastifyInstance } from 'fastify';
+import { connect } from 'node:net';
 
 // Overridable so CI can point at an index built somewhere else, and so a
 // smaller corpus can be checked without disturbing the local one.
@@ -227,6 +228,15 @@ maybe('against the built index', () => {
    * tokens "1" and "2" — every digit in the corpus is a candidate for it, and
    * asking it to find itself tests nothing but the ranking of numbers.
    */
+  /**
+   * A stride that takes about `want` samples however large the index is. A
+   * fixed stride is a fixed sample only for one corpus: 977 over 58M anchors is
+   * 60,000 checks and over the demo index's 2,287 it is three, which is how
+   * three of these assertions came to require a corpus CI does not have.
+   */
+  const strideFor = (total: number, want: number): number =>
+    Math.max(1, Math.floor(total / want));
+
   const sampleNames = (want: number): string[] => {
     const out: string[] = [];
     const seen = new Set<string>();
@@ -298,7 +308,8 @@ maybe('against the built index', () => {
         .map((t) => { const id = a.terms.find(t); return id < 0 ? TERM_MISSING : id; });
 
       let checked = 0;
-      for (let id = 0; id < a.manifest.num_anchors; id += 977) {
+      const stride = strideFor(a.manifest.num_anchors, 24_000);
+      for (let id = 0; id < a.manifest.num_anchors; id += stride) {
         const [locality, ...variants] = sections(id) as [number[], ...number[][]];
         expect(locality, `anchor ${id} locality`)
           .toEqual(idsOf(a.strings.get(a.anchorLocal[id]!)));
@@ -310,7 +321,7 @@ maybe('against the built index', () => {
         ]);
         checked++;
       }
-      expect(checked).toBeGreaterThan(1000);
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_anchors));
     }, 120_000);
 
     /**
@@ -348,7 +359,8 @@ maybe('against the built index', () => {
       let checked = 0;
       // Every list would be 100M reads; a stride covers the file for the price
       // of a test that still runs in a second.
-      for (let t = 0; t < a.manifest.num_terms; t += 37) {
+      const stride = strideFor(a.manifest.num_terms, 130_000);
+      for (let t = 0; t < a.manifest.num_terms; t += stride) {
         const p = a.post.subarray(a.postOff[t]!, a.postOff[t + 1]!);
         for (let i = 1; i < p.length; i++) {
           if (p[i - 1]! >= p[i]!) {
@@ -357,7 +369,7 @@ maybe('against the built index', () => {
         }
         checked++;
       }
-      expect(checked).toBeGreaterThan(1000);
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_terms));
     });
 
     /**
@@ -385,11 +397,12 @@ maybe('against the built index', () => {
      */
     it('finds every term it stores', () => {
       let checked = 0;
-      for (let i = 0; i < a.manifest.num_terms; i += 97) {
+      const stride = strideFor(a.manifest.num_terms, 50_000);
+      for (let i = 0; i < a.manifest.num_terms; i += stride) {
         expect(a.terms.find(a.terms.get(i)), `term ${i}`).toBe(i);
         checked++;
       }
-      expect(checked).toBeGreaterThan(1000);
+      expect(checked).toBeGreaterThan(Math.min(1000, a.manifest.num_terms));
     }, 120_000);
   });
 
@@ -816,12 +829,134 @@ maybe('against the built index', () => {
       }
     });
 
+    /**
+     * A Czech address composes two numbers: "334/36" is conscription number
+     * 334, which identifies the building within the municipality, and
+     * orientation number 36, which is on the door plate and on the envelope.
+     * The run is sorted on the first, so the second used to be unreachable and
+     * "Milady Horakove 36" returned the street.
+     */
+    it('finds a composed number by either of its halves', () => {
+      // Any address stored as "<digits>/<digits>", found in the corpus rather
+      // than assumed to exist.
+      let anchorID = -1;
+      let composed = '';
+      for (let id = 0; id < a.manifest.num_anchors && anchorID < 0; id++) {
+        const start = a.anchorAddrStart[id]!;
+        for (let i = start; i < start + a.anchorAddrCount[id]!; i++) {
+          const num = a.strings.get(a.addrNum[i]!);
+          if (/^\d+\/\d+$/.test(num)) { anchorID = id; composed = num; break; }
+        }
+      }
+      if (anchorID < 0) return; // no composed numbers in this corpus
+      const [conscription, orientation] = composed.split('/') as [string, string];
+
+      const whole = findHouseNumber(a, anchorID, composed);
+      expect(whole, composed).not.toBeNull();
+      expect(whole!.exact).toBe(true);
+
+      // Both halves reach an address. Neither is exact: each is a partial
+      // reference to a number with two parts.
+      for (const half of [conscription, orientation]) {
+        const hit = findHouseNumber(a, anchorID, half);
+        expect(hit, `${composed} by ${half}`).not.toBeNull();
+        expect(hit!.exact).toBe(false);
+      }
+      // The orientation half has to reach an address whose orientation it is,
+      // not merely any address.
+      const byOrientation = findHouseNumber(a, anchorID, orientation)!;
+      const reached = a.strings.get(a.addrNum[byOrientation.index]!);
+      expect(reached.endsWith(`/${orientation}`) || reached === orientation).toBe(true);
+    });
+
     it('returns null for a number the street does not have', () => {
       let anchorID = -1;
       for (let id = 0; id < a.manifest.num_anchors; id++) {
         if (a.anchorAddrCount[id]! > 5) { anchorID = id; break; }
       }
       expect(findHouseNumber(a, anchorID, '999999')).toBeNull();
+    });
+  });
+
+  /**
+   * Over a real socket, because this is about the HTTP parser and `inject`
+   * never meets it. Node rejects a request line carrying bytes above 0x7F
+   * before any of the server runs, and a geocoder is asked for "Horákové" and
+   * "東京都" all day by clients that send exactly what they were given.
+   */
+  describe('a request target that was never percent-encoded', () => {
+    let listener: FastifyInstance;
+    let port = 0;
+
+    beforeAll(async () => {
+      listener = await buildServer({
+        artifact: a, reverseIndex: rev,
+        options: { rateLimitMax: 0, logger: false },
+      });
+      await listener.listen({ port: 0, host: '127.0.0.1' });
+      port = (listener.server.address() as { port: number }).port;
+    }, 60_000);
+    afterAll(async () => { await listener?.close(); });
+
+    /** Sends bytes, not a URL: no client library to encode them on the way. */
+    const raw = (target: string): Promise<string> => new Promise((resolve, reject) => {
+      const c = connect(port, '127.0.0.1', () => {
+        c.write(Buffer.concat([
+          Buffer.from('GET ', 'latin1'), Buffer.from(target, 'utf8'),
+          Buffer.from(' HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n', 'latin1'),
+        ]));
+      });
+      const chunks: Buffer[] = [];
+      c.on('data', (d: Buffer) => chunks.push(d));
+      c.on('error', reject);
+      c.on('close', () => { resolve(Buffer.concat(chunks).toString('utf8')); });
+    });
+
+    const bodyOf = (r: string) => JSON.parse(r.slice(r.indexOf('\r\n\r\n') + 4)) as
+      { features: { properties: { name: string } }[] };
+
+    /** A name this index holds that is not pure ASCII, whichever index it is. */
+    const accentedName = (): string => {
+      for (let id = 0; id < a.manifest.num_anchors; id++) {
+        const nm = a.strings.get(a.anchorName[id]!);
+        // eslint-disable-next-line no-control-regex
+        if (nm.length >= 4 && nm.length < 40 && /[^\u0000-\u007f]/.test(nm)) return nm;
+      }
+      return '';
+    };
+
+    it('serves a query whose non-ASCII arrived as raw bytes', async () => {
+      const name = accentedName();
+      expect(name, 'no non-ASCII name in this index').not.toBe('');
+      const res = await raw(`/v1/geocode?limit=1&q=${name.replace(/ /g, '+')}`);
+      expect(res.startsWith('HTTP/1.1 200'), res.split('\r\n')[0]).toBe(true);
+      expect(bodyOf(res).features.length).toBeGreaterThan(0);
+    });
+
+    /** The repair has to produce what the client should have sent, not merely
+     * something that parses. */
+    it('answers raw bytes exactly as it answers them percent-encoded', async () => {
+      const name = accentedName();
+      const asSent = await raw(`/v1/geocode?limit=5&q=${name.replace(/ /g, '+')}`);
+      const encoded = await raw(`/v1/geocode?limit=5&q=${encodeURIComponent(name)}`);
+      const names = (r: string) => bodyOf(r).features.map((f) => f.properties.name);
+      expect(names(asSent)).toEqual(names(encoded));
+      expect(names(asSent).length).toBeGreaterThan(0);
+    });
+
+    it('says what is wrong when the request line is beyond repair', async () => {
+      const res = await new Promise<string>((resolve, reject) => {
+        const c = connect(port, '127.0.0.1', () => {
+          c.write('GET /v1/geo code?q=x HTTP/1.1\r\nHost: localhost\r\n\r\n', 'latin1');
+        });
+        const chunks: Buffer[] = [];
+        c.on('data', (d: Buffer) => chunks.push(d));
+        c.on('error', reject);
+        c.on('close', () => { resolve(Buffer.concat(chunks).toString('utf8')); });
+      });
+      expect(res.startsWith('HTTP/1.1 400')).toBe(true);
+      // Not Fastify's bare "Client Error", which says nothing a caller can act on.
+      expect(res).toMatch(/percent-encode/);
     });
   });
 
