@@ -84,8 +84,6 @@ scripts/refresh-catalog.sh add jp kr    # add two by ISO code
 scripts/refresh-catalog.sh add-all      # every country on earth
 ```
 
-Saudi Arabia is the one gap in `@world`, and it is Geofabrik's: they publish no extract for it.
-
 What it serves per second, and what a thread of it costs in memory, is under [Serving on Every Core](#serving-on-every-core).
 
 ## Architectural Decisions
